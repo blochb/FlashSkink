@@ -1,0 +1,65 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup Label="Logging">
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.4" />
+    <PackageVersion Include="Serilog" Version="4.2.0" />
+    <PackageVersion Include="Serilog.Extensions.Logging" Version="9.0.0" />
+    <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="UI">
+    <PackageVersion Include="Avalonia" Version="11.2.7" />
+    <PackageVersion Include="Avalonia.Desktop" Version="11.2.7" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="11.2.7" />
+    <PackageVersion Include="Avalonia.Fonts.Inter" Version="11.2.7" />
+    <PackageVersion Include="Avalonia.Diagnostics" Version="11.2.7" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="CLI">
+    <PackageVersion Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+  </ItemGroup>
+
+  <ItemGroup Label="Database">
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="9.0.4" />
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.10" />
+    <PackageVersion Include="Dapper" Version="2.1.35" />
+  </ItemGroup>
+
+  <ItemGroup Label="Storage">
+    <PackageVersion Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.1" />
+  </ItemGroup>
+
+  <ItemGroup Label="Cloud Providers">
+    <PackageVersion Include="Google.Apis.Drive.v3" Version="1.68.0.3656" />
+    <PackageVersion Include="Dropbox.Api" Version="9.0.0" />
+    <PackageVersion Include="Microsoft.Graph" Version="5.65.0" />
+    <PackageVersion Include="Microsoft.Identity.Client" Version="4.67.2" />
+  </ItemGroup>
+
+  <ItemGroup Label="Crypto">
+    <PackageVersion Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
+  </ItemGroup>
+
+  <ItemGroup Label="Compression">
+    <PackageVersion Include="ZstdNet" Version="1.4.5" />
+    <PackageVersion Include="K4os.Compression.LZ4" Version="1.3.8" />
+  </ItemGroup>
+
+  <ItemGroup Label="BIP39">
+    <PackageVersion Include="dotnetstandard-bip39" Version="1.0.13" />
+  </ItemGroup>
+
+  <ItemGroup Label="Testing">
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageVersion Include="Moq" Version="4.20.72" />
+    <PackageVersion Include="FsCheck.Xunit" Version="2.16.6" />
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+  </ItemGroup>
+</Project>

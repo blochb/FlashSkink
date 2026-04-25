@@ -1,0 +1,40 @@
+name: PR Review — Recovery/WAL
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+    paths:
+      - 'src/FlashSkink.Core/Metadata/Migrations/**'
+      - 'src/FlashSkink.Core/Metadata/WalRepository.cs'
+      - 'src/FlashSkink.Core/Healing/**'
+      - 'src/FlashSkink.Core/Usb/**'
+      - 'src/FlashSkink.Core/Orchestration/**'
+
+jobs:
+  recovery-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: --model claude-opus-4-7 --max-turns 20
+          prompt: |
+            Perform a deep recovery and WAL consistency review of this pull request.
+
+            Reference BLUEPRINT.md §21 (WAL recovery), §13.4 (atomic writes), and CLAUDE.md principles 17 (CancellationToken.None literal in compensation), 29 (atomic write protocol), and 30 (crash-consistency invariant).
+
+            Check specifically:
+            - Idempotent recovery steps: can each WAL recovery step be run twice safely? Is there any non-idempotent operation in a recovery path?
+            - fsync sequencing: is the write-then-fsync-then-rename-then-fsync-directory sequence followed exactly as in principle 29?
+            - Transaction boundaries: are SQLite transactions scoped correctly so a crash leaves the brain in a consistent state?
+            - CancellationToken.None literal: in all compensation/recovery paths, does every await site spell out CancellationToken.None literally (not via a local variable)?
+            - Crash-consistency invariant (principle 30): can a crash at any point in a write or upload path leave an orphaned blob row without a file row, or a file row with a missing blob?
+
+            Post a detailed review comment with findings per category. If a category is clean, say so explicitly.

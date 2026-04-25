@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>FlashSkink.Core.Abstractions</AssemblyName>
+    <RootNamespace>FlashSkink.Core.Abstractions</RootNamespace>
+  </PropertyGroup>
+
+</Project>

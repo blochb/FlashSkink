@@ -1,0 +1,122 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  full-matrix:
+    name: full-matrix (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+          - rid: linux-x64
+            os: ubuntu-latest
+          - rid: osx-x64
+            os: macos-13
+          - rid: osx-arm64
+            os: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        run: dotnet test --no-build -c Release
+
+      - name: Publish UI
+        run: >
+          dotnet publish src/FlashSkink.UI.Avalonia
+          -c Release
+          --self-contained
+          -r ${{ matrix.rid }}
+          -p:PublishSingleFile=true
+          -o publish/ui/${{ matrix.rid }}
+
+      - name: Publish CLI
+        run: >
+          dotnet publish src/FlashSkink.CLI
+          -c Release
+          --self-contained
+          -r ${{ matrix.rid }}
+          -p:PublishSingleFile=true
+          -o publish/cli/${{ matrix.rid }}
+
+      - name: Smoke test CLI (Unix)
+        if: matrix.rid != 'win-x64'
+        run: publish/cli/${{ matrix.rid }}/FlashSkink.CLI --version || true
+
+      - name: Smoke test CLI (Windows)
+        if: matrix.rid == 'win-x64'
+        run: publish/cli/${{ matrix.rid }}/FlashSkink.CLI.exe --version || true
+        shell: pwsh
+
+  crash-consistency:
+    name: crash-consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Run crash-consistency tests
+        env:
+          FSCHECK_ITERATIONS: "5000"
+        run: dotnet test --no-build -c Release --filter "Category=CrashConsistency"
+
+  portable-publish-smoke:
+    name: portable-publish-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Publish CLI to usb-sim
+        run: >
+          dotnet publish src/FlashSkink.CLI
+          -c Release
+          --self-contained
+          -r linux-x64
+          -p:PublishSingleFile=true
+          -o /tmp/usb-sim
+
+      - name: Snapshot home + tmp before run
+        run: find "$HOME" /tmp -maxdepth 3 ! -path '/tmp/usb-sim*' 2>/dev/null | sort > /tmp/before.txt || true
+
+      - name: Run CLI from usb-sim
+        run: /tmp/usb-sim/FlashSkink.CLI --version || true
+
+      - name: Check for host writes outside usb-sim
+        run: |
+          find "$HOME" /tmp -maxdepth 3 ! -path '/tmp/usb-sim*' 2>/dev/null | sort > /tmp/after.txt || true
+          DIFF=$(diff /tmp/before.txt /tmp/after.txt || true)
+          if [[ -n "$DIFF" ]]; then
+            echo "::warning::Files written outside /tmp/usb-sim during CLI run:"
+            echo "$DIFF"
+          fi

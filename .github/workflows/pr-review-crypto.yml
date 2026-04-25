@@ -1,0 +1,42 @@
+name: PR Review — Crypto
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+    paths:
+      - 'src/FlashSkink.Core/Crypto/**'
+      - 'src/FlashSkink.Core/Engine/WritePipeline.cs'
+      - 'src/FlashSkink.Core/Engine/ReadPipeline.cs'
+      - 'src/FlashSkink.Core.Abstractions/Models/*.cs'
+
+jobs:
+  crypto-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: --model claude-opus-4-7 --max-turns 20
+          prompt: |
+            Perform a deep cryptographic security review of this pull request.
+
+            Reference BLUEPRINT.md §18 (key hierarchy), §13.6 (blob format), and CLAUDE.md principles 26 (no secrets in logs) and 31 (keys zeroed on volume close).
+
+            Check specifically:
+            - Nonce reuse: is each AES-GCM nonce unique per encryption? Is the nonce generated freshly for each operation?
+            - AAD correctness: is the additional authenticated data (AAD) correct and consistent between encrypt and decrypt?
+            - Key zeroization: are DEK, KEK, and derived keys zeroed on ALL failure paths including exception unwind?
+            - Timing side channels: any branch on secret data, string comparison of keys/tags?
+            - Accidental secret logging: any log calls that could capture key material, plaintext, or tokens?
+            - stackalloc across await: any stackalloc'd spans used after an await boundary (compiler should catch, but verify)?
+            - AES-GCM tag handling: is the authentication tag verified before plaintext is returned to the caller?
+            - HKDF context strings: are info strings for HKDF unique per derived key purpose?
+
+            Post a detailed review comment with findings per category. If a category is clean, say so explicitly.

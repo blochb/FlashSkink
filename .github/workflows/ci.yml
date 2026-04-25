@@ -1,0 +1,199 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: build-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        run: dotnet test --no-build -c Release --logger trx --collect:"XPlat Code Coverage"
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          fail_ci_if_error: false
+        continue-on-error: true
+
+  assembly-layering:
+    name: assembly-layering
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Run architecture tests
+        run: dotnet test --no-build -c Release --filter "FullyQualifiedName~ArchitectureTests"
+
+  plan-check:
+    name: plan-check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check plan file for pr/ branches
+        shell: bash
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Branch: $BRANCH"
+
+          if [[ "$BRANCH" =~ ^pr/([0-9]+\.[0-9]+)- ]]; then
+            SECTION="${BASH_REMATCH[1]}"
+            PLAN_FILE=".claude/plans/pr-${SECTION}.md"
+            echo "Expecting plan file: $PLAN_FILE"
+
+            if [[ ! -f "$PLAN_FILE" ]]; then
+              echo "::error::Plan file '$PLAN_FILE' not found for branch '$BRANCH'"
+              exit 1
+            fi
+
+            REQUIRED_HEADINGS=(
+              "## Scope"
+              "## Files to create"
+              "## Files to modify"
+              "## Public API surface"
+              "## Principles touched"
+              "## Test spec"
+              "## Acceptance criteria"
+              "## Line-of-code budget"
+              "## Non-goals"
+            )
+
+            MISSING=0
+            for HEADING in "${REQUIRED_HEADINGS[@]}"; do
+              if ! grep -qF "$HEADING" "$PLAN_FILE"; then
+                echo "::error::Plan file missing required heading: $HEADING"
+                MISSING=1
+              fi
+            done
+
+            if ! grep -q '§' "$PLAN_FILE"; then
+              echo "::error::Plan file must contain at least one blueprint section reference (§)"
+              MISSING=1
+            fi
+
+            if [[ $MISSING -ne 0 ]]; then
+              exit 1
+            fi
+
+            echo "Plan file OK."
+          else
+            echo "Not a pr/ branch — skipping plan check."
+          fi
+
+  principle-audit:
+    name: principle-audit
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: --model claude-opus-4-7 --max-turns 15
+          prompt: |
+            You are performing a principle audit on this pull request.
+
+            Read the PR diff (via git diff), the plan file at .claude/plans/pr-${GITHUB_HEAD_REF#pr/}.md if it exists (strip the description part after the first dash), and CLAUDE.md §Principles.
+
+            Post a single PR comment with exactly three labelled sections:
+            1. **Principle violations** — list each violation with file:line reference and which principle number is violated. If none, write "None found."
+            2. **Plan-template compliance issues** — list missing or malformed sections in the plan file. If none, write "None found."
+            3. **Scope creep** — files in the diff not listed in the plan's Files-to-create or Files-to-modify sections. If none, write "None found."
+
+            Do NOT perform a general code review. Focus exclusively on these three categories.
+
+  conventional-commits:
+    name: conventional-commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            test
+            chore
+            refactor
+            perf
+            ci
+
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build for CodeQL
+        run: dotnet build -c Release
+
+      - uses: github/codeql-action/analyze@v3
+
+  dotnet-format:
+    name: dotnet-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Check formatting
+        run: dotnet format --verify-no-changes --severity warn

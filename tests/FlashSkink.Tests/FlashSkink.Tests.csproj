@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>FlashSkink.Tests</AssemblyName>
+    <RootNamespace>FlashSkink.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FlashSkink.Core.Abstractions\FlashSkink.Core.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\FlashSkink.Core\FlashSkink.Core.csproj" />
+    <ProjectReference Include="..\..\src\FlashSkink.Presentation\FlashSkink.Presentation.csproj" />
+    <ProjectReference Include="..\..\src\FlashSkink.UI.Avalonia\FlashSkink.UI.Avalonia.csproj" />
+    <ProjectReference Include="..\..\src\FlashSkink.CLI\FlashSkink.CLI.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Moq" />
+    <PackageReference Include="FsCheck.Xunit" />
+    <PackageReference Include="coverlet.collector">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FlashSkink.CLI/FlashSkink.CLI.csproj" />
+    <Project Path="src/FlashSkink.Core.Abstractions/FlashSkink.Core.Abstractions.csproj" />
+    <Project Path="src/FlashSkink.Core/FlashSkink.Core.csproj" />
+    <Project Path="src/FlashSkink.Presentation/FlashSkink.Presentation.csproj" />
+    <Project Path="src/FlashSkink.UI.Avalonia/FlashSkink.UI.Avalonia.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FlashSkink.Tests/FlashSkink.Tests.csproj" />
+  </Folder>
+</Solution>
