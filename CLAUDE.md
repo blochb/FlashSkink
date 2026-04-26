@@ -188,6 +188,8 @@ After approval:
    Then say:
    > "Stuck after 3 attempts. Diagnosis at `.claude/plans/pr-X.Y-stuck.md`. Handing back to you."
 
+5. After dotnet test is green, run `dotnet format --verify-no-changes`. If it reports changes, run dotnet format, stage the changes, and amend the commit before pushing.
+
 ### Step 7 — Open the PR
 
 Once tests are green:
