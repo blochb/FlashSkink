@@ -153,7 +153,10 @@ public sealed class KeyVault
 
             seed = seedResult.Value!;
 
-            var kdfResult = _kdf.DeriveKek(seed, header.Salt, out kek);
+            var kdfResult = _kdf.DeriveKek(
+                seed, header.Salt,
+                header.MemoryMib * 1024, header.Iterations, header.Parallelism,
+                out kek);
             if (!kdfResult.Success)
             {
                 return Result<byte[]>.Fail(kdfResult.Error!);
@@ -250,7 +253,10 @@ public sealed class KeyVault
         var kek = Array.Empty<byte>();
         try
         {
-            var kdfResult = _kdf.DeriveKekFromPassword(password, header.Salt, out kek);
+            var kdfResult = _kdf.DeriveKekFromPassword(
+                password, header.Salt,
+                header.MemoryMib * 1024, header.Iterations, header.Parallelism,
+                out kek);
             if (!kdfResult.Success)
             {
                 return Result<byte[]>.Fail(kdfResult.Error!);

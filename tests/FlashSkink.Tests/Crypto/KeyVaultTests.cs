@@ -222,4 +222,24 @@ public class KeyVaultTests : IDisposable
 
     [Fact(Skip = "deferred to §1.6 — requires CreateAsync to accept a mnemonic-derived KEK")]
     public Task UnlockFromMnemonicAsync_RoundTrip_Succeeds() => Task.CompletedTask;
+
+    // ── Stored KDF params are consumed on unlock ──────────────────────────────
+
+    [Fact]
+    public async Task UnlockAsync_PatchedMemoryParam_FailsWithInvalidPassword()
+    {
+        // Prove the stored MemoryMib is read and fed to Argon2id on unlock, not silently ignored.
+        // Strategy: create a valid vault, then corrupt byte[6] (MemoryMib) to a wrong value.
+        // If UnlockAsync uses the stored param it will derive a different KEK → tag mismatch.
+        // If it ignores the stored param (using the hardcoded constant) it would succeed — that's the bug.
+        await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
+        var bytes = await File.ReadAllBytesAsync(VaultPath());
+        bytes[6] = (byte)(bytes[6] + 1); // corrupt MemoryMib
+        await File.WriteAllBytesAsync(VaultPath(), bytes);
+
+        var result = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+    }
 }

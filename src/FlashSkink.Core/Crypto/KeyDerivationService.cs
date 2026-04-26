@@ -18,17 +18,34 @@ public sealed class KeyDerivationService
     private const int BrainKeyBytes = 32;
 
     /// <summary>
-    /// Derives a 256-bit KEK from a BIP-39 seed using Argon2id. The caller must zero
-    /// <paramref name="seed"/> and the returned <paramref name="kek"/> after use.
+    /// Derives a 256-bit KEK from a BIP-39 seed using Argon2id with the current baseline
+    /// parameters. The caller must zero <paramref name="seed"/> and <paramref name="kek"/> after use.
     /// </summary>
     /// <param name="seed">The 64-byte BIP-39 seed from <see cref="MnemonicService.ToSeed"/>.</param>
     /// <param name="argon2Salt">32-byte random salt stored in the vault header.</param>
     /// <param name="kek">On success: a fresh 32-byte KEK. On failure: <see cref="Array.Empty{T}"/>.</param>
     public Result DeriveKek(byte[] seed, ReadOnlySpan<byte> argon2Salt, out byte[] kek)
+        => DeriveKek(seed, argon2Salt, Argon2MemoryKilobytes, Argon2Iterations, Argon2Parallelism, out kek);
+
+    /// <summary>
+    /// Derives a 256-bit KEK from a BIP-39 seed using Argon2id with explicit parameters read
+    /// from a vault header, enabling decryption of vaults created under any past baseline.
+    /// The caller must zero <paramref name="seed"/> and <paramref name="kek"/> after use.
+    /// </summary>
+    /// <param name="seed">The 64-byte BIP-39 seed.</param>
+    /// <param name="argon2Salt">32-byte random salt stored in the vault header.</param>
+    /// <param name="memoryKilobytes">Argon2id memory in KiB, read from vault header.</param>
+    /// <param name="iterations">Argon2id iteration count, read from vault header.</param>
+    /// <param name="parallelism">Argon2id parallelism, read from vault header.</param>
+    /// <param name="kek">On success: a fresh 32-byte KEK. On failure: <see cref="Array.Empty{T}"/>.</param>
+    public Result DeriveKek(
+        byte[] seed, ReadOnlySpan<byte> argon2Salt,
+        int memoryKilobytes, int iterations, int parallelism,
+        out byte[] kek)
     {
         try
         {
-            kek = RunArgon2(seed, argon2Salt);
+            kek = RunArgon2(seed, argon2Salt, memoryKilobytes, iterations, parallelism);
             return Result.Ok();
         }
         catch (Exception ex)
@@ -40,10 +57,8 @@ public sealed class KeyDerivationService
     }
 
     /// <summary>
-    /// Derives a 256-bit KEK from a raw password buffer using Argon2id. Accepts
-    /// <see cref="ReadOnlySpan{T}"/> so the caller can use a stack-pinned or pooled buffer
-    /// and zero it after this call without the service retaining a reference.
-    /// The internal copy is zeroed in a <see langword="finally"/> block.
+    /// Derives a 256-bit KEK from a raw password buffer using Argon2id with the current
+    /// baseline parameters. The internal copy is zeroed in a <see langword="finally"/> block.
     /// The caller must zero the returned <paramref name="kek"/> after use.
     /// </summary>
     /// <param name="passwordBytes">The user password encoded as bytes (caller zeroes after call).</param>
@@ -53,12 +68,32 @@ public sealed class KeyDerivationService
         ReadOnlySpan<byte> passwordBytes,
         ReadOnlySpan<byte> argon2Salt,
         out byte[] kek)
+        => DeriveKekFromPassword(passwordBytes, argon2Salt,
+            Argon2MemoryKilobytes, Argon2Iterations, Argon2Parallelism, out kek);
+
+    /// <summary>
+    /// Derives a 256-bit KEK from a raw password buffer using Argon2id with explicit parameters
+    /// read from a vault header, enabling decryption of vaults created under any past baseline.
+    /// The internal copy is zeroed in a <see langword="finally"/> block.
+    /// The caller must zero the returned <paramref name="kek"/> after use.
+    /// </summary>
+    /// <param name="passwordBytes">The user password encoded as bytes (caller zeroes after call).</param>
+    /// <param name="argon2Salt">32-byte random salt stored in the vault header.</param>
+    /// <param name="memoryKilobytes">Argon2id memory in KiB, read from vault header.</param>
+    /// <param name="iterations">Argon2id iteration count, read from vault header.</param>
+    /// <param name="parallelism">Argon2id parallelism, read from vault header.</param>
+    /// <param name="kek">On success: a fresh 32-byte KEK. On failure: <see cref="Array.Empty{T}"/>.</param>
+    public Result DeriveKekFromPassword(
+        ReadOnlySpan<byte> passwordBytes,
+        ReadOnlySpan<byte> argon2Salt,
+        int memoryKilobytes, int iterations, int parallelism,
+        out byte[] kek)
     {
         // Copy span to array only for the Konscious API; zeroed immediately after.
         var passwordCopy = passwordBytes.ToArray();
         try
         {
-            kek = RunArgon2(passwordCopy, argon2Salt);
+            kek = RunArgon2(passwordCopy, argon2Salt, memoryKilobytes, iterations, parallelism);
             return Result.Ok();
         }
         catch (Exception ex)
@@ -101,13 +136,15 @@ public sealed class KeyDerivationService
         }
     }
 
-    private static byte[] RunArgon2(byte[] password, ReadOnlySpan<byte> salt)
+    private static byte[] RunArgon2(
+        byte[] password, ReadOnlySpan<byte> salt,
+        int memoryKilobytes, int iterations, int parallelism)
     {
         using var argon2 = new Argon2id(password);
         argon2.Salt = salt.ToArray();
-        argon2.MemorySize = Argon2MemoryKilobytes;
-        argon2.Iterations = Argon2Iterations;
-        argon2.DegreeOfParallelism = Argon2Parallelism;
+        argon2.MemorySize = memoryKilobytes;
+        argon2.Iterations = iterations;
+        argon2.DegreeOfParallelism = parallelism;
         return argon2.GetBytes(KekBytes);
     }
 }
