@@ -40,6 +40,12 @@ Before reading anything, run `git status` and `git branch --show-current`. If th
 
 > "Current branch is `main`. I need a PR branch before starting work. Should I create `pr/X.Y-<short-description>`? Please confirm the description."
 
+**Precondition:** Before creating the branch, run `gh pr list --state open --base main`. If a PR for the previous section (X.(Y-1)) is still open, stop and say:
+
+> "PR for section X.(Y-1) is not yet merged into main. Please merge it before I start X.Y, otherwise this branch will be missing its dependencies."
+
+Wait for the user to confirm it is merged before proceeding.
+
 Wait for the user to confirm the branch name. Then `git checkout -b pr/X.Y-<description>`.
 
 If the current branch is already a `pr/X.Y-...` branch matching the section, continue. If it's a `pr/` branch for a different section, stop and ask the user which branch is correct.
