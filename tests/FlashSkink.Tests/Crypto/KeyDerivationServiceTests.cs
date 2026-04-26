@@ -18,10 +18,10 @@ public class KeyDerivationServiceTests
 
     private static readonly byte[] FixedSeed = Filled(64, 0x42);
     private static readonly byte[] FixedSalt = Filled(32, 0x07);
-    private static readonly byte[] AltSeed   = Filled(64, 0x99);
-    private static readonly byte[] AltSalt   = Filled(32, 0xAB);
-    private static readonly byte[] FixedDek  = Filled(32, 0x55);
-    private static readonly byte[] AltDek    = Filled(32, 0xAA);
+    private static readonly byte[] AltSeed = Filled(64, 0x99);
+    private static readonly byte[] AltSalt = Filled(32, 0xAB);
+    private static readonly byte[] FixedDek = Filled(32, 0x55);
+    private static readonly byte[] AltDek = Filled(32, 0xAA);
 
     [Fact]
     public void DeriveKek_ProducesKekOf32Bytes()
