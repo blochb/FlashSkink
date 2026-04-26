@@ -183,7 +183,8 @@ public class ErrorContextTests
     public void ErrorContext_WithMetadata_CanBeAdded()
     {
         var ctx = ErrorContext.From(ErrorCode.Unknown, "msg", null)
-            with { Metadata = new Dictionary<string, string> { ["k"] = "v" } };
+            with
+        { Metadata = new Dictionary<string, string> { ["k"] = "v" } };
 
         Assert.Equal("v", ctx.Metadata!["k"]);
     }
