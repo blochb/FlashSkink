@@ -353,9 +353,9 @@ public sealed class KeyVault
 
     private static byte[] SerializeVault(byte[] salt, byte[] nonce, byte[] ciphertext, byte[] tag)
     {
-        const int memMib = 19456 / 1024; // 19 MiB — exact round-trip for OWASP baseline
-        const int iterations = 2;
-        const int parallelism = 1;
+        const int memMib = KeyDerivationService.Argon2MemoryKilobytes / 1024;
+        const int iterations = KeyDerivationService.Argon2Iterations;
+        const int parallelism = KeyDerivationService.Argon2Parallelism;
 
         var vault = new byte[VaultSize];
         Magic.CopyTo(vault, 0);

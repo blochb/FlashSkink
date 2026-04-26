@@ -11,9 +11,10 @@ namespace FlashSkink.Core.Crypto;
 public sealed class KeyDerivationService
 {
     // Argon2id parameters per blueprint §18.2 (OWASP 2024 baseline).
-    private const int Argon2MemoryKilobytes = 19_456;
-    private const int Argon2Iterations = 2;
-    private const int Argon2Parallelism = 1;
+    // internal so KeyVault can write them into the vault header without duplicating the values.
+    internal const int Argon2MemoryKilobytes = 19_456;
+    internal const int Argon2Iterations = 2;
+    internal const int Argon2Parallelism = 1;
     private const int KekBytes = 32;
     private const int BrainKeyBytes = 32;
 
