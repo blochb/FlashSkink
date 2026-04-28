@@ -111,10 +111,29 @@ jobs:
             echo "Not a pr/ branch — skipping plan check."
           fi
 
-  principle-audit:
-    name: principle-audit
+  changes:
+    name: changes
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    outputs:
+      source: ${{ steps.filter.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            source:
+              - 'src/**'
+              - 'tests/**'
+              - 'Directory.Build.props'
+              - 'Directory.Packages.props'
+
+  principle-audit:
+    name: principle-audit
+    needs: changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && needs.changes.outputs.source == 'true'
     continue-on-error: true
     permissions:
       contents: read
