@@ -7,6 +7,7 @@ on:
 jobs:
   review:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     permissions:
       contents: read
       pull-requests: write
@@ -20,12 +21,29 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           track_progress: "true"
-          claude_args: --model claude-opus-4-6 --max-turns 20
+          claude_args: >-
+            --model claude-opus-4-6
+            --max-turns 15
+            --allowed-tools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(ls:*)"
           prompt: |
-            Review this pull request for code quality issues.
+            You are performing a focused code-quality review on this pull request.
+            Be efficient — stop as soon as your review is posted.
 
-            Focus on: logic bugs, missing test coverage, unclear naming, edge cases not handled, error-handling gaps, resource leaks, async/await pitfalls, and cancellation token misuse.
+            ## Procedure
 
-            Do NOT repeat findings from the principle-audit job (principle violations, plan compliance, scope creep) — those are handled separately.
+            1. Get changed files: `git diff --name-only origin/${{ github.base_ref }}...HEAD`
+            2. Read the full diff: `git diff origin/${{ github.base_ref }}...HEAD`
+            3. Only read full file contents when the diff alone doesn't give enough context to evaluate a specific issue.
+            4. Post ONE summary review comment plus inline comments on specific lines where you find concrete issues. Then STOP.
 
-            Post one summary comment describing the overall assessment, plus inline comments on specific lines where you find issues. Be concise and actionable.
+            ## Focus areas (only these)
+
+            Logic bugs, missing test coverage, unclear naming, edge cases not handled, error-handling gaps, resource leaks, async/await pitfalls, cancellation token misuse.
+
+            ## Hard rules
+
+            - Do NOT repeat findings from the principle-audit job (principle violations, plan compliance, scope creep) — those are handled separately.
+            - Do NOT comment on style/formatting (dotnet-format handles it).
+            - Do NOT explore the repository beyond what the diff requires.
+            - Inline comments must reference an actual concrete issue with a fix suggestion. No vague "consider X" comments.
+            - After the review is posted, you are done. Do not take further actions.

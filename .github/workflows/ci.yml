@@ -58,10 +58,14 @@ jobs:
     name: plan-check
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    outputs:
+      plan_file: ${{ steps.compute.outputs.plan_file }}
+      has_plan: ${{ steps.compute.outputs.has_plan }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check plan file for pr/ branches
+      - name: Compute plan file path
+        id: compute
         shell: bash
         run: |
           BRANCH="${{ github.head_ref }}"
@@ -70,46 +74,53 @@ jobs:
           if [[ "$BRANCH" =~ ^pr/([0-9]+\.[0-9]+)- ]]; then
             SECTION="${BASH_REMATCH[1]}"
             PLAN_FILE=".claude/plans/pr-${SECTION}.md"
+            echo "plan_file=$PLAN_FILE" >> "$GITHUB_OUTPUT"
             echo "Expecting plan file: $PLAN_FILE"
+          else
+            echo "plan_file=" >> "$GITHUB_OUTPUT"
+            echo "has_plan=false" >> "$GITHUB_OUTPUT"
+            echo "Not a pr/ branch — skipping plan check."
+            exit 0
+          fi
 
-            if [[ ! -f "$PLAN_FILE" ]]; then
-              echo "::error::Plan file '$PLAN_FILE' not found for branch '$BRANCH'"
-              exit 1
-            fi
+          if [[ ! -f "$PLAN_FILE" ]]; then
+            echo "has_plan=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Plan file '$PLAN_FILE' not found for branch '$BRANCH'"
+            exit 1
+          fi
 
-            REQUIRED_HEADINGS=(
-              "## Scope"
-              "## Files to create"
-              "## Files to modify"
-              "## Public API surface"
-              "## Principles touched"
-              "## Test spec"
-              "## Acceptance criteria"
-              "## Line-of-code budget"
-              "## Non-goals"
-            )
+          REQUIRED_HEADINGS=(
+            "## Scope"
+            "## Files to create"
+            "## Files to modify"
+            "## Public API surface"
+            "## Principles touched"
+            "## Test spec"
+            "## Acceptance criteria"
+            "## Line-of-code budget"
+            "## Non-goals"
+          )
 
-            MISSING=0
-            for HEADING in "${REQUIRED_HEADINGS[@]}"; do
-              if ! grep -qF "$HEADING" "$PLAN_FILE"; then
-                echo "::error::Plan file missing required heading: $HEADING"
-                MISSING=1
-              fi
-            done
-
-            if ! grep -q '§' "$PLAN_FILE"; then
-              echo "::error::Plan file must contain at least one blueprint section reference (§)"
+          MISSING=0
+          for HEADING in "${REQUIRED_HEADINGS[@]}"; do
+            if ! grep -qF "$HEADING" "$PLAN_FILE"; then
+              echo "::error::Plan file missing required heading: $HEADING"
               MISSING=1
             fi
+          done
 
-            if [[ $MISSING -ne 0 ]]; then
-              exit 1
-            fi
-
-            echo "Plan file OK."
-          else
-            echo "Not a pr/ branch — skipping plan check."
+          if ! grep -q '§' "$PLAN_FILE"; then
+            echo "::error::Plan file must contain at least one blueprint section reference (§)"
+            MISSING=1
           fi
+
+          if [[ $MISSING -ne 0 ]]; then
+            echo "has_plan=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "has_plan=true" >> "$GITHUB_OUTPUT"
+          echo "Plan file OK."
 
   changes:
     name: changes
@@ -131,10 +142,17 @@ jobs:
 
   principle-audit:
     name: principle-audit
-    needs: changes
+    needs: [changes, plan-check]
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && needs.changes.outputs.source == 'true'
+    # Only run when source actually changed AND a valid plan file exists.
+    # This prevents Claude from being invoked (and burning turns) on PRs where
+    # the audit can't possibly succeed.
+    if: |
+      github.event_name == 'pull_request' &&
+      needs.changes.outputs.source == 'true' &&
+      needs.plan-check.outputs.has_plan == 'true'
     continue-on-error: true
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
@@ -144,21 +162,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve plan file path
+        id: plan
+        shell: bash
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          if [[ "$BRANCH" =~ ^pr/([0-9]+\.[0-9]+)- ]]; then
+            echo "path=.claude/plans/pr-${BASH_REMATCH[1]}.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: --model claude-opus-4-6 --max-turns 25
+          claude_args: --model claude-opus-4-6 --max-turns 50
           prompt: |
-            You are performing a principle audit on this pull request.
+            You are performing a focused principle audit. Complete it in the fewest turns possible.
 
-            Read the PR diff (via git diff), the plan file at .claude/plans/pr-${GITHUB_HEAD_REF#pr/}.md if it exists (strip the description part after the first dash), and CLAUDE.md §Principles.
+            Step 1 — run exactly this command to get the diff:
+              git diff origin/main...HEAD -- '*.cs' '*.csproj' '*.props'
 
-            Post a single PR comment with exactly three labelled sections:
-            1. **Principle violations** — list each violation with file:line reference and which principle number is violated. If none, write "None found."
-            2. **Plan-template compliance issues** — list missing or malformed sections in the plan file. If none, write "None found."
-            3. **Scope creep** — files in the diff not listed in the plan's Files-to-create or Files-to-modify sections. If none, write "None found."
+            Step 2 — read these two files (and only these two):
+              - CLAUDE.md  (look only at the "## Principles" section)
+              - ${{ steps.plan.outputs.path != '' && steps.plan.outputs.path || '(no plan file — skip plan checks)' }}
 
-            Do NOT perform a general code review. Focus exclusively on these three categories.
+            Step 3 — post a single PR comment with exactly three labelled sections:
+            1. **Principle violations** — file:line and principle number for each violation. If none, write "None found."
+            2. **Plan-template compliance issues** — missing or malformed sections in the plan file. If none or no plan file, write "None found."
+            3. **Scope creep** — files in the diff not listed in the plan's Files-to-create or Files-to-modify. If none or no plan file, write "None found."
+
+            Do NOT read any other files. Do NOT perform a general code review. Post the comment and stop.
 
   conventional-commits:
     name: conventional-commits
