@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using FlashSkink.Core.Abstractions.Results;
+using FlashSkink.Core.Metadata;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 namespace FlashSkink.Core.Crypto;
 
@@ -56,51 +58,76 @@ public sealed class VolumeSession : IAsyncDisposable
 }
 
 /// <summary>
-/// Thin orchestrator for volume open/close. Phase 1 skeleton — wired to
-/// <c>BrainConnectionFactory</c> and <c>MigrationRunner</c> in §1.5.
+/// Thin orchestrator for volume open/close. Opens the vault, opens the encrypted brain
+/// connection, runs schema migrations, and returns a live <see cref="VolumeSession"/>.
 /// </summary>
 public sealed class VolumeLifecycle
 {
     private readonly KeyVault _vault;
-    private readonly KeyDerivationService _kdf;
+    private readonly BrainConnectionFactory _brainFactory;
+    private readonly MigrationRunner _migrationRunner;
+    private readonly ILogger<VolumeLifecycle> _logger;
 
-    /// <summary>Creates a <see cref="VolumeLifecycle"/> with the given vault and KDF service.</summary>
-    public VolumeLifecycle(KeyVault vault, KeyDerivationService kdf)
+    /// <summary>Creates a <see cref="VolumeLifecycle"/> with the required collaborators.</summary>
+    public VolumeLifecycle(
+        KeyVault vault,
+        BrainConnectionFactory brainFactory,
+        MigrationRunner migrationRunner,
+        ILogger<VolumeLifecycle> logger)
     {
         _vault = vault;
-        _kdf = kdf;
+        _brainFactory = brainFactory;
+        _migrationRunner = migrationRunner;
+        _logger = logger;
     }
 
     /// <summary>
-    /// Unlocks the vault at <c>[skinkRoot]/.flashskink/vault.bin</c>, derives the brain key,
-    /// and returns an open <see cref="VolumeSession"/>. The brain connection is <see langword="null"/>
-    /// in this Phase 1 stub — wired in §1.5 once <c>BrainConnectionFactory</c> exists.
-    /// The caller owns the returned session and must dispose it.
+    /// Unlocks the vault, opens the encrypted brain connection, runs any pending schema
+    /// migrations, and returns a live <see cref="VolumeSession"/>. The caller owns the
+    /// returned session and must dispose it.
     /// </summary>
     public async Task<Result<VolumeSession>> OpenAsync(
         string skinkRoot, ReadOnlyMemory<byte> password, CancellationToken ct)
     {
         var vaultPath = Path.Combine(skinkRoot, ".flashskink", "vault.bin");
+        var brainPath = Path.Combine(skinkRoot, ".flashskink", "brain.db");
 
         var unlockResult = await _vault.UnlockAsync(vaultPath, password, ct).ConfigureAwait(false);
         if (!unlockResult.Success)
         {
+            _logger.LogError(
+                "Vault unlock failed for {SkinkRoot}: {Code} — {Message}",
+                skinkRoot, unlockResult.Error!.Code, unlockResult.Error.Message);
             return Result<VolumeSession>.Fail(unlockResult.Error!);
         }
 
         var dek = unlockResult.Value!;
 
-        Span<byte> brainKey = stackalloc byte[32];
-        var brainKeyResult = _kdf.DeriveBrainKey(dek, brainKey);
-        CryptographicOperations.ZeroMemory(brainKey);
-
-        if (!brainKeyResult.Success)
+        var brainResult = await _brainFactory
+            .CreateAsync(brainPath, dek, ct).ConfigureAwait(false);
+        if (!brainResult.Success)
         {
             CryptographicOperations.ZeroMemory(dek);
-            return Result<VolumeSession>.Fail(brainKeyResult.Error!);
+            _logger.LogError(
+                "Brain connection failed for {BrainPath}: {Code} — {Message}",
+                brainPath, brainResult.Error!.Code, brainResult.Error.Message);
+            return Result<VolumeSession>.Fail(brainResult.Error!);
         }
 
-        // BrainConnectionFactory wired in §1.5 — brainConnection is null until then.
-        return Result<VolumeSession>.Ok(new VolumeSession(dek, brainConnection: null));
+        var connection = brainResult.Value!;
+
+        var migrationResult = await _migrationRunner
+            .RunAsync(connection, ct).ConfigureAwait(false);
+        if (!migrationResult.Success)
+        {
+            connection.Dispose();
+            CryptographicOperations.ZeroMemory(dek);
+            _logger.LogError(
+                "Brain migration failed for {BrainPath}: {Code} — {Message}",
+                brainPath, migrationResult.Error!.Code, migrationResult.Error.Message);
+            return Result<VolumeSession>.Fail(migrationResult.Error!);
+        }
+
+        return Result<VolumeSession>.Ok(new VolumeSession(dek, connection));
     }
 }

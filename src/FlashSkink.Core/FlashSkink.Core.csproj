@@ -13,10 +13,13 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Konscious.Security.Cryptography.Argon2" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" />
+    <PackageReference Include="Dapper" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\bip39-english.txt" />
+    <EmbeddedResource Include="Metadata\Migrations\V001_InitialSchema.sql" />
   </ItemGroup>
 
 </Project>
