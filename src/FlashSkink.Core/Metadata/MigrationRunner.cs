@@ -119,18 +119,21 @@ public sealed class MigrationRunner
     private static async Task<int> ReadCurrentVersionAsync(
         SqliteConnection connection, CancellationToken ct)
     {
-        try
-        {
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = "SELECT COALESCE(MAX(Version), 0) FROM SchemaVersions";
-            // COALESCE(MAX(Version), 0) is always non-null — the ! suppression is safe.
-            return (int)(long)(await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false))!;
-        }
-        catch (SqliteException)
-        {
-            // SchemaVersions table does not exist yet (fresh database).
-            return 0;
-        }
+        // Check sqlite_master (always present) rather than querying SchemaVersions directly.
+        // This lets genuine SqliteExceptions (corruption, I/O) propagate to the caller
+        // instead of being swallowed by a broad catch that masks DatabaseCorrupt scenarios.
+        using var checkCmd = connection.CreateCommand();
+        checkCmd.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='SchemaVersions'";
+        var tableExists =
+            (long)(await checkCmd.ExecuteScalarAsync(ct).ConfigureAwait(false))! > 0;
+
+        if (!tableExists) { return 0; }
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COALESCE(MAX(Version), 0) FROM SchemaVersions";
+        // COALESCE(MAX(Version), 0) is always non-null — the ! suppression is safe.
+        return (int)(long)(await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false))!;
     }
 
     private async Task<Result> ApplyMigrationAsync(

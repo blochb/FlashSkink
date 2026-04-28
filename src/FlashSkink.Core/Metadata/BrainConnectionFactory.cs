@@ -51,9 +51,11 @@ public sealed class BrainConnectionFactory
         try
         {
             ct.ThrowIfCancellationRequested();
-            // Pooling=False prevents SQLite connection-pool WAL file handles from
-            // persisting past Dispose() on Windows, which causes temp-dir deletion to fail.
-            connection = new SqliteConnection($"Data Source={brainPath};Pooling=False");
+            // SqliteConnectionStringBuilder escapes brainPath so paths containing ';'
+            // (legal on most filesystems) are not misinterpreted as connection-string delimiters.
+            // Pooling=False prevents WAL file handles from persisting past Dispose() on Windows.
+            var csb = new SqliteConnectionStringBuilder { DataSource = brainPath, Pooling = false };
+            connection = new SqliteConnection(csb.ConnectionString);
             await connection.OpenAsync(ct).ConfigureAwait(false);
 
             // PRAGMA key must not be cancelled mid-flight — activating encryption is
