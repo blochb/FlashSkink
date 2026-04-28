@@ -145,14 +145,12 @@ jobs:
     needs: [changes, plan-check]
     runs-on: ubuntu-latest
     # Only run when source actually changed AND a valid plan file exists.
-    # This prevents Claude from being invoked (and burning turns) on PRs where
-    # the audit can't possibly succeed.
     if: |
       github.event_name == 'pull_request' &&
       needs.changes.outputs.source == 'true' &&
       needs.plan-check.outputs.has_plan == 'true'
     continue-on-error: true
-    timeout-minutes: 10
+    timeout-minutes: 8
     permissions:
       contents: read
       pull-requests: write
@@ -162,37 +160,85 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve plan file path
-        id: plan
+      # Pre-compute ALL inputs Claude needs into a single context file.
+      # This avoids burning turns on file exploration — Claude reads one file
+      # and posts the comment.
+      - name: Build audit context
         shell: bash
         run: |
-          BRANCH="${{ github.head_ref }}"
-          if [[ "$BRANCH" =~ ^pr/([0-9]+\.[0-9]+)- ]]; then
-            echo "path=.claude/plans/pr-${BASH_REMATCH[1]}.md" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=" >> "$GITHUB_OUTPUT"
-          fi
+          PLAN_FILE="${{ needs.plan-check.outputs.plan_file }}"
+          BASE_REF="${{ github.base_ref }}"
+
+          mkdir -p /tmp/audit
+          OUT=/tmp/audit/context.md
+
+          {
+            echo "# Principle Audit Context"
+            echo ""
+            echo "Plan file path: \`$PLAN_FILE\`"
+            echo "Base branch: \`$BASE_REF\`"
+            echo ""
+
+            echo "## Changed files"
+            echo '```'
+            git diff --name-only "origin/$BASE_REF...HEAD"
+            echo '```'
+            echo ""
+
+            echo "## Diff (.cs / .csproj / .props only)"
+            echo '```diff'
+            git diff "origin/$BASE_REF...HEAD" -- '*.cs' '*.csproj' '*.props' \
+              | head -c 200000
+            echo '```'
+            echo ""
+
+            echo "## Principles section (from CLAUDE.md)"
+            echo '```markdown'
+            awk '/^## Principles/{flag=1; next} /^## [A-Z]/{flag=0} flag' CLAUDE.md
+            echo '```'
+            echo ""
+
+            echo "## Plan file contents"
+            echo '```markdown'
+            cat "$PLAN_FILE"
+            echo '```'
+          } > "$OUT"
+
+          echo "Context built: $(wc -l < "$OUT") lines, $(wc -c < "$OUT") bytes"
 
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: --model claude-opus-4-6 --max-turns 50
+          # Sonnet is plenty for this constrained task — no exploration needed.
+          # Tools restricted to Read (the context file) + the comment-posting
+          # tools the action provides. No Bash, no Grep — nothing to loop on.
+          claude_args: >-
+            --model claude-sonnet-4-6
+            --max-turns 6
+            --allowed-tools "Read"
           prompt: |
-            You are performing a focused principle audit. Complete it in the fewest turns possible.
+            All inputs you need are in this single file: /tmp/audit/context.md
+            Read it ONCE. Then post the comment described below. Then STOP.
 
-            Step 1 — run exactly this command to get the diff:
-              git diff origin/main...HEAD -- '*.cs' '*.csproj' '*.props'
+            Do not read any other files. Do not run any commands. Do not explore.
+            If something is unclear from the context file, say so in the comment
+            rather than going to look for it.
 
-            Step 2 — read these two files (and only these two):
-              - CLAUDE.md  (look only at the "## Principles" section)
-              - ${{ steps.plan.outputs.path != '' && steps.plan.outputs.path || '(no plan file — skip plan checks)' }}
+            ## Comment format (post exactly this structure)
 
-            Step 3 — post a single PR comment with exactly three labelled sections:
-            1. **Principle violations** — file:line and principle number for each violation. If none, write "None found."
-            2. **Plan-template compliance issues** — missing or malformed sections in the plan file. If none or no plan file, write "None found."
-            3. **Scope creep** — files in the diff not listed in the plan's Files-to-create or Files-to-modify. If none or no plan file, write "None found."
+            **1. Principle violations** — for each violation in the diff, list as:
+            `path/file.cs:LINE — Principle N: short reason`
+            If none, write "None found."
 
-            Do NOT read any other files. Do NOT perform a general code review. Post the comment and stop.
+            **2. Plan-template compliance issues** — list any missing or malformed
+            sections in the plan file (compared to the principle list).
+            If none, write "None found."
+
+            **3. Scope creep** — files in the "Changed files" list that are NOT
+            listed in the plan's "## Files to create" or "## Files to modify"
+            sections. If none, write "None found."
+
+            After posting, you are done.
 
   conventional-commits:
     name: conventional-commits
