@@ -132,7 +132,7 @@ public class CryptoPipelineTests
         ReadOnlySpan<byte> blob = encBuf.Memory.Span[..encBytes];
         Assert.False(blob[BlobHeader.HeaderSize..].SequenceEqual(plaintext));
 
-        Result decResult = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out int decBytes);
+        Result decResult = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out int decBytes);
         Assert.True(decResult.Success);
         Assert.Equal(plaintext.Length, decBytes);
         Assert.True(decBuf.Memory.Span[..decBytes].SequenceEqual(plaintext));
@@ -148,7 +148,7 @@ public class CryptoPipelineTests
         Assert.True(encResult.Success);
         Assert.Equal(BlobHeader.HeaderSize + BlobHeader.TagSize, encBytes);
 
-        Result decResult = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, Aad, decBuf, out int decBytes);
+        Result decResult = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, Aad, decBuf, out _, out int decBytes);
         Assert.True(decResult.Success);
         Assert.Equal(0, decBytes);
     }
@@ -190,7 +190,7 @@ public class CryptoPipelineTests
         blob[BlobHeader.HeaderSize]++;
 
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
-        Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _);
+        Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
@@ -205,7 +205,7 @@ public class CryptoPipelineTests
 
         byte[] wrongDek = RandomNumberGenerator.GetBytes(32);
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
-        Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], wrongDek, Aad, decBuf, out _);
+        Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], wrongDek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
@@ -222,7 +222,7 @@ public class CryptoPipelineTests
         blob[^1]++;
 
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
-        Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _);
+        Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
@@ -239,7 +239,7 @@ public class CryptoPipelineTests
         blob[0] = (byte)'X';
 
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
-        Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _);
+        Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
@@ -253,7 +253,7 @@ public class CryptoPipelineTests
         _pipeline.Encrypt(plaintext, Dek, "aad-A"u8.ToArray(), encBuf, out int encBytes);
 
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
-        Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, "aad-B"u8.ToArray(), decBuf, out _);
+        Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, "aad-B"u8.ToArray(), decBuf, out _, out _);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
@@ -287,15 +287,15 @@ public class CryptoPipelineTests
     }
 
     [Fact]
-    public void Decrypt_WithBlobTooShort_ReturnsUnknown()
+    public void Decrypt_WithBlobTooShort_ReturnsVolumeCorrupt()
     {
         byte[] tooShort = new byte[BlobHeader.HeaderSize + BlobHeader.TagSize - 1];
         using IMemoryOwner<byte> decBuf = MemoryPool<byte>.Shared.Rent(1);
 
-        Result result = _pipeline.Decrypt(tooShort, Dek, Aad, decBuf, out int bytesWritten);
+        Result result = _pipeline.Decrypt(tooShort, Dek, Aad, decBuf, out _, out int bytesWritten);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
         Assert.Equal(0, bytesWritten);
     }
 
@@ -307,7 +307,23 @@ public class CryptoPipelineTests
         _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
 
         using IMemoryOwner<byte> tinyBuf = ExactBuffer(plaintext.Length - 1);
-        Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, Aad, tinyBuf, out int bytesWritten);
+        Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, Aad, tinyBuf, out _, out int bytesWritten);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(0, bytesWritten);
+    }
+
+    [Fact]
+    public void Decrypt_WithWrongDekLength_ReturnsUnknown()
+    {
+        byte[] plaintext = RandomNumberGenerator.GetBytes(64);
+        using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
+        _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
+
+        byte[] shortDek = new byte[16];
+        using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
+        Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], shortDek, Aad, decBuf, out _, out int bytesWritten);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.Unknown, result.Error!.Code);

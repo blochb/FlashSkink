@@ -94,11 +94,12 @@ public sealed class CryptoPipeline
     /// <param name="dek">The 256-bit (32-byte) Data Encryption Key.</param>
     /// <param name="aad">Additional authenticated data; must match what was passed to <see cref="Encrypt"/>.</param>
     /// <param name="outputOwner">Caller-supplied output buffer; must be large enough.</param>
+    /// <param name="flags">On success: the compression flags from the blob header. The caller uses this to determine whether decompression is needed.</param>
     /// <param name="bytesWritten">On success: plaintext byte count. On failure: 0.</param>
     /// <returns>
     /// <see cref="Result.Ok()"/> on success.
-    /// <see cref="ErrorCode.VolumeCorrupt"/> or <see cref="ErrorCode.VolumeIncompatibleVersion"/>
-    /// when the header is malformed.
+    /// <see cref="ErrorCode.VolumeCorrupt"/> on a structurally invalid blob (too short or wrong magic).
+    /// <see cref="ErrorCode.VolumeIncompatibleVersion"/> on an unsupported blob version.
     /// <see cref="ErrorCode.DecryptionFailed"/> when the GCM authentication tag does not match.
     /// <see cref="ErrorCode.Unknown"/> on precondition violation or unexpected exception.
     /// </returns>
@@ -107,8 +108,10 @@ public sealed class CryptoPipeline
         ReadOnlySpan<byte> dek,
         ReadOnlySpan<byte> aad,
         IMemoryOwner<byte> outputOwner,
+        out BlobFlags flags,
         out int bytesWritten)
     {
+        flags = BlobFlags.None;
         bytesWritten = 0;
         int minBlobLength = BlobHeader.HeaderSize + BlobHeader.TagSize;
 
@@ -120,11 +123,11 @@ public sealed class CryptoPipeline
 
         if (blob.Length < minBlobLength)
         {
-            return Result.Fail(ErrorCode.Unknown,
+            return Result.Fail(ErrorCode.VolumeCorrupt,
                 $"Blob is too short; minimum is {minBlobLength} bytes, got {blob.Length}.");
         }
 
-        Result parseResult = BlobHeader.Parse(blob, out _, out ReadOnlySpan<byte> nonce);
+        Result parseResult = BlobHeader.Parse(blob, out flags, out ReadOnlySpan<byte> nonce);
         if (!parseResult.Success)
         {
             return parseResult;
