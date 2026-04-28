@@ -14,8 +14,18 @@ public sealed class VolumeSession : IAsyncDisposable
     private readonly SqliteConnection? _brainConnection;
     private int _disposed;
 
-    /// <summary>The live 32-byte data-encryption key. Do not zero; <see cref="DisposeAsync"/> owns it.</summary>
-    public byte[] Dek => _dek;
+    /// <summary>
+    /// The live 32-byte data-encryption key. Do not zero; <see cref="DisposeAsync"/> owns it.
+    /// </summary>
+    /// <exception cref="ObjectDisposedException">Thrown if the session has been disposed.</exception>
+    public byte[] Dek
+    {
+        get
+        {
+            if (_disposed != 0) { throw new ObjectDisposedException(nameof(VolumeSession)); }
+            return _dek;
+        }
+    }
 
     /// <summary>
     /// The open encrypted brain connection, or <see langword="null"/> when the connection
@@ -40,8 +50,7 @@ public sealed class VolumeSession : IAsyncDisposable
         }
 
         CryptographicOperations.ZeroMemory(_dek);
-        _brainConnection?.Close();
-        _brainConnection?.Dispose();
+        _brainConnection?.Dispose(); // Dispose closes the connection implicitly.
         return ValueTask.CompletedTask;
     }
 }

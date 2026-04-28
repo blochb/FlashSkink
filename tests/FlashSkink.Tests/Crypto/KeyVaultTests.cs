@@ -152,6 +152,20 @@ public class KeyVaultTests : IDisposable
     }
 
     [Fact]
+    public async Task UnlockAsync_UnsupportedVersion_ReturnsVolumeCorrupt()
+    {
+        await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
+        var bytes = await File.ReadAllBytesAsync(VaultPath());
+        bytes[4] = 0x02; // bump version from 1 → 2 (little-endian uint16, high byte is already 0)
+        await File.WriteAllBytesAsync(VaultPath(), bytes);
+
+        var result = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+    }
+
+    [Fact]
     public async Task UnlockAsync_CorruptMagic_ReturnsVolumeCorrupt()
     {
         await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
@@ -205,6 +219,20 @@ public class KeyVaultTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task ChangePasswordAsync_WithWrongCurrentPassword_VaultStillReadableWithOriginalPassword()
+    {
+        // Atomic-write only fires on success; a failed attempt must leave the vault untouched.
+        await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
+        ReadOnlyMemory<byte> wrong = Encoding.UTF8.GetBytes("not-the-right-one");
+        ReadOnlyMemory<byte> newPassword = Encoding.UTF8.GetBytes("new-pass");
+
+        await _sut.ChangePasswordAsync(VaultPath(), wrong, newPassword, CancellationToken.None);
+        var unlockResult = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
+
+        Assert.True(unlockResult.Success);
     }
 
     [Fact]

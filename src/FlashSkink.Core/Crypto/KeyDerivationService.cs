@@ -65,6 +65,12 @@ public sealed class KeyDerivationService
     /// <param name="passwordBytes">The user password encoded as bytes (caller zeroes after call).</param>
     /// <param name="argon2Salt">32-byte random salt stored in the vault header.</param>
     /// <param name="kek">On success: a fresh 32-byte KEK. On failure: <see cref="Array.Empty{T}"/>.</param>
+    /// <remarks>
+    /// Argon2id is fully synchronous. A <c>CancellationToken</c> checked by the caller before
+    /// this call has no effect once derivation starts — the ~500 ms–2 s CPU work runs to
+    /// completion regardless. Callers that need mid-derivation responsiveness should wrap this
+    /// call in <see cref="Task.Run(System.Action)"/> and observe the token on either side.
+    /// </remarks>
     public Result DeriveKekFromPassword(
         ReadOnlySpan<byte> passwordBytes,
         ReadOnlySpan<byte> argon2Salt,

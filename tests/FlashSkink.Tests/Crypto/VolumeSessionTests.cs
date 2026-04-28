@@ -51,6 +51,19 @@ public class VolumeSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task Dek_AfterDispose_ThrowsObjectDisposedException()
+    {
+        await SeedVaultAsync();
+        var lifecycle = new VolumeLifecycle(_vault, _kdf);
+        var result = await lifecycle.OpenAsync(SkinkRoot(), _password, CancellationToken.None);
+        Assert.True(result.Success);
+        var session = result.Value!;
+        await session.DisposeAsync();
+
+        Assert.Throws<ObjectDisposedException>(() => _ = session.Dek);
+    }
+
+    [Fact]
     public async Task DisposeAsync_IsIdempotent_NoThrow()
     {
         await SeedVaultAsync();
