@@ -30,8 +30,8 @@ public sealed class VolumeSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// The open encrypted brain connection, or <see langword="null"/> when the connection
-    /// has not yet been wired (Phase 1 stub — wired in §1.5).
+    /// The open encrypted brain connection. <see langword="null"/> only if the caller
+    /// explicitly passes <see langword="null"/> (not expected in normal use).
     /// </summary>
     public SqliteConnection? BrainConnection => _brainConnection;
 
