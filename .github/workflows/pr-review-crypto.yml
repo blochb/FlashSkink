@@ -12,6 +12,7 @@ on:
 jobs:
   crypto-review:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -24,20 +25,43 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: --model claude-opus-4-6 --max-turns 20
+          claude_args: >-
+            --model claude-opus-4-6
+            --max-turns 25
+            --allowed-tools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(ls:*),Bash(grep:*)"
           prompt: |
-            Perform a deep cryptographic security review of this pull request.
+            You are performing a deep cryptographic security review of this pull request.
+            You have a budget of ~25 turns. Be efficient: every read should serve the final review.
 
-            Reference BLUEPRINT.md §18 (key hierarchy), §13.6 (blob format), and CLAUDE.md principles 26 (no secrets in logs) and 31 (keys zeroed on volume close).
+            ## Procedure
 
-            Check specifically:
-            - Nonce reuse: is each AES-GCM nonce unique per encryption? Is the nonce generated freshly for each operation?
-            - AAD correctness: is the additional authenticated data (AAD) correct and consistent between encrypt and decrypt?
-            - Key zeroization: are DEK, KEK, and derived keys zeroed on ALL failure paths including exception unwind?
-            - Timing side channels: any branch on secret data, string comparison of keys/tags?
-            - Accidental secret logging: any log calls that could capture key material, plaintext, or tokens?
-            - stackalloc across await: any stackalloc'd spans used after an await boundary (compiler should catch, but verify)?
-            - AES-GCM tag handling: is the authentication tag verified before plaintext is returned to the caller?
-            - HKDF context strings: are info strings for HKDF unique per derived key purpose?
+            1. Get changed files: `git diff --name-only origin/${{ github.base_ref }}...HEAD`
+            2. Read the full diff: `git diff origin/${{ github.base_ref }}...HEAD`
+            3. Locate references in ONE pass:
+               - `grep -n "§18\|§13.6" BLUEPRINT.md` then read the located ranges
+               - `grep -n "Principle 26\|Principle 31" CLAUDE.md` then read the located ranges
+               Do NOT read these files in full.
+            4. For each changed crypto file, read it AT MOST ONCE. Hold all 8 categories in mind during that single read.
+            5. Post ONE detailed review comment covering every category. Then STOP.
 
-            Post a detailed review comment with findings per category. If a category is clean, say so explicitly.
+            ## Efficiency rules (critical — you have a turn budget)
+
+            - Do NOT re-read the same file twice. If you need to check multiple categories in a file, do them all in one read.
+            - Do NOT explore unrelated parts of the repo (tests, UI, CLI, etc.).
+            - If you reach turn 18 and haven't started writing the review, STOP researching and write the comment with what you have.
+
+            ## Categories to check (cover every one — say "clean" explicitly if no issue found)
+
+            - **Nonce reuse**: is each AES-GCM nonce unique per encryption? Generated freshly per operation?
+            - **AAD correctness**: is the AAD correct and consistent between encrypt and decrypt?
+            - **Key zeroization**: are DEK, KEK, and derived keys zeroed on ALL failure paths including exception unwind?
+            - **Timing side channels**: any branch on secret data, string comparison of keys/tags?
+            - **Accidental secret logging**: any log calls that could capture key material, plaintext, or tokens?
+            - **stackalloc across await**: any stackalloc'd spans used after an await boundary?
+            - **AES-GCM tag handling**: is the auth tag verified before plaintext is returned to the caller?
+            - **HKDF context strings**: are info strings unique per derived key purpose?
+
+            ## Hard rules
+
+            - Do NOT do general code review — crypto only.
+            - After the review is posted, you are done.

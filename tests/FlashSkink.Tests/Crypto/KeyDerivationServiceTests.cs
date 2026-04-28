@@ -132,6 +132,52 @@ public class KeyDerivationServiceTests
     }
 
     [Fact]
+    public void DeriveKek_ParameterizedOverload_IsDeterministic()
+    {
+        _sut.DeriveKek(FixedSeed, FixedSalt, 19_456, 2, 1, out var kek1);
+        _sut.DeriveKek(FixedSeed, FixedSalt, 19_456, 2, 1, out var kek2);
+
+        Assert.True(kek1.SequenceEqual(kek2));
+    }
+
+    [Fact]
+    public void DeriveKek_ParameterizedOverload_DifferentMemory_ProducesDifferentKek()
+    {
+        _sut.DeriveKek(FixedSeed, FixedSalt, 19_456, 2, 1, out var kek1);
+        _sut.DeriveKek(FixedSeed, FixedSalt, 16_384, 2, 1, out var kek2);
+
+        Assert.False(kek1.SequenceEqual(kek2));
+    }
+
+    [Fact]
+    public void DeriveKekFromPassword_ParameterizedOverload_IsDeterministic()
+    {
+        _sut.DeriveKekFromPassword(FixedSeed, FixedSalt, 19_456, 2, 1, out var kek1);
+        _sut.DeriveKekFromPassword(FixedSeed, FixedSalt, 19_456, 2, 1, out var kek2);
+
+        Assert.True(kek1.SequenceEqual(kek2));
+    }
+
+    [Fact]
+    public void DeriveKekFromPassword_ParameterizedOverload_DifferentIterations_ProducesDifferentKek()
+    {
+        _sut.DeriveKekFromPassword(FixedSeed, FixedSalt, 19_456, 2, 1, out var kek1);
+        _sut.DeriveKekFromPassword(FixedSeed, FixedSalt, 19_456, 3, 1, out var kek2);
+
+        Assert.False(kek1.SequenceEqual(kek2));
+    }
+
+    [Fact]
+    public void DeriveKekFromPassword_NoParamAndParameterized_WithBaselineValues_ProduceSameKek()
+    {
+        // The no-param overload must delegate to the parameterized one with the same constants.
+        _sut.DeriveKekFromPassword(FixedSeed, FixedSalt, out var kekNoParam);
+        _sut.DeriveKekFromPassword(FixedSeed, FixedSalt, 19_456, 2, 1, out var kekExplicit);
+
+        Assert.True(kekNoParam.SequenceEqual(kekExplicit));
+    }
+
+    [Fact]
     public void DeriveBrainKey_WrongDestinationLength_ReturnsKeyDerivationFailed()
     {
         var destination = new byte[16];

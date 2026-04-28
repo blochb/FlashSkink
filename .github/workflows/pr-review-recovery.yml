@@ -13,6 +13,7 @@ on:
 jobs:
   recovery-review:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -25,17 +26,40 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: --model claude-opus-4-6 --max-turns 20
+          claude_args: >-
+            --model claude-opus-4-6
+            --max-turns 25
+            --allowed-tools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(ls:*),Bash(grep:*)"
           prompt: |
-            Perform a deep recovery and WAL consistency review of this pull request.
+            You are performing a deep recovery and WAL consistency review of this pull request.
+            You have a budget of ~25 turns. Be efficient: every read should serve the final review.
 
-            Reference BLUEPRINT.md §21 (WAL recovery), §13.4 (atomic writes), and CLAUDE.md principles 17 (CancellationToken.None literal in compensation), 29 (atomic write protocol), and 30 (crash-consistency invariant).
+            ## Procedure
 
-            Check specifically:
-            - Idempotent recovery steps: can each WAL recovery step be run twice safely? Is there any non-idempotent operation in a recovery path?
-            - fsync sequencing: is the write-then-fsync-then-rename-then-fsync-directory sequence followed exactly as in principle 29?
-            - Transaction boundaries: are SQLite transactions scoped correctly so a crash leaves the brain in a consistent state?
-            - CancellationToken.None literal: in all compensation/recovery paths, does every await site spell out CancellationToken.None literally (not via a local variable)?
-            - Crash-consistency invariant (principle 30): can a crash at any point in a write or upload path leave an orphaned blob row without a file row, or a file row with a missing blob?
+            1. Get changed files: `git diff --name-only origin/${{ github.base_ref }}...HEAD`
+            2. Read the full diff: `git diff origin/${{ github.base_ref }}...HEAD`
+            3. Locate references in ONE pass:
+               - `grep -n "§21\|§13.4" BLUEPRINT.md` then read the located ranges
+               - `grep -n "Principle 17\|Principle 29\|Principle 30" CLAUDE.md` then read the located ranges
+               Do NOT read these files in full.
+            4. For each changed file, read it AT MOST ONCE. Hold all 5 categories in mind during that single read.
+            5. Post ONE detailed review comment covering every category. Then STOP.
 
-            Post a detailed review comment with findings per category. If a category is clean, say so explicitly.
+            ## Efficiency rules (critical — you have a turn budget)
+
+            - Do NOT re-read the same file twice. If you need to check multiple categories in a file, do them all in one read.
+            - Do NOT explore unrelated parts of the repo.
+            - If you reach turn 18 and haven't started writing the review, STOP researching and write the comment with what you have.
+
+            ## Categories to check (cover every one — say "clean" explicitly if no issue found)
+
+            - **Idempotent recovery steps**: can each WAL recovery step be run twice safely? Any non-idempotent op in a recovery path?
+            - **fsync sequencing**: is write → fsync → rename → fsync-directory followed exactly per principle 29?
+            - **Transaction boundaries**: are SQLite transactions scoped so a crash leaves the brain consistent?
+            - **CancellationToken.None literal** (principle 17): in all compensation/recovery paths, does every await spell out `CancellationToken.None` literally (not via a local variable)?
+            - **Crash-consistency invariant** (principle 30): can a crash leave an orphaned blob row without a file row, or a file row with a missing blob?
+
+            ## Hard rules
+
+            - Do NOT do general code review — recovery/WAL only.
+            - After the review is posted, you are done.
