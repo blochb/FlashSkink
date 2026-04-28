@@ -139,4 +139,49 @@ public class VolumeSessionTests : IDisposable
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.VolumeNotFound, result.Error!.Code);
     }
+
+    [Fact]
+    public async Task OpenAsync_MigrationFails_ReturnsError_AndReleasesResources()
+    {
+        await SeedVaultAsync();
+
+        // Pre-populate the brain with a "future" schema version so RunAsync returns
+        // VolumeIncompatibleVersion — a real migration failure that exercises the
+        // cleanup path (connection.Dispose + CryptographicOperations.ZeroMemory) in
+        // VolumeLifecycle.OpenAsync.
+        var flashskinkDir = Path.Combine(_tempDir, ".flashskink");
+        var brainPath = Path.Combine(flashskinkDir, "brain.db");
+        var unlockResult = await _vault.UnlockAsync(
+            Path.Combine(flashskinkDir, "vault.bin"), _password, CancellationToken.None);
+        Assert.True(unlockResult.Success);
+        var seedDek = unlockResult.Value!;
+        var brainResult = await _brainFactory.CreateAsync(brainPath, seedDek, CancellationToken.None);
+        Assert.True(brainResult.Success);
+        using (var seedConn = brainResult.Value!)
+        {
+            using var cmd = seedConn.CreateCommand();
+            cmd.CommandText =
+                "CREATE TABLE SchemaVersions " +
+                "(Version INTEGER PRIMARY KEY, AppliedUtc TEXT NOT NULL, Description TEXT NOT NULL); " +
+                "INSERT INTO SchemaVersions VALUES (999, '2099-01-01T00:00:00Z', 'Future version')";
+            await cmd.ExecuteNonQueryAsync();
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        System.Security.Cryptography.CryptographicOperations.ZeroMemory(seedDek);
+
+        var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.Error!.Code);
+        // Verify the brain connection was properly released: a second open attempt
+        // on the same file must succeed (no locked file handle left behind).
+        var unlockResult2 = await _vault.UnlockAsync(
+            Path.Combine(flashskinkDir, "vault.bin"), _password, CancellationToken.None);
+        Assert.True(unlockResult2.Success);
+        var dek2 = unlockResult2.Value!;
+        var brainResult2 = await _brainFactory.CreateAsync(brainPath, dek2, CancellationToken.None);
+        Assert.True(brainResult2.Success);
+        brainResult2.Value!.Dispose();
+        System.Security.Cryptography.CryptographicOperations.ZeroMemory(dek2);
+    }
 }
