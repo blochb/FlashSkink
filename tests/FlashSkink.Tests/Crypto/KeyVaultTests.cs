@@ -10,13 +10,15 @@ public class KeyVaultTests : IDisposable
 {
     private readonly string _tempDir;
     private readonly KeyVault _sut;
+    private readonly MnemonicService _mnemonic;
     private readonly ReadOnlyMemory<byte> _password;
 
     public KeyVaultTests()
     {
         _tempDir = Path.Combine(Path.GetTempPath(), $"KeyVaultTests_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
-        _sut = new KeyVault(new KeyDerivationService(), new MnemonicService());
+        _mnemonic = new MnemonicService();
+        _sut = new KeyVault(new KeyDerivationService(), _mnemonic);
         _password = Encoding.UTF8.GetBytes("correct-horse-battery-staple");
     }
 
@@ -218,7 +220,42 @@ public class KeyVaultTests : IDisposable
         Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
     }
 
-    // ── UnlockFromMnemonicAsync ───────────────────────────────────────────────
+    // ── UnlockFromMnemonicAsync failure paths ─────────────────────────────────
+
+    [Fact]
+    public async Task UnlockFromMnemonicAsync_GarbageWords_ReturnsInvalidMnemonic()
+    {
+        await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
+        var garbage = new[] { "notaword", "alsonotaword", "definitelynot" };
+
+        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), garbage, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task UnlockFromMnemonicAsync_VaultNotFound_ReturnsVolumeNotFound()
+    {
+        var words = _mnemonic.Generate().Value!;
+
+        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), words, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.VolumeNotFound, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task UnlockFromMnemonicAsync_WrongMnemonic_ReturnsInvalidPassword()
+    {
+        await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
+        var wrongWords = _mnemonic.Generate().Value!; // random mnemonic ≠ vault KEK
+
+        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), wrongWords, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+    }
 
     [Fact(Skip = "deferred to §1.6 — requires CreateAsync to accept a mnemonic-derived KEK")]
     public Task UnlockFromMnemonicAsync_RoundTrip_Succeeds() => Task.CompletedTask;
