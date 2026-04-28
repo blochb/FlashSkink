@@ -30,23 +30,25 @@ jobs:
             --max-turns 25
             --allowed-tools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(ls:*),Bash(grep:*)"
           prompt: |
-            You are performing a focused cryptographic security review of this pull request.
-            You have a strict turn budget. Be ruthlessly efficient.
+            You are performing a deep cryptographic security review of this pull request.
+            You have a budget of ~25 turns. Be efficient: every read should serve the final review.
 
             ## Procedure
 
             1. Get changed files: `git diff --name-only origin/${{ github.base_ref }}...HEAD`
             2. Read the full diff: `git diff origin/${{ github.base_ref }}...HEAD`
-            3. Identify crypto-critical operations in the diff (encryption/decryption calls, key derivation, key disposal, nonce generation, AAD construction).
-            4. For files containing crypto-critical operations, read them ONCE to check all 8 categories.
-            5. Post ONE review comment covering the categories below. Then STOP.
+            3. Locate references in ONE pass:
+               - `grep -n "§18\|§13.6" BLUEPRINT.md` then read the located ranges
+               - `grep -n "Principle 26\|Principle 31" CLAUDE.md` then read the located ranges
+               Do NOT read these files in full.
+            4. For each changed crypto file, read it AT MOST ONCE. Hold all 8 categories in mind during that single read.
+            5. Post ONE detailed review comment covering every category. Then STOP.
 
-            ## Critical efficiency rules
+            ## Efficiency rules (critical — you have a turn budget)
 
-            - Do NOT read reference docs (BLUEPRINT.md, CLAUDE.md) — the categories below already encode the requirements.
-            - Do NOT read files that don't contain crypto primitives (tests, models, interfaces).
-            - Do NOT re-read files. One pass per file maximum.
-            - If you reach turn 15 without starting the review, STOP and write what you have.
+            - Do NOT re-read the same file twice. If you need to check multiple categories in a file, do them all in one read.
+            - Do NOT explore unrelated parts of the repo (tests, UI, CLI, etc.).
+            - If you reach turn 18 and haven't started writing the review, STOP researching and write the comment with what you have.
 
             ## Categories to check (cover every one — say "clean" explicitly if no issue found)
 
