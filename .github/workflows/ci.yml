@@ -58,10 +58,14 @@ jobs:
     name: plan-check
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    outputs:
+      plan_file: ${{ steps.compute.outputs.plan_file }}
+      has_plan: ${{ steps.compute.outputs.has_plan }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check plan file for pr/ branches
+      - name: Compute plan file path
+        id: compute
         shell: bash
         run: |
           BRANCH="${{ github.head_ref }}"
@@ -70,46 +74,53 @@ jobs:
           if [[ "$BRANCH" =~ ^pr/([0-9]+\.[0-9]+)- ]]; then
             SECTION="${BASH_REMATCH[1]}"
             PLAN_FILE=".claude/plans/pr-${SECTION}.md"
+            echo "plan_file=$PLAN_FILE" >> "$GITHUB_OUTPUT"
             echo "Expecting plan file: $PLAN_FILE"
+          else
+            echo "plan_file=" >> "$GITHUB_OUTPUT"
+            echo "has_plan=false" >> "$GITHUB_OUTPUT"
+            echo "Not a pr/ branch — skipping plan check."
+            exit 0
+          fi
 
-            if [[ ! -f "$PLAN_FILE" ]]; then
-              echo "::error::Plan file '$PLAN_FILE' not found for branch '$BRANCH'"
-              exit 1
-            fi
+          if [[ ! -f "$PLAN_FILE" ]]; then
+            echo "has_plan=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Plan file '$PLAN_FILE' not found for branch '$BRANCH'"
+            exit 1
+          fi
 
-            REQUIRED_HEADINGS=(
-              "## Scope"
-              "## Files to create"
-              "## Files to modify"
-              "## Public API surface"
-              "## Principles touched"
-              "## Test spec"
-              "## Acceptance criteria"
-              "## Line-of-code budget"
-              "## Non-goals"
-            )
+          REQUIRED_HEADINGS=(
+            "## Scope"
+            "## Files to create"
+            "## Files to modify"
+            "## Public API surface"
+            "## Principles touched"
+            "## Test spec"
+            "## Acceptance criteria"
+            "## Line-of-code budget"
+            "## Non-goals"
+          )
 
-            MISSING=0
-            for HEADING in "${REQUIRED_HEADINGS[@]}"; do
-              if ! grep -qF "$HEADING" "$PLAN_FILE"; then
-                echo "::error::Plan file missing required heading: $HEADING"
-                MISSING=1
-              fi
-            done
-
-            if ! grep -q '§' "$PLAN_FILE"; then
-              echo "::error::Plan file must contain at least one blueprint section reference (§)"
+          MISSING=0
+          for HEADING in "${REQUIRED_HEADINGS[@]}"; do
+            if ! grep -qF "$HEADING" "$PLAN_FILE"; then
+              echo "::error::Plan file missing required heading: $HEADING"
               MISSING=1
             fi
+          done
 
-            if [[ $MISSING -ne 0 ]]; then
-              exit 1
-            fi
-
-            echo "Plan file OK."
-          else
-            echo "Not a pr/ branch — skipping plan check."
+          if ! grep -q '§' "$PLAN_FILE"; then
+            echo "::error::Plan file must contain at least one blueprint section reference (§)"
+            MISSING=1
           fi
+
+          if [[ $MISSING -ne 0 ]]; then
+            echo "has_plan=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "has_plan=true" >> "$GITHUB_OUTPUT"
+          echo "Plan file OK."
 
   changes:
     name: changes
@@ -131,10 +142,17 @@ jobs:
 
   principle-audit:
     name: principle-audit
-    needs: changes
+    needs: [changes, plan-check]
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && needs.changes.outputs.source == 'true'
+    # Only run when source actually changed AND a valid plan file exists.
+    # This prevents Claude from being invoked (and burning turns) on PRs where
+    # the audit can't possibly succeed.
+    if: |
+      github.event_name == 'pull_request' &&
+      needs.changes.outputs.source == 'true' &&
+      needs.plan-check.outputs.has_plan == 'true'
     continue-on-error: true
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write

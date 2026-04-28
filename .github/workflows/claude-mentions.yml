@@ -13,6 +13,9 @@ on:
 jobs:
   claude:
     runs-on: ubuntu-latest
+    # Wall-clock cap as a hard budget guardrail — this job runs interactively
+    # so we leave max-turns generous, but bound the total run time.
+    timeout-minutes: 20
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
