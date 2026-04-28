@@ -144,21 +144,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve plan file path
+        id: plan
+        shell: bash
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          if [[ "$BRANCH" =~ ^pr/([0-9]+\.[0-9]+)- ]]; then
+            echo "path=.claude/plans/pr-${BASH_REMATCH[1]}.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: --model claude-opus-4-6 --max-turns 25
+          claude_args: --model claude-opus-4-6 --max-turns 50
           prompt: |
-            You are performing a principle audit on this pull request.
+            You are performing a focused principle audit. Complete it in the fewest turns possible.
 
-            Read the PR diff (via git diff), the plan file at .claude/plans/pr-${GITHUB_HEAD_REF#pr/}.md if it exists (strip the description part after the first dash), and CLAUDE.md §Principles.
+            Step 1 — run exactly this command to get the diff:
+              git diff origin/main...HEAD -- '*.cs' '*.csproj' '*.props'
 
-            Post a single PR comment with exactly three labelled sections:
-            1. **Principle violations** — list each violation with file:line reference and which principle number is violated. If none, write "None found."
-            2. **Plan-template compliance issues** — list missing or malformed sections in the plan file. If none, write "None found."
-            3. **Scope creep** — files in the diff not listed in the plan's Files-to-create or Files-to-modify sections. If none, write "None found."
+            Step 2 — read these two files (and only these two):
+              - CLAUDE.md  (look only at the "## Principles" section)
+              - ${{ steps.plan.outputs.path != '' && steps.plan.outputs.path || '(no plan file — skip plan checks)' }}
 
-            Do NOT perform a general code review. Focus exclusively on these three categories.
+            Step 3 — post a single PR comment with exactly three labelled sections:
+            1. **Principle violations** — file:line and principle number for each violation. If none, write "None found."
+            2. **Plan-template compliance issues** — missing or malformed sections in the plan file. If none or no plan file, write "None found."
+            3. **Scope creep** — files in the diff not listed in the plan's Files-to-create or Files-to-modify. If none or no plan file, write "None found."
+
+            Do NOT read any other files. Do NOT perform a general code review. Post the comment and stop.
 
   conventional-commits:
     name: conventional-commits
