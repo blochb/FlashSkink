@@ -162,45 +162,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve plan file path
+        id: plan
+        shell: bash
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          if [[ "$BRANCH" =~ ^pr/([0-9]+\.[0-9]+)- ]]; then
+            echo "path=.claude/plans/pr-${BASH_REMATCH[1]}.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Sonnet is plenty for a constrained audit task — Opus reserved for the
-          # deep crypto/recovery reviews. Cost: roughly 5x cheaper per token.
-          claude_args: >-
-            --model claude-sonnet-4-6
-            --max-turns 12
-            --allowed-tools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(ls:*)"
+          claude_args: --model claude-opus-4-6 --max-turns 50
           prompt: |
-            You are performing a focused, bounded principle audit on this pull request.
-            You have a strict budget — be efficient and stop as soon as the comment is posted.
+            You are performing a focused principle audit. Complete it in the fewest turns possible.
 
-            ## Inputs (already validated to exist)
+            Step 1 — run exactly this command to get the diff:
+              git diff origin/main...HEAD -- '*.cs' '*.csproj' '*.props'
 
-            - Plan file:    ${{ needs.plan-check.outputs.plan_file }}
-            - Diff command: git diff --name-only origin/${{ github.base_ref }}...HEAD
-            - Full diff:    git diff origin/${{ github.base_ref }}...HEAD
-            - Principles:   CLAUDE.md (read only the "## Principles" section, do NOT read the whole file)
+            Step 2 — read these two files (and only these two):
+              - CLAUDE.md  (look only at the "## Principles" section)
+              - ${{ steps.plan.outputs.path != '' && steps.plan.outputs.path || '(no plan file — skip plan checks)' }}
 
-            ## Procedure (follow in order, do not deviate)
+            Step 3 — post a single PR comment with exactly three labelled sections:
+            1. **Principle violations** — file:line and principle number for each violation. If none, write "None found."
+            2. **Plan-template compliance issues** — missing or malformed sections in the plan file. If none or no plan file, write "None found."
+            3. **Scope creep** — files in the diff not listed in the plan's Files-to-create or Files-to-modify. If none or no plan file, write "None found."
 
-            1. Run the diff command to get the changed file list. Read the full diff.
-            2. Read the plan file at the path above (it exists — do NOT search for it).
-            3. Read only the "## Principles" section of CLAUDE.md (use `grep -n` to find the section, then `sed` or targeted read).
-            4. Post ONE PR comment with exactly the three sections below. Then STOP.
-
-            ## Output (exactly this structure, nothing else)
-
-            **1. Principle violations** — list each as `path/to/file.cs:LINE — Principle N: short reason`. If none, write "None found."
-            **2. Plan-template compliance issues** — list missing/malformed sections in the plan file. If none, write "None found."
-            **3. Scope creep** — files in the diff not listed in the plan's "## Files to create" or "## Files to modify". If none, write "None found."
-
-            ## Hard rules
-
-            - Do NOT perform a general code review. Do NOT comment on style, naming, tests, or anything outside these three categories.
-            - Do NOT read files that are not in the diff unless absolutely needed to verify a specific principle.
-            - Do NOT explore the repository structure beyond what the diff tells you.
-            - After the comment is posted, you are done. Do not take further actions, do not verify, do not summarize.
+            Do NOT read any other files. Do NOT perform a general code review. Post the comment and stop.
 
   conventional-commits:
     name: conventional-commits
