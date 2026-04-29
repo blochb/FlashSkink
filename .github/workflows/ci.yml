@@ -214,7 +214,7 @@ jobs:
           # tools the action provides. No Bash, no Grep — nothing to loop on.
           claude_args: >-
             --model claude-sonnet-4-6
-            --max-turns 6
+            --max-turns 15
             --allowed-tools "Read"
           prompt: |
             All inputs you need are in this single file: /tmp/audit/context.md
