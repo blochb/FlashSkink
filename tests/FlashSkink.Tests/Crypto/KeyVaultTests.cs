@@ -285,8 +285,38 @@ public class KeyVaultTests : IDisposable
         Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
     }
 
-    [Fact(Skip = "deferred to §1.6 — requires CreateAsync to accept a mnemonic-derived KEK")]
-    public Task UnlockFromMnemonicAsync_RoundTrip_Succeeds() => Task.CompletedTask;
+    [Fact]
+    public async Task UnlockFromMnemonicAsync_RoundTrip_Succeeds()
+    {
+        // Invariant: DeriveKekFromPassword and DeriveKek both call RunArgon2 with the same
+        // byte array and salt. Passing the 64-byte BIP-39 seed as the CreateAsync password
+        // produces the identical KEK that UnlockFromMnemonicAsync will derive from those
+        // same words — so both calls unwrap to the same DEK. If this test breaks, the KDF
+        // in §1.2 has diverged between the two code paths.
+        var wordsResult = _mnemonic.Generate();
+        Assert.True(wordsResult.Success);
+        var words = wordsResult.Value!;
+
+        var seedResult = _mnemonic.ToSeed(words);
+        Assert.True(seedResult.Success);
+        var seed = seedResult.Value!;
+
+        // Create the vault using the seed bytes as the password — this locks the DEK under
+        // the same KEK that UnlockFromMnemonicAsync will derive from the same words.
+        var createResult = await _sut.CreateAsync(VaultPath(), seed, CancellationToken.None);
+        Assert.True(createResult.Success);
+        var expectedDek = createResult.Value!;
+
+        var unlockResult = await _sut.UnlockFromMnemonicAsync(VaultPath(), words, CancellationToken.None);
+
+        Assert.True(unlockResult.Success);
+        var actualDek = unlockResult.Value!;
+        Assert.Equal(expectedDek, actualDek);
+
+        System.Security.Cryptography.CryptographicOperations.ZeroMemory(expectedDek);
+        System.Security.Cryptography.CryptographicOperations.ZeroMemory(actualDek);
+        System.Security.Cryptography.CryptographicOperations.ZeroMemory(seed);
+    }
 
     // ── Stored KDF params are consumed on unlock ──────────────────────────────
 

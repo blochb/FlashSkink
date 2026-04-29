@@ -277,6 +277,7 @@ Then stop. Do not start another PR in the same session.
 These are checked at every gate. Each plan lists which apply to the PR; each implementation is audited against them at Gate 2. **Violating a principle is a Gate 2 rejection — not a discussion.**
 
 1. **Core never throws across its public API boundary.** Every `public` method on every type in `FlashSkink.Core` and `FlashSkink.Core.Abstractions` returns `Result` or `Result<T>`. A public `Create()` that returns a raw `SqliteConnection` is a violation — it must return `Result<SqliteConnection>`. Exceptions flow as data inside `ErrorContext`, never across the boundary. (Blueprint §6.1)
+   - **Sanctioned exception:** `IAsyncEnumerable<readonly record struct>` brain hot-path readers (e.g., `UploadQueueRepository.DequeueNextBatchAsync`) may propagate `SqliteException` and `OperationCanceledException` to the caller rather than wrapping in `Result`. The caller (a background service) is expected to handle them. This deviation must be documented with an XML comment citing blueprint §9.7. No other public method in Core may use this carve-out.
 
 2. **Single survivor recovers everything — mirror, not stripe.** Every tail is a complete, independently recoverable encrypted replica. No parity. No dependence between tails. Any change that introduces cross-tail dependency contradicts the product promise. (Blueprint §5, DR-1)
 

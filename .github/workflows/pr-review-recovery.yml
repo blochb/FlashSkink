@@ -13,7 +13,7 @@ on:
 jobs:
   recovery-review:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
@@ -23,43 +23,54 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Pre-compute ALL inputs into a single context file so Claude has
+      # nothing to explore — it reads one file and posts the comment.
+      - name: Build review context
+        shell: bash
+        run: |
+          BASE_REF="${{ github.base_ref }}"
+          mkdir -p /tmp/review
+
+          {
+            echo "# Recovery/WAL Review Context"
+            echo ""
+
+            echo "## Changed files"
+            echo '```'
+            git diff --name-only "origin/$BASE_REF...HEAD"
+            echo '```'
+            echo ""
+
+            echo "## Full diff"
+            echo '```diff'
+            git diff "origin/$BASE_REF...HEAD" | head -c 200000
+            echo '```'
+          } > /tmp/review/context.md
+
+          echo "Context built: $(wc -l < /tmp/review/context.md) lines, $(wc -c < /tmp/review/context.md) bytes"
+
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: >-
             --model claude-opus-4-6
-            --max-turns 25
-            --allowed-tools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(ls:*),Bash(grep:*)"
+            --max-turns 15
+            --allowed-tools "Read"
           prompt: |
-            You are performing a deep recovery and WAL consistency review of this pull request.
-            You have a budget of ~25 turns. Be efficient: every read should serve the final review.
+            All inputs you need are in /tmp/review/context.md
+            Read it ONCE. Post the review comment below. Then STOP.
 
-            ## Procedure
+            Do NOT read any other files. Do NOT run any commands. Do NOT explore the repo.
+            If something is unclear from the context file, say so in the comment rather than looking for it.
 
-            1. Get changed files: `git diff --name-only origin/${{ github.base_ref }}...HEAD`
-            2. Read the full diff: `git diff origin/${{ github.base_ref }}...HEAD`
-            3. Locate references in ONE pass:
-               - `grep -n "§21\|§13.4" BLUEPRINT.md` then read the located ranges
-               - `grep -n "Principle 17\|Principle 29\|Principle 30" CLAUDE.md` then read the located ranges
-               Do NOT read these files in full.
-            4. For each changed file, read it AT MOST ONCE. Hold all 5 categories in mind during that single read.
-            5. Post ONE detailed review comment covering every category. Then STOP.
+            ## Review comment format
 
-            ## Efficiency rules (critical — you have a turn budget)
-
-            - Do NOT re-read the same file twice. If you need to check multiple categories in a file, do them all in one read.
-            - Do NOT explore unrelated parts of the repo.
-            - If you reach turn 18 and haven't started writing the review, STOP researching and write the comment with what you have.
-
-            ## Categories to check (cover every one — say "clean" explicitly if no issue found)
+            Cover every category — write "clean" explicitly if no issue found.
 
             - **Idempotent recovery steps**: can each WAL recovery step be run twice safely? Any non-idempotent op in a recovery path?
-            - **fsync sequencing**: is write → fsync → rename → fsync-directory followed exactly per principle 29?
-            - **Transaction boundaries**: are SQLite transactions scoped so a crash leaves the brain consistent?
-            - **CancellationToken.None literal** (principle 17): in all compensation/recovery paths, does every await spell out `CancellationToken.None` literally (not via a local variable)?
-            - **Crash-consistency invariant** (principle 30): can a crash leave an orphaned blob row without a file row, or a file row with a missing blob?
+            - **fsync sequencing**: is write → fsync → rename → fsync-directory followed exactly?
+            - **Transaction boundaries**: are SQLite transactions scoped so a crash leaves the DB consistent?
+            - **CancellationToken.None literal**: in all compensation/recovery paths, does every await use `CancellationToken.None` literally (not via a local variable)?
+            - **Crash-consistency invariant**: can a crash leave an orphaned blob row without a file row, or a file row with a missing blob?
 
-            ## Hard rules
-
-            - Do NOT do general code review — recovery/WAL only.
-            - After the review is posted, you are done.
+            After posting, you are done.
