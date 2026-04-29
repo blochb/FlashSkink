@@ -120,7 +120,7 @@ public sealed class BlobRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Database error fetching blob {BlobId}", blobId);
-            return Result<BlobRecord?>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to fetch blob.", ex);
+            return Result<BlobRecord?>.Fail(ErrorCode.DatabaseReadFailed, "Failed to fetch blob.", ex);
         }
         catch (Exception ex)
         {
@@ -162,7 +162,7 @@ public sealed class BlobRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Database error looking up blob by hash");
-            return Result<BlobRecord?>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to look up blob by hash.", ex);
+            return Result<BlobRecord?>.Fail(ErrorCode.DatabaseReadFailed, "Failed to look up blob by hash.", ex);
         }
         catch (Exception ex)
         {
@@ -264,7 +264,7 @@ public sealed class BlobRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Database error listing pending-purge blobs");
-            return Result<IReadOnlyList<BlobRecord>>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to list pending-purge blobs.", ex);
+            return Result<IReadOnlyList<BlobRecord>>.Fail(ErrorCode.DatabaseReadFailed, "Failed to list pending-purge blobs.", ex);
         }
         catch (Exception ex)
         {

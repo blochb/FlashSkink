@@ -80,12 +80,12 @@ public sealed class WalRepository
             ct.ThrowIfCancellationRequested();
             const string sql =
                 "UPDATE WAL SET Phase = @Phase, UpdatedUtc = @UpdatedUtc WHERE WALID = @WalId";
-            var rows = await _connection.ExecuteAsync(sql, new
+            var rows = await _connection.ExecuteAsync(new CommandDefinition(sql, new
             {
                 Phase = newPhase,
                 UpdatedUtc = DateTime.UtcNow.ToString("O"),
                 WalId = walId,
-            }).ConfigureAwait(false);
+            }, cancellationToken: ct)).ConfigureAwait(false);
             if (rows == 0)
             {
                 _logger.LogWarning("WAL transition found no row for {WalId}", walId);
@@ -148,7 +148,7 @@ public sealed class WalRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Failed to list incomplete WAL rows");
-            return Result<IReadOnlyList<WalRow>>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to list WAL rows.", ex);
+            return Result<IReadOnlyList<WalRow>>.Fail(ErrorCode.DatabaseReadFailed, "Failed to list WAL rows.", ex);
         }
         catch (Exception ex)
         {

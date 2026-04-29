@@ -103,7 +103,7 @@ public sealed class FileRepository
             _logger.LogInformation("InsertAsync cancelled for file {FileId}", file.FileId);
             return Result.Fail(ErrorCode.Cancelled, "File insert was cancelled.", ex);
         }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteErrorCodes.UniqueConstraintFailed)
+        catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
         {
             _logger.LogInformation("Path conflict inserting file {Name} under parent {ParentId}",
                 file.Name, file.ParentId);
@@ -154,7 +154,7 @@ public sealed class FileRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Database error fetching file {FileId}", fileId);
-            return Result<VolumeFile?>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to fetch file.", ex);
+            return Result<VolumeFile?>.Fail(ErrorCode.DatabaseReadFailed, "Failed to fetch file.", ex);
         }
         catch (Exception ex)
         {
@@ -195,7 +195,7 @@ public sealed class FileRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Database error listing children of {ParentId}", parentId);
-            return Result<IReadOnlyList<VolumeFile>>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to list children.", ex);
+            return Result<IReadOnlyList<VolumeFile>>.Fail(ErrorCode.DatabaseReadFailed, "Failed to list children.", ex);
         }
         catch (Exception ex)
         {
@@ -214,16 +214,22 @@ public sealed class FileRepository
         try
         {
             ct.ThrowIfCancellationRequested();
+            // Escape LIKE wildcards in the caller-supplied prefix so literal '%', '_',
+            // and '\' in folder names do not expand into wildcard patterns (issue #4).
+            var escapedPrefix = virtualPathPrefix
+                .Replace(@"\", @"\\")
+                .Replace("%", @"\%")
+                .Replace("_", @"\_");
             const string sql =
                 """
                 SELECT FileID, ParentID, IsFolder, IsSymlink, SymlinkTarget, Name, Extension,
                        MimeType, VirtualPath, SizeBytes, CreatedUtc, ModifiedUtc, AddedUtc, BlobID
                 FROM Files
-                WHERE VirtualPath LIKE @Prefix || '%'
+                WHERE VirtualPath LIKE @Prefix || '%' ESCAPE '\'
                 ORDER BY VirtualPath ASC
                 """;
             var rows = await _connection.QueryAsync<dynamic>(
-                new CommandDefinition(sql, new { Prefix = virtualPathPrefix }, cancellationToken: ct))
+                new CommandDefinition(sql, new { Prefix = escapedPrefix }, cancellationToken: ct))
                 .ConfigureAwait(false);
             return Result<IReadOnlyList<VolumeFile>>.Ok(rows.Select(MapFile).ToList());
         }
@@ -235,7 +241,7 @@ public sealed class FileRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Database error listing files under {Prefix}", virtualPathPrefix);
-            return Result<IReadOnlyList<VolumeFile>>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to list files.", ex);
+            return Result<IReadOnlyList<VolumeFile>>.Fail(ErrorCode.DatabaseReadFailed, "Failed to list files.", ex);
         }
         catch (Exception ex)
         {
@@ -358,7 +364,7 @@ public sealed class FileRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Database error counting children of {FolderId}", folderId);
-            return Result<int>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to count children.", ex);
+            return Result<int>.Fail(ErrorCode.DatabaseReadFailed, "Failed to count children.", ex);
         }
         catch (Exception ex)
         {
@@ -402,7 +408,7 @@ public sealed class FileRepository
         catch (SqliteException ex)
         {
             _logger.LogError(ex, "Database error getting descendants of {FolderId}", folderId);
-            return Result<IReadOnlyList<VolumeFile>>.Fail(ErrorCode.DatabaseWriteFailed, "Failed to get descendants.", ex);
+            return Result<IReadOnlyList<VolumeFile>>.Fail(ErrorCode.DatabaseReadFailed, "Failed to get descendants.", ex);
         }
         catch (Exception ex)
         {
@@ -598,9 +604,10 @@ public sealed class FileRepository
             // Delete all Files rows in the subtree.
             if (descendants.Count > 0)
             {
-                var ids = string.Join(",", descendants.Select(d => $"'{d.FileId}'"));
+                var idArray = descendants.Select(d => d.FileId).ToArray();
                 await _connection.ExecuteAsync(new CommandDefinition(
-                    $"DELETE FROM Files WHERE FileID IN ({ids})", transaction: tx)).ConfigureAwait(false);
+                    "DELETE FROM Files WHERE FileID IN @Ids",
+                    new { Ids = idArray }, tx)).ConfigureAwait(false);
 
                 // Write DeleteLog entries.
                 foreach (var d in descendants)
@@ -734,7 +741,7 @@ public sealed class FileRepository
             _logger.LogInformation("RenameFolderAsync cancelled for {FolderId}", folderId);
             return Result.Fail(ErrorCode.Cancelled, "Rename folder was cancelled.", ex);
         }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteErrorCodes.UniqueConstraintFailed)
+        catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
         {
             tx?.Rollback();
             _logger.LogInformation("Path conflict renaming folder {FolderId} to '{NewName}'", folderId, newName);
@@ -871,7 +878,7 @@ public sealed class FileRepository
             _logger.LogInformation("MoveAsync cancelled for {FileId}", fileId);
             return Result.Fail(ErrorCode.Cancelled, "Move was cancelled.", ex);
         }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteErrorCodes.UniqueConstraintFailed)
+        catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
         {
             tx?.Rollback();
             _logger.LogInformation("Path conflict moving {FileId} to parent {NewParentId}", fileId, newParentId);
@@ -1000,9 +1007,31 @@ public sealed class FileRepository
     }
 }
 
-/// <summary>SQLite extended error codes used in exception filters across repositories.</summary>
+/// <summary>
+/// SQLite error codes used in exception filters across repositories.
+/// <para>
+/// <c>SQLITE_CONSTRAINT</c> (primary code 19) fires for every constraint type — UNIQUE, FK,
+/// CHECK, NOT NULL. To distinguish UNIQUE violations from the others without relying on
+/// <c>SqliteException.SqliteExtendedErrorCode</c> (which is unavailable in the bundled
+/// SQLitePCLRaw version), filters pair the primary code check with a
+/// <c>Message.Contains("UNIQUE")</c> guard. SQLite's error message format has been stable
+/// since v3.7 and always includes the word "UNIQUE" when an index uniqueness constraint fires.
+/// </para>
+/// </summary>
 internal static class SqliteErrorCodes
 {
-    internal const int UniqueConstraintFailed = 19;
+    /// <summary>SQLITE_CONSTRAINT (primary code 19) — any constraint violation.</summary>
+    internal const int ConstraintViolation = 19;
+
+    /// <summary>SQLITE_CONSTRAINT_FOREIGNKEY (extended code 787) — a foreign-key constraint was violated.</summary>
     internal const int ForeignKeyViolation = 787;
+}
+
+/// <summary>Helper for narrowing SQLITE_CONSTRAINT exceptions to specific constraint types.</summary>
+internal static class SqliteExceptionExtensions
+{
+    /// <summary>Returns <see langword="true"/> when the exception represents a UNIQUE index violation.</summary>
+    internal static bool IsUniqueConstraintViolation(this SqliteException ex) =>
+        ex.SqliteErrorCode == SqliteErrorCodes.ConstraintViolation
+        && ex.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase);
 }

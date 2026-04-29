@@ -50,7 +50,7 @@ public sealed class UploadQueueRepository
             _logger.LogInformation("EnqueueAsync cancelled for file {FileId}", fileId);
             return Result.Fail(ErrorCode.Cancelled, "Enqueue was cancelled.", ex);
         }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteErrorCodes.UniqueConstraintFailed)
+        catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
         {
             _logger.LogInformation("Duplicate enqueue for file {FileId} provider {ProviderId}", fileId, providerId);
             return Result.Fail(ErrorCode.PathConflict,

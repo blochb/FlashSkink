@@ -156,6 +156,38 @@ public class FileRepositoryTests : IAsyncLifetime
         Assert.Equal("fd1", result.Value![0].FileId);
     }
 
+    // ── ListFilesAsync ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ListFilesAsync_PrefixMatch_ReturnsMatchingFiles()
+    {
+        await _sut.InsertAsync(MakeFolder("fd1", "docs"), CancellationToken.None);
+        await _sut.InsertAsync(MakeFile("f1", "report.pdf", "fd1", "docs/report.pdf"), CancellationToken.None);
+        await _sut.InsertAsync(MakeFile("f2", "budget.xlsx", "fd1", "docs/budget.xlsx"), CancellationToken.None);
+        await _sut.InsertAsync(MakeFile("f3", "photo.jpg", null, "photo.jpg"), CancellationToken.None);
+
+        var result = await _sut.ListFilesAsync("docs/", CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Value!.Count);
+        Assert.All(result.Value, f => Assert.StartsWith("docs/", f.VirtualPath));
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_WildcardInPrefix_DoesNotExpandAsPattern()
+    {
+        // A folder name containing '%' should be treated as a literal, not a LIKE wildcard.
+        await _sut.InsertAsync(MakeFolder("fd1", "100%_done"), CancellationToken.None);
+        await _sut.InsertAsync(MakeFile("f1", "notes.txt", "fd1", "100%_done/notes.txt"), CancellationToken.None);
+
+        // This must NOT match "100Xdone/notes.txt" or similar — only the exact prefix.
+        var result = await _sut.ListFilesAsync("100%_done/", CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Single(result.Value!);
+        Assert.Equal("100%_done/notes.txt", result.Value![0].VirtualPath);
+    }
+
     // ── EnsureFolderPathAsync ─────────────────────────────────────────────────
 
     [Fact]
@@ -265,6 +297,15 @@ public class FileRepositoryTests : IAsyncLifetime
         var softDeleted = await _connection.QuerySingleOrDefaultAsync<string?>(
             "SELECT SoftDeletedUtc FROM Blobs WHERE BlobID = @BlobId", new { BlobId = blobId });
         Assert.NotNull(softDeleted); // blob is soft-deleted
+    }
+
+    [Fact]
+    public async Task DeleteFileAsync_NonExistentFile_ReturnsFileNotFound()
+    {
+        var result = await _sut.DeleteFileAsync("no-such-file", CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.FileNotFound, result.Error!.Code);
     }
 
     // ── DeleteFolderCascadeAsync ──────────────────────────────────────────────
@@ -382,5 +423,15 @@ public class FileRepositoryTests : IAsyncLifetime
         var purgeAfter = await _connection.QuerySingleOrDefaultAsync<string?>(
             "SELECT PurgeAfterUtc FROM Blobs WHERE BlobID = @BlobId", new { BlobId = blobId });
         Assert.Null(purgeAfter);
+    }
+
+    [Fact]
+    public async Task RestoreFromGracePeriodAsync_BlobNotFound_ReturnsBlobNotFound()
+    {
+        var result = await _sut.RestoreFromGracePeriodAsync(
+            "no-such-blob", "some-path.txt", CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.BlobNotFound, result.Error!.Code);
     }
 }

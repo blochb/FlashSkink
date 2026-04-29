@@ -118,6 +118,9 @@ public enum ErrorCode
     /// <summary>The brain database is locked by another process or connection.</summary>
     DatabaseLocked,
 
+    /// <summary>A read from the brain database failed.</summary>
+    DatabaseReadFailed,
+
     /// <summary>A write to the brain database failed.</summary>
     DatabaseWriteFailed,
 
