@@ -1403,7 +1403,7 @@ Offset  Size   Field
 4       2      Version (uint16, currently 1)
 6       2      Flags (uint16; see below)
 8       12     Nonce (random per blob)
-20      N      Ciphertext (AES-256-GCM, AAD = BlobID || PlaintextSHA256)
+20      N      Ciphertext (AES-256-GCM, AAD per "AAD construction" below)
 20+N    16     GCM Tag
 ```
 
@@ -1413,12 +1413,33 @@ Offset  Size   Field
 - Bit 2: Reserved
 - Bits 3-15: Reserved (must be zero in V1)
 
+**AAD construction:**
+
+The Additional Authenticated Data fed to `AesGcm.Encrypt` / `AesGcm.Decrypt` is a fixed 48-byte buffer constructed in this exact byte order:
+
+```
+Offset  Size   Field
+------  ----   -----
+0       16     BlobID — raw GUID bytes (RFC 4122 binary form, .NET's Guid.TryWriteBytes)
+16      32     PlaintextSHA256 — raw 32-byte digest from SHA256.HashData
+Total:  48     bytes
+```
+
+The string forms — the 36-character canonical UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) and the 64-character lowercase hex digest — are **never** used as AAD input. The fixed 48-byte size is `stackalloc`-friendly and avoids any UTF-8 encoding decisions on the hot path.
+
+This pin matters operationally: every blob ever written carries the AAD baked into its GCM authentication tag. Changing the encoding later (string ↔ raw, byte order, length) is a wire-format break that invalidates every existing blob's authentication, with no migration path short of decrypt-and-re-encrypt every blob in the volume. Implementations that accidentally feed the string form will fail decryption against blobs written by a correct implementation, and vice versa — the failure mode is `ErrorCode.CryptoFailed` on every read, which will look like total volume corruption.
+
+The AAD's two components ensure two distinct properties:
+- **BlobID component** — binds the ciphertext to its specific BlobID, preventing blob-substitution attacks where one blob's bytes are swapped onto another row within the same volume.
+- **PlaintextSHA256 component** — binds the ciphertext to the declared plaintext hash recorded in `Blobs.PlaintextSHA256`. A tampered brain row (e.g., a SHA-256 changed to match different plaintext) will fail GCM authentication on read.
+
 **Versioning policy:**
 - New flag bits are additive and don't increment Version.
 - Adding new fields after the existing ones requires Version increment and corresponding read code that handles both versions.
 - Removing or changing existing fields is a breaking change requiring a major-version migration.
+- The AAD format is part of the wire format. Changes to the AAD construction are a major-version migration even if no on-disk byte layout changes.
 
-This header costs 8 bytes per blob (negligible) and gives forward compatibility for future cipher changes, KDF parameter updates, or compression algorithm additions.
+The 20-byte header gives forward compatibility for future cipher changes, KDF parameter updates, or compression algorithm additions.
 
 ### 13.7 Blob Integrity
 
