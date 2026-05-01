@@ -26,11 +26,11 @@ Four decisions span multiple PRs in this phase. Recording them here keeps the ru
 
 **1. Concurrency model — single-writer serialization.** `FlashSkinkVolume` holds an internal `SemaphoreSlim(1, 1)`. Every public volume method acquires it for the duration of the operation. This is the rule that makes the rest of the design work: the shared `SqliteConnection`, the volume-scoped `IncrementalHash`, the volume-scoped `CryptoPipeline`, and the volume-scoped LZ4 / Zstd codec instances are all single-threaded by virtue of this gate. Concurrent calls into the volume are not a goal in V1 — a portable backup tool whose normal access pattern is "the user clicks one thing at a time" doesn't pay for fine-grained concurrency. A reader-writer split is post-V1 if profiling later demands it.
 
-**2. Maximum plaintext size — 4 GiB per file.** Exposed as `VolumeContext.MaxPlaintextBytes = 4L * 1024 * 1024 * 1024`. Enforced at three sites: `WritePipeline` stage 1 rejects oversized sources via the bounded buffer cap; `ReadPipeline` rejects up-front when `Blobs.PlaintextSize` exceeds the cap; `CompressionService.Decompress` asserts the caller-supplied `plaintextSize`. Returns `ErrorCode.FileTooLarge`. The streaming-chunked variant in a post-V1 PR removes the cap.
+**2. Maximum plaintext size — 4 GiB per file.** Exposed as `VolumeContext.MaxPlaintextBytes = 4L * 1024 * 1024 * 1024`. Enforced at three sites: `WritePipeline` stage 1 rejects oversized sources via the bounded buffer cap; `ReadPipeline` rejects up-front when `Blobs.PlaintextSize` exceeds the cap; `CompressionService.Decompress` asserts the caller-supplied `plaintextSize`. Returns `ErrorCode.FileTooLong`. The streaming-chunked variant in a post-V1 PR removes the cap.
 
 **3. AAD format — `BlobID (16-byte raw GUID) || PlaintextSHA256 (32-byte raw digest)` = 48 bytes total.** Fixed-size and `stackalloc`-friendly. **Not** the 36-character canonical UUID string and **not** the 64-character lowercase hex digest. This pins what the §1.4 plan left ambiguous. Blueprint §13.6 should be updated to spell this out in the same PR that introduces it (§2.5). Wire-format changes after Phase 2 are expensive — every blob ever written carries this AAD baked into its GCM tag.
 
-**4. ErrorCode additions allowed in this phase.** Two values added in §2.2 alongside `CompressionService`: `BlobCorrupt` (illegal `BlobFlags` combinations, header magic mismatches, and other blob-format errors not attributable to vault state) and `FileTooLarge` (plaintext exceeds the 4 GiB cap from decision 2). The §1.1 posture ("declare the full enum up-front so later phases don't touch §1.1 files") relaxes here — these two weren't foreseen, and the alternatives (reusing `VaultCorrupt` for blob-format errors, reusing `UsbFull` for size-cap errors) would each mislead the operator response. No further additions in §2.3 through §2.7.
+**4. ErrorCode reuse in this phase — no new values.** Both codes needed by Phase 2 already exist in the §1.1 enum: `BlobCorrupt` (declared for download-time integrity failures; its semantic scope is extended here to cover local blob-format parse errors — illegal `BlobFlags` combinations, header magic mismatches — which are structurally the same failure class) and `FileTooLong` (declared for oversized files; the 4 GiB cap from cross-cutting decision 2 is enforced under this code). The §1.1 "declare the full enum up-front" posture holds: **no new `ErrorCode` values are added in §2.2 through §2.7.** Alternatives considered and rejected: `VaultCorrupt` for blob-format errors (wrong layer — it implies the vault structures are unreadable, not an individual blob); `UsbFull` for the size cap (wrong cause — the drive is not full, the file is oversized). `BlobCorrupt` and `FileTooLong` are the right existing codes.
 
 ---
 
@@ -96,14 +96,14 @@ Full implementation detail for each section lives in `.claude/plans/pr-2.X.md`, 
 
 A `RecyclableMemoryStreamManager` is registered as a DI singleton in this PR (Principle 21). `CompressionService` consumes it for any place that would otherwise have used `new MemoryStream()`.
 
-This PR also introduces two new `ErrorCode` values per cross-cutting decision 4: `BlobCorrupt` and `FileTooLarge`. Both land in `Core.Abstractions/Results/ErrorCode.cs` alongside the rest of the enum.
+This PR uses two existing `ErrorCode` values per cross-cutting decision 4: `BlobCorrupt` (semantic scope extended to local blob-format parse errors) and `FileTooLong` (4 GiB cap enforcement). Neither is added to `Core.Abstractions/Results/ErrorCode.cs` — both were declared in §1.1.
 
 **NuGet introduced:** `K4os.Compression.LZ4`, `ZstdNet`, `Microsoft.IO.RecyclableMemoryStream`. Verify versions are current and pin in `Directory.Packages.props`. `ZstdNet` is the canonical choice per §28 (rejected: `ZstdSharp.Port`); `Microsoft.IO.RecyclableMemoryStream` is added here rather than in §2.5 because `CompressionService` is the first stage that needs a pooled stream — the singleton registration rides with its first consumer. Native libzstd RID assets are validated by Phase 0's `nightly.yml` publish matrix (§28).
 
 **Key constraints:**
 - Output buffers are rented via `MemoryPool<byte>.Shared.Rent`, returned as `IMemoryOwner<byte>`. The default `MemoryPool<byte>.Shared` is backed by `ArrayPool<byte>.Shared` but does not zero on dispose; this PR introduces a `ClearOnDispose` `IMemoryOwner<byte>` wrapper for buffers that hold plaintext or ciphertext, so the zero-on-return guarantee from §2.5 is honoured uniformly across both pipelines (Principle 19).
 - The 512 KB threshold and the 95% no-gain rule are constants exposed on `CompressionService` so tests can pin them and §2.5 can document them.
-- Decompression never trusts `compressed.Length` for sizing; it trusts the `Blobs.PlaintextSize` value the caller passes in (which comes from the brain, not the blob). Per cross-cutting decision 2, `Decompress` rejects `plaintextSize > VolumeContext.MaxPlaintextBytes` with `ErrorCode.FileTooLarge` *before* allocating the destination buffer — avoids OOM on a brain row whose `PlaintextSize` has been corrupted to a pathological value.
+- Decompression never trusts `compressed.Length` for sizing; it trusts the `Blobs.PlaintextSize` value the caller passes in (which comes from the brain, not the blob). Per cross-cutting decision 2, `Decompress` rejects `plaintextSize > VolumeContext.MaxPlaintextBytes` with `ErrorCode.FileTooLong` *before* allocating the destination buffer — avoids OOM on a brain row whose `PlaintextSize` has been corrupted to a pathological value.
 - Flags `Lz4` and `Zstd` are mutually exclusive; setting both is a defect. `Decompress` returns `ErrorCode.BlobCorrupt` on illegal flag combinations and on header magic mismatches surfaced by §1.4 `BlobHeader.Parse`.
 
 ---
@@ -146,7 +146,7 @@ This PR also introduces two new `ErrorCode` values per cross-cutting decision 4:
 - `CompleteAsync(CancellationToken ct = default)` transitions PREPARE → COMMITTED. The body uses `CancellationToken.None` as a literal at every internal await site (Principle 17) — once the brain transaction is durable, the WAL row's COMMITTED transition must not be cancellable mid-flight.
 - `DisposeAsync` — if the scope reaches dispose without `CompleteAsync` having run, transition to FAILED with `CancellationToken.None`. If even the FAILED transition fails, log to `ILogger` and swallow (the row will be picked up by Phase 5 recovery and resolved idempotently).
 
-**NuGet introduced:** `System.IO.Hashing`. XXHash64 is the bit-rot integrity check on the on-disk blob (§13.7) — conceptually a property of the storage layer this PR introduces, not of the pipeline that records it. §2.5 consumes it; §2.4 owns the dependency.
+**NuGet:** None new.
 
 **Key constraints:**
 - **Directory creation.** The two-level shard `[skinkRoot]/.flashskink/blobs/{xx}/{yy}/` is created on demand via `Directory.CreateDirectory` (idempotent) inside `WriteAsync` immediately before the rename. After creating a previously-absent shard directory, the *parent* of the new directory is fsync'd — on extN/HFS+/APFS, `mkdir` itself is not durable until the parent directory is synced. Once a shard exists, future writes to that shard skip the create and the parent fsync. The staging directory `.flashskink/staging/` is created once at volume open by `FlashSkinkVolume.OpenAsync` / `CreateAsync` (§2.7) and is fsync'd then.
@@ -179,7 +179,7 @@ public Task<Result<WriteReceipt>> ExecuteAsync(
 
 Stage flow:
 0. **Type detection** — `stackalloc byte[16]` header read; `FileTypeService.Detect` + `EntropyDetector.IsCompressible`; rewind to position 0.
-1. **Plaintext SHA-256 + buffered read** — stream into a single pooled `IMemoryOwner<byte>` (the `ClearOnDispose` wrapper from §2.2) bounded by `VolumeContext.MaxPlaintextBytes` (cross-cutting decision 2), while incrementally hashing via the volume-scoped `IncrementalHash`. If the source produces more bytes than the cap, return `ErrorCode.FileTooLarge`. V1 read-once-into-buffer model; chunked streaming through compress/encrypt is deferred to a later optimisation PR if profiling justifies it.
+1. **Plaintext SHA-256 + buffered read** — stream into a single pooled `IMemoryOwner<byte>` (the `ClearOnDispose` wrapper from §2.2) bounded by `VolumeContext.MaxPlaintextBytes` (cross-cutting decision 2), while incrementally hashing via the volume-scoped `IncrementalHash`. If the source produces more bytes than the cap, return `ErrorCode.FileTooLong`. V1 read-once-into-buffer model; chunked streaming through compress/encrypt is deferred to a later optimisation PR if profiling justifies it.
 2. **Change-detection short-circuit** — `BlobRepository.GetByPlaintextHashAsync(sha256)` lookup; if a `Blobs` row exists AND a `Files` row at the same `VirtualPath` already references it, return `Result.Ok(WriteReceipt(Status = Unchanged))` without writing. No dedup across paths in V1.
 3. **Compression (conditional)** — `CompressionService.TryCompress` if `IsCompressible`; honour the no-gain rejection (resulting `BlobFlags.None` is a first-class outcome, not an error).
 4. **Encryption** — `CryptoPipeline.Encrypt` (from §1.4) with AAD per cross-cutting decision 3 (16-byte raw GUID `||` 32-byte raw SHA-256 digest, total 48 bytes, `stackalloc`); fresh `stackalloc` nonce; GCM tag.
@@ -199,7 +199,7 @@ The pipeline returns `Result.Ok(WriteReceipt)` only when the brain transaction c
 
 `VolumeContext` is the parameter object that carries `SqliteConnection`, DEK reference (`ReadOnlyMemory<byte>` view, owned by the volume session), `RecyclableMemoryStreamManager`, `INotificationBus`, repositories, and the skink root path. It is constructed by §2.7 from `VolumeSession` (§1.3).
 
-**NuGet:** None new (`System.IO.Hashing` was introduced in §2.4).
+**NuGet introduced:** `System.IO.Hashing`. XXHash64 is first consumed here (§14.1 step 7) to hash the assembled blob bytes for bit-rot detection. §2.4 references the design rationale but carries no call site; the dependency belongs with the first usage.
 
 **Key constraints:**
 - All pooled buffers come from `MemoryPool<byte>.Shared` via `IMemoryOwner<byte>` (Principle 19). Buffers carrying plaintext or ciphertext use the `ClearOnDispose` wrapper introduced in §2.2 — pool buffers must not leak content between callers; raw `ArrayPool<byte>.Shared` with `clearArray: true` is **not** used here, so the ownership model is uniform across §2.2, §2.5, and §2.6.
@@ -226,7 +226,7 @@ public Task<Result> ExecuteAsync(
 ```
 
 Stage flow per §14.2:
-1. **Brain lookup** — `FileRepository` resolves `virtualPath` to a `Files` row; `BlobRepository.GetByIdAsync(BlobID)` produces the `Blobs` row. Reject up-front with `ErrorCode.FileTooLarge` if `Blobs.PlaintextSize > VolumeContext.MaxPlaintextBytes` (cross-cutting decision 2) — fails before any allocation.
+1. **Brain lookup** — `FileRepository` resolves `virtualPath` to a `Files` row; `BlobRepository.GetByIdAsync(BlobID)` produces the `Blobs` row. Reject up-front with `ErrorCode.FileTooLong` if `Blobs.PlaintextSize > VolumeContext.MaxPlaintextBytes` (cross-cutting decision 2) — fails before any allocation.
 2. **Blob open** — `File.OpenRead` at the sharded path (computed from BlobID).
 3. **Header parse** — `BlobHeader.Parse` (from §1.4); reject on bad magic / unknown version.
 4. **Decrypt** — `CryptoPipeline.Decrypt` with AAD constructed per cross-cutting decision 3 (48 bytes raw, BlobID GUID + raw SHA-256 from the `Blobs` row); GCM tag validated.
@@ -242,7 +242,7 @@ Stage flow per §14.2:
 - Streaming buffer of 4 MB pooled (§9.5 pattern) for stages 2–4; stage 5/6 produces a single decompressed `IMemoryOwner<byte>` capped at `VolumeContext.MaxPlaintextBytes`.
 - The destination stream is *not* truncated or seeked; the caller owns it. The pipeline writes only the plaintext bytes.
 - A `ChecksumMismatch` publishes a `Critical` notification (`Source = "ReadPipeline"`, `RequiresUserAction = true`) and persists via the bus — bit-rot or tampering on the skink is the user's signal to invoke recovery from a tail (Phase 5 surface).
-- A `CryptoFailed` from GCM tag mismatch publishes `Critical` similarly.
+- A `DecryptionFailed` from GCM tag mismatch publishes `Critical` similarly.
 - No partial plaintext is ever written to `destination` on a verification failure: stage 5/6 buffer plaintext entirely before stage 7. (For very large files this trades memory for safety in V1; combined with the 4 GiB cap from cross-cutting decision 2, the trade is bounded. A streaming-verify variant is a post-V1 optimisation.)
 - `IncrementalHash` is the *same* volume-scoped instance used by `WritePipeline` (cross-cutting decision 1 makes this safe via volume serialization) — `GetHashAndReset` returns it to a clean state after each use.
 - `CryptoPipeline` instance is also volume-scoped (one `AesGcm` for the volume's lifetime, per §1.4); same safety story.
@@ -324,7 +324,7 @@ The `UsbRemoved` / `UsbReinserted` / `TailStatusChanged` events from §11 are de
   - [ ] `WritePipeline.ExecuteAsync` of a small text file produces a `Files` row, `Blobs` row, `ActivityLog` row, and (with no providers configured) zero `TailUploads` rows.
   - [ ] `WritePipeline.ExecuteAsync` of the same content twice at the same path returns `WriteStatus.Unchanged` on the second call (change-detection short-circuit).
   - [ ] `ReadPipeline.ExecuteAsync` of a written file streams identical plaintext bytes to the destination.
-  - [ ] `ReadPipeline.ExecuteAsync` against a tampered blob (one ciphertext byte flipped) returns `ErrorCode.CryptoFailed` and writes nothing to the destination.
+  - [ ] `ReadPipeline.ExecuteAsync` against a tampered blob (one ciphertext byte flipped) returns `ErrorCode.DecryptionFailed` and writes nothing to the destination.
   - [ ] `ReadPipeline.ExecuteAsync` against a blob whose plaintext SHA-256 has been corrupted in-flight (simulated) returns `ErrorCode.ChecksumMismatch`.
   - [ ] `FlashSkinkVolume.WriteFileAsync` → `ReadFileAsync` round-trips a 5 MB random-bytes file with byte-equality.
   - [ ] **End-to-end LZ4 branch** — write a 100 KB highly compressible file via `FlashSkinkVolume.WriteFileAsync`, read back via `ReadFileAsync`, byte-identical. Inspect `Blobs.Compression = 'LZ4'` in the brain.
@@ -335,13 +335,13 @@ The `UsbRemoved` / `UsbReinserted` / `TailStatusChanged` events from §11 are de
   - [ ] **Cancellation honoured — read path** — start a 100 MB read, cancel mid-flight; `ReadFileAsync` returns `ErrorCode.Cancelled` and the destination stream is left in a partial state but no exception escapes Core.
   - [ ] **Brain-transaction failure reaches FAILED** — fault-inject a `SqliteException` at the `INSERT INTO Files` step inside the brain commit; verify `WriteWalScope.DisposeAsync` transitions the WAL row to FAILED, the staging file is gone, the destination file (if rename completed) is gone, and the §21.3 invariant holds.
   - [ ] **Skink disk full during staging** — fault-inject `IOException` with `HResult = ERROR_DISK_FULL` (Windows) or `ENOSPC` (Linux) during the staging write inside `AtomicBlobWriter`; verify `WriteFileAsync` returns `ErrorCode.UsbFull`, no `Files` / `Blobs` row is created, no orphan staging file remains.
-  - [ ] **`FileTooLarge` enforcement** — attempt to write a synthetic >4 GiB stream (using a counting wrapper, not real bytes); pipeline rejects with `ErrorCode.FileTooLarge` before allocating the buffer.
+  - [ ] **`FileTooLong` enforcement** — attempt to write a synthetic >4 GiB stream (using a counting wrapper, not real bytes); pipeline rejects with `ErrorCode.FileTooLong` before allocating the buffer.
   - [ ] `FlashSkinkVolume.DeleteFolderAsync(confirmed: false)` on a non-empty folder returns `ErrorCode.ConfirmationRequired` with `Metadata["ChildCount"]` populated.
   - [ ] `FlashSkinkVolume.MoveAsync` of a folder under one of its own descendants returns `ErrorCode.CyclicMoveDetected`.
   - [ ] `FlashSkinkVolume.ChangePasswordAsync` followed by close-and-reopen with the new password succeeds.
   - [ ] `tests/FlashSkink.Tests/CrashConsistency/WriteCrashConsistencyTests.cs` runs FsCheck across crash-at-step-N interleavings of `WritePipeline` and verifies the §21.3 invariant after each (200 cases per PR — bumped from FsCheck's default 100 because crash-interleaving bug surface is combinatorial; nightly extends to 5000).
 - [ ] CI `plan-check` job passes for all seven PRs (each `.claude/plans/pr-2.X.md` exists, contains all required headings, cites at least one `§` blueprint reference).
-- [ ] **`ErrorCode` enum additions in Phase 2: exactly two — `BlobCorrupt` and `FileTooLarge`, both added in §2.2** (per cross-cutting decision 4). Every other code used (`ChecksumMismatch`, `CryptoFailed`, `PathConflict`, `CyclicMoveDetected`, `ConfirmationRequired`, `StagingFailed`, `UsbFull`, `Cancelled`, `Unknown`) was declared in §1.1.
+- [ ] **`ErrorCode` enum: zero new values added in Phase 2** (per cross-cutting decision 4). All codes used — `BlobCorrupt`, `FileTooLong`, `DecryptionFailed`, `ChecksumMismatch`, `PathConflict`, `CyclicMoveDetected`, `ConfirmationRequired`, `StagingFailed`, `UsbFull`, `Cancelled`, `Unknown` — were declared in §1.1. `ErrorCode.cs` is not modified by any Phase 2 PR.
 - [ ] `docs/error-handling.md` is updated with the `WritePipeline` failure-rollback worked example (a natural sequel to the §1.5 `BrainConnectionFactory` example).
 
 ---

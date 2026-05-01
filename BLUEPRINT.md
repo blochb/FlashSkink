@@ -401,6 +401,7 @@ public enum ErrorCode
     // Providers
     ProviderUnreachable, ProviderAuthFailed, ProviderQuotaExceeded,
     ProviderRateLimited, ProviderApiChanged,
+    LocalNetworkOffline,
     UploadFailed, UploadSessionExpired, DownloadFailed,
     BlobNotFound, BlobCorrupt,
 
@@ -2390,6 +2391,10 @@ GUI recovery follows the same flow with a wizard-style UI (Decision B11-b).
 
 ## 22. Provider Health Monitoring
 
+Health is observed at two layers: per-tail probes (§22.1) detect provider-specific problems; a passive local-network signal (§22.2) detects when the host machine has no network at all. A dispatcher rule (§22.3) infers connectivity issues that neither layer catches alone. Section 22.4 specifies how the upload queue and probe scheduler behave when the host is offline.
+
+### 22.1 Per-tail health probes
+
 `HealthMonitorService` polls each tail every 5 minutes (when healthy) or every 30 seconds (when degraded). Each check:
 
 1. Upload a 1 KB test object to a `_health/` path on the provider.
@@ -2409,6 +2414,45 @@ Health status affects upload queue behaviour:
 - `QuotaExceeded`: uploads paused; user notification "tail is full"
 
 Health status does **not** block writes to the skink. The mirror model means writes are always accepted locally; tail health only affects upload progress.
+
+### 22.2 Local network availability
+
+`NetworkAvailabilityMonitor` (in `FlashSkink.Core/Engine/`) subscribes to `System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged` and exposes a current state of `Online` or `Offline`. The signal is OS-mediated (Windows NLM, macOS `SCNetworkReachability`, Linux netlink) and **passive** — no packets are sent. This preserves the no-telemetry discipline (DR-B12, DR-B13).
+
+Initial state on volume open is determined synchronously via `NetworkInterface.GetIsNetworkAvailable()`, before `HealthMonitorService` and `UploadQueueService` start. They observe the initial state and start in the appropriate condition rather than briefly running and immediately pausing.
+
+State transitions publish notifications:
+
+| Notification | Trigger | Severity | Persisted to `BackgroundFailures` |
+|---|---|---|---|
+| `LocalNetworkOffline` | `IsAvailable` transitions to `false` | Warning | No |
+| `LocalNetworkRestored` | `IsAvailable` transitions to `true` | Information | No |
+
+Both follow the dispatcher's standard 60-second `Source + ErrorCode` deduplication (§8.4). Neither is persisted because the state is transient and the user does not need to acknowledge it on next launch — by then either the network is back, or the per-tail probes will have surfaced something actionable.
+
+**What this detects:** all interfaces down — wifi off, ethernet unplugged, airplane mode, suspended laptop, VPN dropped to no fallback.
+
+**What this does not detect:** captive portals, ISP outages, DNS failures, MITM filters blocking specific providers. For these, the per-tail probes in §22.1 remain the source of truth. The OS signal is additive; it catches the obvious case cheaply.
+
+### 22.3 Inferred connectivity issues
+
+When ≥ 2 tails transition to `Unreachable` within a 30-second window **and** `NetworkAvailabilityMonitor.CurrentState == Online`, the dispatcher publishes a single `ProbableConnectivityIssue` notification rather than letting N independent per-tail notifications surface in parallel. This catches the captive-portal and DNS-failure cases that §22.2 cannot detect — using only signals already produced by §22.1, with no new outbound traffic.
+
+Thresholds (`N` and `W`) live in `config.json` and are not exposed in the GUI.
+
+### 22.4 Behaviour during offline windows
+
+When `NetworkAvailabilityMonitor.CurrentState == Offline`:
+
+- `HealthMonitorService` probes are paused. Without this, every probe fails, every failure increments counters, and every tail eventually transitions to `Unreachable` for the wrong reason — polluting `Tails.HealthStatus` history with state changes attributable to a known external cause.
+- `UploadQueueService` retry scheduling is paused. In-flight range uploads already in motion are not cancelled mid-byte; they fail naturally at the next socket operation, and the existing retry path handles the bookkeeping (§21.1). New retries are not scheduled until the network returns.
+- `UploadSessions` rows are preserved unchanged. Cross-host resumability is unaffected.
+
+When the state transitions back to `Online`:
+
+- Both services resume.
+- An immediate health probe is triggered on every tail. The user wants confirmation that things work; waiting for the standard 5-minute timer is the wrong UX immediately after reconnection.
+- After all probes return, the system reverts to the §22.1 cadence.
 
 ---
 
@@ -2773,6 +2817,12 @@ This section preserves every architectural and product decision with options, se
 - Chosen: CI workflows (`plan-check`, `principle-audit`, `pr-review.yml`, `pr-review-crypto.yml`, `pr-review-recovery.yml`) make the session protocol's Gate 1 and Gate 2 discipline mechanical.
 - Rationale: A solo-dev project cannot rely on social pressure or peer review to follow a protocol. Without automated enforcement, the protocol degrades quietly — missed plan files, scope creep, principle violations accumulate until the system no longer provides the safety the protocol was meant to provide. The CI layer makes deviations visible within minutes of a PR being opened. The `plan-check` job is a hard gate (blocks merge); the Claude-powered review jobs are comment-only so false positives don't stall work but still surface for acknowledgement. Public-repo GitHub Actions minutes are ample; this is essentially free enforcement.
 - Scope note: DR-9 covers the existence and role of the CI layer. Specific workflow details (triggers, paths, models, prompts) are operational and live in `CLAUDE.md` § "CI and automation" — editable without a blueprint revision.
+
+**DR-10: Local network availability detected via passive OS signal.**
+- Rejected options: Active probe of a neutral endpoint (Cloudflare, Google DNS, etc.) — violates DR-B12/DR-B13 and the "no network chatter" discipline; rely solely on per-tail probe failures — produces N parallel "tail unreachable" notifications when the cause is local, pollutes `Tails.HealthStatus` history during offline windows, and forces the user to infer "I'm offline" from simultaneity.
+- Chosen: `System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged` as the primary signal, with a dispatcher-level inference rule (≥ 2 tails `Unreachable` within 30 s while OS reports `Online`) covering captive-portal and DNS-failure cases. Distinct `ErrorCode.LocalNetworkOffline`. Probe scheduling and upload-retry scheduling pause during offline windows; in-flight uploads are not cancelled. State is reasserted synchronously at volume open via `GetIsNetworkAvailable()`.
+- Rationale: The OS signal is passive — it makes no outbound traffic — so it preserves the zero-telemetry posture without adding a "neutral endpoint" exception. It fires correctly on Windows, macOS (Intel and Apple Silicon), and Linux through a single BCL API, satisfying the OS-agnostic principle without per-platform code. Pausing probes and retries during offline windows prevents the state-history pollution that would otherwise misattribute a local cause to specific providers, and preserves `TailUploads.AttemptCount` for genuine provider failures. Captive-portal and DNS-failure cases (where the OS reports `Online` but nothing works) are caught by the inference rule using existing per-tail signals — no new mechanism, no new traffic.
+- Scope note: §22.2 specifies the monitor and its initial-state behaviour; §22.3 specifies the inference rule; §22.4 specifies the upload-queue and probe-scheduler behaviour during offline windows. Threshold values for the inference rule (`N` tails, `W` seconds) live in `config.json` and are tunable without a blueprint revision.
 
 ### 29.2 Settled questionnaire decisions
 
