@@ -1,0 +1,8 @@
+# Enforce LF line endings on checkout for all text files.
+# Prevents phantom CRLF-only diffs on Windows (core.autocrlf=true).
+* text=auto eol=lf
+
+# Windows batch files require CRLF — matches the .editorconfig override.
+# Note: .gitattributes uses fnmatch, not shell brace expansion — two separate lines required.
+*.cmd text=auto eol=crlf
+*.bat text=auto eol=crlf
