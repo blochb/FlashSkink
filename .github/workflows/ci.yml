@@ -130,7 +130,7 @@ jobs:
       source: ${{ steps.filter.outputs.source }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
