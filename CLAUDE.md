@@ -278,6 +278,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 
 1. **Core never throws across its public API boundary.** Every `public` method on every type in `FlashSkink.Core` and `FlashSkink.Core.Abstractions` returns `Result` or `Result<T>`. A public `Create()` that returns a raw `SqliteConnection` is a violation — it must return `Result<SqliteConnection>`. Exceptions flow as data inside `ErrorContext`, never across the boundary. (Blueprint §6.1)
    - **Sanctioned exception:** `IAsyncEnumerable<readonly record struct>` brain hot-path readers (e.g., `UploadQueueRepository.DequeueNextBatchAsync`) may propagate `SqliteException` and `OperationCanceledException` to the caller rather than wrapping in `Result`. The caller (a background service) is expected to handle them. This deviation must be documented with an XML comment citing blueprint §9.7. No other public method in Core may use this carve-out.
+   - **Sanctioned exception (pure functions):** `public` methods that are pure functions over their inputs and *cannot* fail — no I/O, no allocation that could OOM in normal use, no parsing that could reject malformed input — may return raw values rather than `Result<T>`. The XML doc comment must state "Never throws" explicitly. Example: `FileTypeService.Detect`, `EntropyDetector.IsCompressible`. If a method might fail under any input, it returns `Result<T>` — this exception is for true total functions, not for "usually succeeds."
 
 2. **Single survivor recovers everything — mirror, not stripe.** Every tail is a complete, independently recoverable encrypted replica. No parity. No dependence between tails. Any change that introduces cross-tail dependency contradicts the product promise. (Blueprint §5, DR-1)
 
@@ -355,6 +356,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 - `sealed` by default; unseal explicitly when inheritance is intended.
 - File-scoped namespaces.
 - XML doc comments on all public types and members.
+- **Always brace control-flow bodies.** `if`, `else`, `for`, `foreach`, `while`, `do`, `using` (statement form), and `lock` always have a `{ ... }` body — even single-statement bodies, even early-return guards. Reasons: defends against the "added a second line, forgot the braces" bug (Apple `goto fail`); keeps diffs clean when a body grows from one line to two; reads uniformly across the codebase. Expression-bodied members and `switch` expressions are unaffected (they aren't statement bodies).
 
 ### Async
 
@@ -382,6 +384,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 - Every public API has at least one unit test.
 - Test class names: `{ClassUnderTest}Tests`. Method names: `Method_State_ExpectedBehavior`.
 - Single test project is the V1 decision; split into per-area test projects only when justified (separate TFM, separate runner invocation). See blueprint §4.1 note.
+- Tests author their own test data inline. When production code has internal constants or lookup tables, tests do **not** reference them via `[InternalsVisibleTo]` — they construct equivalent values fresh. Reasons: keeps internals truly internal; avoids tautological tests where the production constant is the expected value (a typo passes); makes tests legible standalone (a reviewer reading `[0xFF, 0xD8, 0xFF]` immediately sees "JPEG SOI" without following a constant reference).
 
 ### Git
 
