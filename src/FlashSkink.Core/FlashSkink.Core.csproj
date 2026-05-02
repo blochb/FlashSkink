@@ -15,6 +15,8 @@
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" />
     <PackageReference Include="Dapper" />
+    <PackageReference Include="K4os.Compression.LZ4" />
+    <PackageReference Include="ZstdNet" />
   </ItemGroup>
 
   <ItemGroup>
