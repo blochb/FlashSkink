@@ -173,4 +173,17 @@ public class EntropyDetectorTests
 
         Assert.False(result);
     }
+
+    [Theory]
+    [InlineData(".JPG")]
+    [InlineData(".PNG")]
+    [InlineData(".MP4")]
+    [InlineData(".Docx")]
+    public void IsCompressible_UppercaseExtension_ReturnsFalse(string extension)
+    {
+        // CompressedExtensions uses OrdinalIgnoreCase; verify case-insensitivity is preserved.
+        bool result = _sut.IsCompressible(extension, ReadOnlySpan<byte>.Empty);
+
+        Assert.False(result);
+    }
 }

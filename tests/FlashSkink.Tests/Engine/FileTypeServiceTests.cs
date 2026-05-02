@@ -57,6 +57,19 @@ public class FileTypeServiceTests
     }
 
     [Fact]
+    public void Detect_ZipHeaderWithUnrecognisedExtension_ReturnsApplicationZip()
+    {
+        // .apk is not in KnownExtensions — TryGetValue returns false and the
+        // disambiguation block does not fire. Verifies the non-disambiguation path.
+        ReadOnlySpan<byte> header = [0x50, 0x4B, 0x03, 0x04];
+
+        FileTypeResult result = _sut.Detect("app.apk", header);
+
+        Assert.Equal(".apk", result.Extension);
+        Assert.Equal("application/zip", result.MimeType);
+    }
+
+    [Fact]
     public void Detect_ZipHeaderWithXlsxExtension_ReturnsSpreadsheetMime()
     {
         ReadOnlySpan<byte> header = [0x50, 0x4B, 0x03, 0x04];
@@ -189,6 +202,30 @@ public class FileTypeServiceTests
 
         Assert.Equal(".doc", result.Extension);
         Assert.Equal("application/msword", result.MimeType);
+    }
+
+    [Fact]
+    public void Detect_MsDocHeaderWithXlsExtension_ReturnsExcelMime()
+    {
+        // OLE/CFB magic (D0 CF 11 E0) is shared by .doc, .xls, .ppt, and others.
+        // Extension wins when the magic maps to msword but the extension maps elsewhere.
+        ReadOnlySpan<byte> header = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1];
+
+        FileTypeResult result = _sut.Detect("budget.xls", header);
+
+        Assert.Equal(".xls", result.Extension);
+        Assert.Equal("application/vnd.ms-excel", result.MimeType);
+    }
+
+    [Fact]
+    public void Detect_MsDocHeaderWithPptExtension_ReturnsPowerpointMime()
+    {
+        ReadOnlySpan<byte> header = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1];
+
+        FileTypeResult result = _sut.Detect("slides.ppt", header);
+
+        Assert.Equal(".ppt", result.Extension);
+        Assert.Equal("application/vnd.ms-powerpoint", result.MimeType);
     }
 
     [Fact]

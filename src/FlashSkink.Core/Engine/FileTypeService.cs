@@ -35,6 +35,17 @@ public sealed class FileTypeService
             magicMime = extMime;
         }
 
+        // OLE/CFB disambiguation — same pattern as ZIP.
+        // D0 CF 11 E0 is the compound-file container shared by .doc, .xls, .ppt, .msi, .msg, etc.
+        // .xls/.ppt override the bare "application/msword" MIME when the extension maps differently.
+        if (magicMime == "application/msword"
+            && extension is not null
+            && MagicBytes.KnownExtensions.TryGetValue(extension, out var oleExtMime)
+            && oleExtMime != "application/msword")
+        {
+            magicMime = oleExtMime;
+        }
+
         string? mimeType = magicMime
             ?? (extension is not null && MagicBytes.KnownExtensions.TryGetValue(extension, out var fromExt)
                 ? fromExt
