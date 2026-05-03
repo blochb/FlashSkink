@@ -131,27 +131,29 @@ public sealed class NotificationDispatcherTests : IAsyncLifetime
     [Fact]
     public async Task PeriodicFlush_EmitsSummaryAfterWindow()
     {
-        // Use a very short window so the periodic flush fires during the test.
+        // Use a short dedup window to keep total test time low.
         await _dispatcher.DisposeAsync();
         _dispatcher = new NotificationDispatcher(
-            dedupWindow: TimeSpan.FromMilliseconds(200),
+            dedupWindow: TimeSpan.FromMilliseconds(300),
             flushInterval: TimeSpan.FromMilliseconds(50),
             _logger);
 
         var received = new List<Notification>();
         _dispatcher.RegisterHandler(new RecordingHandler(received));
 
-        // First dispatch, then 2 suppressed within 100 ms.
+        // Fire all three dispatches in rapid succession — no inter-dispatch delays.
+        // Task.Delay(ms) on Windows CI can overshoot by hundreds of milliseconds, so
+        // any delay between dispatches risks pushing a dispatch past the dedup window,
+        // making it look like a fresh event rather than a suppressed duplicate.
         await _dispatcher.DispatchAsync(MakeNotification(source: "Svc", code: ErrorCode.BlobCorrupt), CancellationToken.None);
-        await Task.Delay(40);
         await _dispatcher.DispatchAsync(MakeNotification(source: "Svc", code: ErrorCode.BlobCorrupt), CancellationToken.None);
-        await Task.Delay(40);
         await _dispatcher.DispatchAsync(MakeNotification(source: "Svc", code: ErrorCode.BlobCorrupt), CancellationToken.None);
 
-        // Wait past the window; the periodic flush should emit the summary without any further user dispatch.
-        await Task.Delay(400);
+        // Wait for: dedup window (300 ms) to expire + periodic flush (≤50 ms) to fire.
+        // Use 800 ms total to provide headroom for CI timer jitter.
+        await Task.Delay(800);
 
-        Assert.True(received.Count >= 2, $"Expected first + summary; got {received.Count}");
+        Assert.True(received.Count >= 2, $"Expected first notification + summary; got {received.Count}");
         Assert.Contains(received, n => n.Title == "Repeated background failure");
     }
 
