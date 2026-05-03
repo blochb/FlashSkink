@@ -20,6 +20,7 @@ public sealed class NotificationBus : INotificationBus, IAsyncDisposable
 
     private int _inFlightCount;
     private int _dropsSinceLastDrain;
+    private int _disposed;
 
     /// <param name="dispatcher">The dispatcher that handles per-notification fan-out and dedup.</param>
     /// <param name="logger">Logger for channel-full warnings and loop-level faults.</param>
@@ -55,6 +56,11 @@ public sealed class NotificationBus : INotificationBus, IAsyncDisposable
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) == 1)
+        {
+            return;
+        }
+
         _channel.Writer.Complete();
         await _dispatchLoop.ConfigureAwait(false);
         await _dispatcher.DisposeAsync().ConfigureAwait(false);

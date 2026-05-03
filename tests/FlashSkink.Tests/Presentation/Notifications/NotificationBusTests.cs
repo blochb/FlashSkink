@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using FlashSkink.Core.Abstractions.Notifications;
 using FlashSkink.Presentation.Notifications;
@@ -58,7 +59,7 @@ public sealed class NotificationBusTests : IAsyncLifetime
     [Fact]
     public async Task PublishAsync_SingleNotification_ReachesDispatcher()
     {
-        var received = new List<Notification>();
+        var received = new ConcurrentQueue<Notification>();
         _dispatcher.RegisterHandler(new RecordingHandler(received));
 
         await _bus.PublishAsync(MakeNotification());
@@ -101,7 +102,7 @@ public sealed class NotificationBusTests : IAsyncLifetime
     [Fact]
     public async Task DisposeAsync_DrainsPendingNotifications()
     {
-        var received = new List<Notification>();
+        var received = new ConcurrentQueue<Notification>();
         _dispatcher.RegisterHandler(new RecordingHandler(received));
 
         for (var i = 0; i < 5; i++)
@@ -120,7 +121,7 @@ public sealed class NotificationBusTests : IAsyncLifetime
     {
         // A handler that throws on the 2nd call exercises the dispatcher's handler-isolation
         // catch block (§8.3). The bus loop continues dispatching the remaining notifications.
-        var received = new List<Notification>();
+        var received = new ConcurrentQueue<Notification>();
         _dispatcher.RegisterHandler(new ThrowOnNthHandler(throwOnCall: 2, received));
 
         for (var i = 0; i < 5; i++)
@@ -140,11 +141,11 @@ public sealed class NotificationBusTests : IAsyncLifetime
 
     // ── Test doubles ──────────────────────────────────────────────────────────────
 
-    private sealed class RecordingHandler(List<Notification> received) : INotificationHandler
+    private sealed class RecordingHandler(ConcurrentQueue<Notification> received) : INotificationHandler
     {
         public ValueTask HandleAsync(Notification notification, CancellationToken ct)
         {
-            received.Add(notification);
+            received.Enqueue(notification);
             return ValueTask.CompletedTask;
         }
     }
@@ -157,7 +158,7 @@ public sealed class NotificationBusTests : IAsyncLifetime
         }
     }
 
-    private sealed class ThrowOnNthHandler(int throwOnCall, List<Notification> received) : INotificationHandler
+    private sealed class ThrowOnNthHandler(int throwOnCall, ConcurrentQueue<Notification> received) : INotificationHandler
     {
         private int _callCount;
 
@@ -169,7 +170,7 @@ public sealed class NotificationBusTests : IAsyncLifetime
                 throw new InvalidOperationException("Simulated handler fault.");
             }
 
-            received.Add(notification);
+            received.Enqueue(notification);
             return ValueTask.CompletedTask;
         }
     }

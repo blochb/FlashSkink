@@ -154,10 +154,12 @@ public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
             () => _handler.HandleAsync(notification, CancellationToken.None).AsTask());
 
         Assert.Null(exception);
+        // Both the Warning (Result.Fail path) and Error (Exception path) log sites include
+        // "persist" — this distinguishes a genuine persistence-failure log from an unrelated entry.
         Assert.True(
-            _logger.HasEntry(LogLevel.Warning, string.Empty) ||
-            _logger.HasEntry(LogLevel.Error, string.Empty),
-            "Expected a log entry indicating the persistence failure.");
+            _logger.HasEntry(LogLevel.Warning, "persist") ||
+            _logger.HasEntry(LogLevel.Error, "persist"),
+            "Expected a 'persist' log entry at Warning or Error indicating the persistence failure.");
     }
 
     [Fact]
