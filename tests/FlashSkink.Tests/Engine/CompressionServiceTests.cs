@@ -1,5 +1,6 @@
 using System.Buffers;
 using FlashSkink.Core.Abstractions.Results;
+using FlashSkink.Core.Buffers;
 using FlashSkink.Core.Crypto;
 using FlashSkink.Core.Engine;
 using Xunit;
@@ -187,21 +188,19 @@ public class CompressionServiceTests
     [Fact]
     public void ClearOnDisposeOwner_DisposeZeroesBuffer()
     {
-        // ClearOnDisposeOwner is internal; we exercise it through the IMemoryOwner<byte>
-        // returned by TryCompress. After dispose, Memory becomes Empty — the owner has
-        // released (and zeroed) the underlying pool buffer.
-        using var svc = new CompressionService();
-        byte[] input = new byte[1024];
-        Array.Fill(input, (byte)0xAB);
+        // RecordingMemoryPool exposes the backing byte[] directly so we can read it after
+        // dispose and verify CryptographicOperations.ZeroMemory was actually called.
+        // ClearOnDisposeOwner is internal; accessible because AssemblyInfo.cs declares
+        // [InternalsVisibleTo("FlashSkink.Tests")].
+        var pool = new RecordingMemoryPool();
+        var owner = ClearOnDisposeOwner.Rent(64, pool);
 
-        bool ok = svc.TryCompress(input, out var output, out _, out _);
-        Assert.True(ok);
-        Assert.NotNull(output);
-        Assert.False(output!.Memory.IsEmpty);
+        owner.Memory.Span.Fill(0xFF);
 
-        output.Dispose();
+        owner.Dispose();
 
-        Assert.True(output.Memory.IsEmpty);
+        Assert.NotNull(pool.LastRented);
+        Assert.All(pool.LastRented!, b => Assert.Equal((byte)0x00, b));
     }
 
     [Fact]
@@ -217,5 +216,37 @@ public class CompressionServiceTests
         output!.Dispose();
         var ex = Record.Exception(() => output.Dispose());
         Assert.Null(ex);
+    }
+
+    // ── Test helpers ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Allocates a plain <see cref="byte"/> array per <see cref="Rent"/> call and exposes it
+    /// via <see cref="LastRented"/> so tests can read the backing memory after dispose and
+    /// verify that <see cref="System.Security.Cryptography.CryptographicOperations.ZeroMemory"/>
+    /// was actually called.
+    /// </summary>
+    private sealed class RecordingMemoryPool : MemoryPool<byte>
+    {
+        public byte[]? LastRented { get; private set; }
+
+        public override int MaxBufferSize => int.MaxValue;
+
+        public override IMemoryOwner<byte> Rent(int minBufferSize = -1)
+        {
+            var array = new byte[Math.Max(minBufferSize, 1)];
+            LastRented = array;
+            return new ArrayOwner(array);
+        }
+
+        protected override void Dispose(bool disposing) { }
+
+        private sealed class ArrayOwner : IMemoryOwner<byte>
+        {
+            private readonly byte[] _array;
+            internal ArrayOwner(byte[] array) => _array = array;
+            public Memory<byte> Memory => _array;
+            public void Dispose() { }
+        }
     }
 }
