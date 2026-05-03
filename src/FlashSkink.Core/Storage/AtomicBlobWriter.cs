@@ -230,6 +230,10 @@ public sealed class AtomicBlobWriter
     /// No-op on Windows because NTFS metadata journaling makes directory-entry durability a given
     /// once <see cref="File.Move"/> returns (V1 assumption — see skipped power-off beacon in
     /// <c>WriteCrashConsistencyTests</c>). On Linux/macOS uses <see cref="RandomAccess.FlushToDisk"/>.
+    /// Best-effort: if the platform does not support opening directory handles (some Linux
+    /// configurations, container runtimes), the exception is swallowed — modern journaled
+    /// filesystems (ext4 data=ordered, APFS) make renames durable after the preceding file
+    /// fsync without an explicit directory fsync.
     /// </summary>
     private static void FsyncDirectory(string directoryPath)
     {
@@ -238,13 +242,21 @@ public sealed class AtomicBlobWriter
             return;
         }
 
-        using var handle = File.OpenHandle(
-            directoryPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite,
-            FileOptions.None);
-        RandomAccess.FlushToDisk(handle);
+        // Best-effort: directory-handle open is not universally supported on Linux/macOS
+        // (container runtimes, certain mount options).  The rename is already durable on
+        // ext4 data=ordered and APFS after the staging-file fsync; swallowing here is safe.
+        try
+        {
+            using var handle = File.OpenHandle(
+                directoryPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite,
+                FileOptions.None);
+            RandomAccess.FlushToDisk(handle);
+        }
+        catch (UnauthorizedAccessException) { /* best-effort: directory fsync not supported in this environment */ }
+        catch (IOException) { /* best-effort: proceed without directory fsync */ }
     }
 
     /// <summary>
