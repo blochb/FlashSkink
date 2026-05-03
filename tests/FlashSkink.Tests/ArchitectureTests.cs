@@ -52,4 +52,13 @@ public class ArchitectureTests
             .Select(a => a.Name ?? string.Empty);
         Assert.DoesNotContain(refs, r => r.Equals("FlashSkink.Presentation", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void Core_DoesNotReference_Presentation()
+    {
+        var refs = GetAssembly("FlashSkink.Core").GetReferencedAssemblies()
+            .Select(a => a.Name ?? string.Empty);
+        Assert.DoesNotContain(refs, r =>
+            r.Equals("FlashSkink.Presentation", StringComparison.OrdinalIgnoreCase));
+    }
 }

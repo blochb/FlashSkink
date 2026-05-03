@@ -292,7 +292,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 
 7. **Zero trust in the host.** No installation. No host state. `Path.GetTempPath()` is not used in the normal write or upload paths. Staging lives on the skink at `.flashskink/staging/`. (Blueprint §3, §13.3, §26.4)
 
-8. **Core holds no UI framework reference.** `FlashSkink.Core` and `FlashSkink.Core.Abstractions` compile and pass tests with zero reference to Avalonia or any UI toolkit. Verified at the assembly level in CI. (Blueprint §4.2)
+8. **Core holds no UI framework reference, and no reference to `FlashSkink.Presentation`.** `FlashSkink.Core` and `FlashSkink.Core.Abstractions` compile and pass tests with zero reference to Avalonia, any UI toolkit, or `FlashSkink.Presentation`. The dependency arrow points one way: `Presentation → Core`. Any contract that a Core service must call (e.g., `INotificationBus.PublishAsync` from `WritePipeline`) lives in `FlashSkink.Core.Abstractions`; implementations may live in `Presentation`. This is the same split that puts `Result`, `ErrorContext`, `IStorageProvider`, `INotificationBus`, and `INotificationHandler` in `Abstractions` while concrete `NotificationBus` and `NotificationDispatcher` live in `Presentation`. Verified at the assembly level in CI. (Blueprint §4.2)
 
 9. **Presentation holds no UI framework reference.** `FlashSkink.Presentation` is UI-agnostic; ViewModel tests run without a GUI. Adding an Avalonia or WPF reference to Presentation is a Gate 2 rejection. (Blueprint §3, §4.2)
 
