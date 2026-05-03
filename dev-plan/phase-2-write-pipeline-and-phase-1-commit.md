@@ -13,7 +13,7 @@ After Phase 2:
 - A FlashSkink volume can write a file end-to-end: detect type, hash, optionally compress, encrypt, atomically commit to the skink, and record the result in the brain.
 - A FlashSkink volume can read a file end-to-end: brain lookup, blob open, header parse, decrypt, decompress, plaintext-hash verification, and stream to the caller.
 - Every write is wrapped in a WAL `WRITE` operation scope (PREPARE → COMMITTED), preserving the crash-consistency invariant from §21.3 across every interleaving the write pipeline can produce.
-- `INotificationBus` exists in `FlashSkink.Presentation` with the `BackgroundFailures` persistence handler registered. Background services (added in later phases) have a working sink the moment they need one.
+- `INotificationBus` exists in `FlashSkink.Core.Abstractions.Notifications` (callable from any Core service) with concrete `NotificationBus` and `NotificationDispatcher` in `FlashSkink.Presentation.Notifications` and the `PersistenceNotificationHandler` in `FlashSkink.Core/Engine/`. Background services (added in later phases) have a working sink the moment they need one.
 - `FlashSkinkVolume` exposes the file and folder operations a user can perform without tails configured: `WriteFileAsync`, `ReadFileAsync`, `DeleteFileAsync`, `CreateFolderAsync`, `DeleteFolderAsync`, `RenameFolderAsync`, `MoveAsync`, `ListChildrenAsync`, `ListFilesAsync`, `ChangePasswordAsync`, `RestoreFromGracePeriodAsync`.
 - Tail-upload rows (`TailUploads.Status = PENDING`) are queued by every write but never dequeued — the upload queue service in Phase 3 picks them up.
 - Phase 3 (tails, providers, upload queue) can start with a single prompt.
@@ -110,21 +110,31 @@ This PR uses two existing `ErrorCode` values per cross-cutting decision 4: `Blob
 
 ### §2.3 — Notification bus
 
-**Blueprint sections to read:** §8 (all subsections), Principle 24.
+**Blueprint sections to read:** §8 (all subsections), §4.2 (dependency graph), Principle 24, Principle 8 (Core → Presentation prohibition).
 
-**Scope summary:** Six types in `FlashSkink.Presentation/Notifications/` plus one in `FlashSkink.Core` for the persistence handler.
+**Scope summary:** Four contracts in `FlashSkink.Core.Abstractions/Notifications/`, two implementations in `FlashSkink.Presentation/Notifications/`, and one handler in `FlashSkink.Core/Engine/`.
 
-`INotificationBus` and `INotificationHandler` (interfaces, public). `Notification` (sealed class, properties from §8.3). `NotificationSeverity` (enum: `Info`, `Warning`, `Error`, `Critical`). `NotificationBus` (sealed, `IAsyncDisposable`) — `Channel<Notification>` of capacity 100 with `BoundedChannelFullMode.DropOldest`, single-reader/multi-writer. `NotificationDispatcher` — fans out to registered handlers; deduplicates by `(Source, ErrorCode)` within a 60-second window per §8.4.
+**Contracts (in `FlashSkink.Core.Abstractions.Notifications`)** — these live in `Abstractions` because every Core publisher (`WritePipeline`, `ReadPipeline`, `UploadQueueService`, `AuditService`, etc.) and every Core handler (`PersistenceNotificationHandler`) must reference them, and per §4.2 / Principle 8 Core does not reference Presentation:
+- `INotificationBus` and `INotificationHandler` (public interfaces)
+- `Notification` (sealed class, properties from blueprint §8.3 — note `OccurredUtc` (`DateTime`, UTC) rather than `OccurredAt` (`DateTimeOffset`) so persistence to `BackgroundFailures.OccurredUtc` is a 1:1 mapping)
+- `NotificationSeverity` (enum: `Info`, `Warning`, `Error`, `Critical`)
 
-`PersistenceNotificationHandler` lives in `FlashSkink.Core/Engine/` (it depends on `BackgroundFailureRepository` from §1.6). Writes every `Error` and `Critical` notification to `BackgroundFailures`. `Info` and `Warning` are not persisted.
+**Implementations (in `FlashSkink.Presentation.Notifications`)** — consumer-facing infrastructure:
+- `NotificationBus` (`public sealed`, `IAsyncDisposable`) — `Channel<Notification>` of capacity 100 with `BoundedChannelFullMode.DropOldest`, single-reader/multi-writer; the dispatch loop reads the channel and delegates each notification to the dispatcher.
+- `NotificationDispatcher` (`public sealed`, `IAsyncDisposable`) — fans out to registered handlers; deduplicates by `(Source, ErrorCode)` within a 60-second window per §8.4; runs a periodic flush task (default 5-second cadence) that emits suppressed-count summaries when a window expires.
+
+**Handler (in `FlashSkink.Core/Engine/`)**:
+- `PersistenceNotificationHandler` implements `INotificationHandler` (an `Abstractions` contract) and consumes `BackgroundFailureRepository` from §1.6. Writes every `Error` and `Critical` notification to `BackgroundFailures`. `Info` and `Warning` are not persisted.
 
 **NuGet:** None new (`System.Threading.Channels` is BCL).
 
 **Key constraints:**
-- Handler exceptions in the dispatch loop are swallowed and logged at `Warning` — a misbehaving handler must not kill dispatch (§8.3).
+- Contracts in `Abstractions`, implementations in `Presentation`, persistence handler in Core/Engine — see scope summary above for the rationale (Principle 8). A new architecture test (`Core_DoesNotReference_Presentation`) is added in this PR alongside the existing assembly-layering checks.
+- `NotificationBus` and `NotificationDispatcher` are `public sealed` per blueprint §8.3 — they are constructed by host `Program.cs` for DI registration and by the test project directly; the interfaces in `Core.Abstractions.Notifications` are the DI registration target.
+- Handler exceptions in the dispatch loop are caught and logged at `Warning` — a misbehaving handler must not interrupt fan-out (§8.3).
 - If the `BackgroundFailures` insert itself fails, log to `ILogger` only; never publish to the bus from inside a handler (would loop).
 - Deduplication window state is in-memory only; restart resets it. This is intentional — the persistence path captures anything that mattered.
-- `NotificationBus` is registered as a singleton in DI. `PersistenceNotificationHandler` is registered as a `INotificationHandler` and added to the bus at startup.
+- `NotificationBus` is registered as a singleton in DI by host projects (Phase 6). `PersistenceNotificationHandler` is registered as an `INotificationHandler` and added to the dispatcher at startup.
 - Phase 2 registers no UI or CLI handler — those land in Phase 6. The bus must function correctly with only the persistence handler registered (verified in tests).
 - Notification messages obey Principle 25 (appliance vocabulary discipline) — no mention of "blob", "WAL", "stripe", "DEK", or "PRAGMA" in `Title` or `Message`.
 - **Channel-full drop logging.** `BoundedChannelFullMode.DropOldest` means a true unbounded flood (after `Source + ErrorCode` deduplication has done its work) silently evicts the oldest queued notifications. The persistence handler will not see them. The bus tracks a per-window drop counter and logs at `Warning` via `ILogger<NotificationBus>` whenever a publish causes an eviction, with the count of drops since the last successful drain. The dropped *content* is gone, but the fact-of-drop reaches the file sink. V1 acceptable loss (§8.2 already accepts that "a flood from a single source indicates a systemic issue better described by one notification with a count, not 100 individual ones") — this constraint records the visibility tradeoff explicitly.
