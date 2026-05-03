@@ -147,6 +147,11 @@ public sealed class CompressionService : IDisposable
             else
             {
                 // BlobFlags.None — plain copy
+                if ((long)compressed.Length != plaintextSize)
+                {
+                    return Result.Fail(ErrorCode.BlobCorrupt,
+                        $"Uncompressed payload is {compressed.Length} bytes but expected {plaintextSize}");
+                }
                 compressed.Span.CopyTo(destination.Memory.Span);
                 writtenBytes = compressed.Length;
             }

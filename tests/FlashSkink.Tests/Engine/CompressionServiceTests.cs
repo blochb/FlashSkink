@@ -148,11 +148,9 @@ public class CompressionServiceTests
         Assert.False(rejected.Success);
         Assert.Equal(ErrorCode.FileTooLong, rejected.Error!.Code);
 
-        // Exactly at the cap → accepted.
-        // BlobFlags.None copies compressed.Length (100) bytes, so a 100-byte destination
-        // is sufficient — plaintextSize is validated but does not control the copy count.
+        // Exactly at the cap → accepted when plaintextSize matches payload length.
         var accepted = svc.Decompress(
-            data, BlobFlags.None, CompressionService.MaxPlaintextBytes, destination, out int written);
+            data, BlobFlags.None, data.Length, destination, out int written);
         Assert.True(accepted.Success);
         Assert.Equal(data.Length, written);
     }
@@ -165,6 +163,20 @@ public class CompressionServiceTests
         using var destination = MemoryPool<byte>.Shared.Rent(64);
 
         var result = svc.Decompress(data, BlobFlags.None, plaintextSize: -1L, destination, out _);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+    }
+
+    [Fact]
+    public void Decompress_BlobFlagsNone_PlaintextSizeMismatch_ReturnsBlobCorrupt()
+    {
+        using var svc = new CompressionService();
+        byte[] data = new byte[100];
+        using var destination = MemoryPool<byte>.Shared.Rent(data.Length);
+
+        // plaintextSize claims 99 bytes but compressed payload is 100 bytes → corrupted header
+        var result = svc.Decompress(data, BlobFlags.None, plaintextSize: 99L, destination, out _);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
