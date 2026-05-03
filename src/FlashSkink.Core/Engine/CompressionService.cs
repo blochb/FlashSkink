@@ -83,6 +83,10 @@ public sealed class CompressionService : IDisposable
         }
         catch (Exception)
         {
+            // Treats all other failures — including ObjectDisposedException if called after
+            // Dispose() — as incompressible content. The volume semaphore makes post-dispose
+            // calls unreachable in practice. If that invariant ever breaks, add an _disposed
+            // guard before the try block to let the error surface as a programming fault.
             output = null; flags = BlobFlags.None; writtenBytes = 0;
             return false;
         }
