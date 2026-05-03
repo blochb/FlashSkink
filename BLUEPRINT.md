@@ -128,6 +128,8 @@ FlashSkink/
 │   │   │   ├── IProviderSetup.cs
 │   │   │   ├── UploadSession.cs
 │   │   │   └── ProviderHealth.cs
+│   │   ├── Notifications/            ← INotificationBus, INotificationHandler,
+│   │   │                                Notification, NotificationSeverity
 │   │   └── Models/
 │   │       ├── VolumeFile.cs
 │   │       ├── WriteReceipt.cs
@@ -137,7 +139,8 @@ FlashSkink/
 │   ├── FlashSkink.Core/
 │   │   ├── FlashSkink.Core.csproj
 │   │   ├── Engine/                   ← WritePipeline, ReadPipeline, FileTypeService,
-│   │   │                                EntropyDetector, HashingService
+│   │   │                                EntropyDetector, HashingService,
+│   │   │                                PersistenceNotificationHandler
 │   │   ├── Crypto/                   ← CryptoPipeline, KeyVault, MnemonicService,
 │   │   │                                BlobHeader
 │   │   ├── Compression/              ← CompressionService (Zstd / LZ4)
@@ -168,9 +171,8 @@ FlashSkink/
 │   │   ├── Interfaces/               ← INavigationService, IDialogService,
 │   │   │                                IFilePickerService, IBrowserService,
 │   │   │                                IClipboardService
-│   │   ├── Notifications/            ← INotificationBus, INotificationHandler,
-│   │   │                                NotificationBus, Notification,
-│   │   │                                PersistenceHandler, UiHandler
+│   │   ├── Notifications/            ← NotificationBus, NotificationDispatcher,
+│   │   │                                UiNotificationHandler
 │   │   └── Services/
 │   │
 │   ├── FlashSkink.UI.Avalonia/
@@ -239,6 +241,7 @@ Rules enforced at the assembly level (verified in CI):
 - **`FlashSkink.CLI`** has no reference to `FlashSkink.Presentation`.
 - **`FlashSkink.Core.Abstractions`** has no project references at all (foundation).
 - **`FlashSkink.Core`** depends only on `FlashSkink.Core.Abstractions`.
+- **`FlashSkink.Core` does not reference `FlashSkink.Presentation`.** The dependency arrow points the other way: `Presentation → Core`. Any contract that a Core service needs to call (e.g., `INotificationBus.PublishAsync` from `WritePipeline`) lives in `FlashSkink.Core.Abstractions`. Implementations of those contracts may still live in `Presentation` — the contract/implementation split is what keeps the layering clean. This rule is the reason `Result`, `ErrorContext`, `IStorageProvider`, `INotificationBus`, and `INotificationHandler` all live in `Abstractions`.
 
 ### 4.3 Naming Conventions
 
@@ -733,8 +736,11 @@ A single `ChannelReader<Notification>` is consumed by a `NotificationDispatcher`
 
 ### 8.3 Interfaces and Implementation
 
+**Where the types live.** The contracts (`INotificationBus`, `INotificationHandler`, `Notification`, `NotificationSeverity`) live in `FlashSkink.Core.Abstractions.Notifications`. The implementations (`NotificationBus`, `NotificationDispatcher`) live in `FlashSkink.Presentation.Notifications`. The persistence handler (`PersistenceNotificationHandler`) lives in `FlashSkink.Core/Engine/`. Rationale: every background service that needs to publish — `WritePipeline`, `ReadPipeline`, `UploadQueueService`, `AuditService`, `SelfHealingService`, `UsbMonitorService`, `HealthMonitorService`, the brain mirror task — lives in `FlashSkink.Core`. Per §4.2, `FlashSkink.Core` references only `FlashSkink.Core.Abstractions`. Putting the contracts in `Abstractions` is the only way Core publishers can call `INotificationBus.PublishAsync` and Core handlers (the persistence one) can implement `INotificationHandler` without violating the dependency graph. The same logic applies that puts `Result`, `ErrorContext`, and the model records in `Abstractions` — these are cross-layer contracts, not Presentation concerns. Implementations stay in Presentation because the dispatcher's fan-out is consumer-facing infrastructure: GUI handlers, CLI handlers, dedup-and-summary policy.
+
 ```csharp
-namespace FlashSkink.Presentation.Notifications;
+// In FlashSkink.Core.Abstractions
+namespace FlashSkink.Core.Abstractions.Notifications;
 
 public interface INotificationBus
 {
@@ -753,20 +759,26 @@ public sealed class Notification
     public required string               Title      { get; init; }
     public required string               Message    { get; init; }
     public ErrorContext?                 Error      { get; init; }
-    public DateTimeOffset                OccurredAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTime                      OccurredUtc { get; init; } = DateTime.UtcNow;
     public bool                          RequiresUserAction { get; init; }
 }
 
 public enum NotificationSeverity { Info, Warning, Error, Critical }
+```
 
-internal sealed class NotificationBus : INotificationBus, IAsyncDisposable
+```csharp
+// In FlashSkink.Presentation
+namespace FlashSkink.Presentation.Notifications;
+
+public sealed class NotificationBus : INotificationBus, IAsyncDisposable
 {
     private readonly Channel<Notification> _channel;
-    private readonly List<INotificationHandler> _handlers = [];
+    private readonly NotificationDispatcher _dispatcher;
     private readonly Task _dispatchLoop;
 
-    public NotificationBus()
+    public NotificationBus(NotificationDispatcher dispatcher, ILogger<NotificationBus> logger)
     {
+        _dispatcher = dispatcher;
         _channel = Channel.CreateBounded<Notification>(new BoundedChannelOptions(100)
         {
             FullMode     = BoundedChannelFullMode.DropOldest,
@@ -776,8 +788,6 @@ internal sealed class NotificationBus : INotificationBus, IAsyncDisposable
         _dispatchLoop = DispatchLoopAsync();
     }
 
-    public void RegisterHandler(INotificationHandler handler) => _handlers.Add(handler);
-
     public async ValueTask PublishAsync(Notification notification, CancellationToken ct = default)
         => await _channel.Writer.WriteAsync(notification, ct);
 
@@ -785,11 +795,8 @@ internal sealed class NotificationBus : INotificationBus, IAsyncDisposable
     {
         await foreach (var notification in _channel.Reader.ReadAllAsync())
         {
-            foreach (var handler in _handlers)
-            {
-                try { await handler.HandleAsync(notification, CancellationToken.None); }
-                catch { /* Handler failures must not kill the dispatch loop */ }
-            }
+            try { await _dispatcher.DispatchAsync(notification, CancellationToken.None); }
+            catch { /* Defence in depth — dispatcher already swallows handler exceptions */ }
         }
     }
 
@@ -797,9 +804,14 @@ internal sealed class NotificationBus : INotificationBus, IAsyncDisposable
     {
         _channel.Writer.Complete();
         await _dispatchLoop;
+        await _dispatcher.DisposeAsync();
     }
 }
 ```
+
+`NotificationDispatcher` (also in `FlashSkink.Presentation.Notifications`) owns the registered handler list, the `(Source, ErrorCode)` deduplication state, and the periodic flush of suppressed-count summaries (§8.4). Handler exceptions inside `DispatchAsync` are caught and logged at `Warning` — a misbehaving handler must not interrupt fan-out.
+
+**Visibility — `public sealed` for both classes.** `NotificationBus` and `NotificationDispatcher` are `public sealed`, not `internal`. They are the concrete types host projects construct in `Program.cs` for DI registration, and they are the types tests need to instantiate directly. `internal` would force either `[InternalsVisibleTo]` (which the test convention in CLAUDE.md discourages) or a public factory façade with no encapsulation benefit — these are behavior containers, not data carriers, so there is nothing to hide. The interfaces in `Core.Abstractions.Notifications` remain the registration target; the concrete classes are just normal public infrastructure.
 
 ### 8.4 Deduplication
 
@@ -809,7 +821,7 @@ A flapping provider can generate many `ProviderUnreachable` notifications in qui
 
 Background failures must survive until the user sees them — including cases where they occur while the UI is not focused, the CLI has already exited, or the app is restarted. A `BackgroundFailures` table in the brain provides this persistence.
 
-**Write path:** A `PersistenceNotificationHandler` (registered on the bus alongside the UI handler) writes every `Error` and `Critical` notification to `BackgroundFailures` immediately. `Info` and `Warning` are not persisted — they are transient.
+**Write path:** A `PersistenceNotificationHandler` — implemented in `FlashSkink.Core/Engine/`, registered on the bus alongside the UI handler — writes every `Error` and `Critical` notification to `BackgroundFailures` immediately via `BackgroundFailureRepository`. `Info` and `Warning` are not persisted — they are transient. The handler lives in Core (not Presentation) because it implements `INotificationHandler` (an `Abstractions` contract per §8.3) and consumes `BackgroundFailureRepository` (a Core type); both are reachable from Core directly.
 
 **Read path on launch:** Before any user operations, query for unacknowledged rows ordered by `OccurredUtc DESC`. Surface as a notification summary: *"3 background failures since your last session."* Each is dismissible; dismissal sets `Acknowledged = 1`.
 
