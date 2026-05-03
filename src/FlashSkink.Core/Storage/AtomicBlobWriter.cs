@@ -53,9 +53,16 @@ public sealed class AtomicBlobWriter
             var stagingDir = Path.GetDirectoryName(staging)!; // ! safe: staging is always a file path with a parent dir
             Directory.CreateDirectory(stagingDir);
 
-            // Step 1b — create shard directory tree; fsync the mid-level parent once on first creation.
+            // Step 1b — create shard directory tree; fsync parent directories on first creation.
+            // When midDir is new, fsync its parent (.flashskink/blobs/) to make the midDir
+            // directory-entry durable. When leafDir is new, fsync midDir to make leafDir durable.
+            var midExisted = Directory.Exists(midDir);
             var leafExisted = Directory.Exists(leafDir);
             Directory.CreateDirectory(leafDir);
+            if (!midExisted)
+            {
+                FsyncDirectory(Path.GetDirectoryName(midDir)!); // ! safe: midDir is always a non-root directory
+            }
             if (!leafExisted)
             {
                 FsyncDirectory(midDir);
@@ -138,6 +145,9 @@ public sealed class AtomicBlobWriter
         {
             ct.ThrowIfCancellationRequested();
             var path = ComputeStagingPath(skinkRoot, blobId);
+            // File.Exists returns false for both "file absent" and "directory absent" cases.
+            // Using it avoids a DirectoryNotFoundException from File.Delete when the staging
+            // directory was never created (crash step 1 — no writes attempted at all).
             if (File.Exists(path))
             {
                 File.Delete(path);
@@ -176,6 +186,9 @@ public sealed class AtomicBlobWriter
         {
             ct.ThrowIfCancellationRequested();
             var path = ComputeDestinationPath(skinkRoot, blobId);
+            // File.Exists returns false for both "file absent" and "directory absent" cases.
+            // Using it avoids a DirectoryNotFoundException from File.Delete when the shard
+            // directory was never created (the blob write never completed step 1b).
             if (File.Exists(path))
             {
                 File.Delete(path);
@@ -260,17 +273,22 @@ public sealed class AtomicBlobWriter
     }
 
     /// <summary>
-    /// Returns <see langword="true"/> when <paramref name="ex"/> represents a disk-full condition:
-    /// <c>ERROR_DISK_FULL</c> (Windows <c>0x80070070</c>) or <c>ENOSPC</c> (Unix errno 28).
+    /// Returns <see langword="true"/> when <paramref name="ex"/> represents a disk-full condition.
+    /// Checks <c>ERROR_DISK_FULL</c> (<c>0x80070070</c>), which the .NET runtime uses on all
+    /// platforms — ENOSPC is normalised to this HRESULT on Linux/macOS, so the Windows check
+    /// covers both. The raw-errno branch (<c>HResult &amp; 0xFFFF == 28</c>) is a defensive
+    /// fallback for non-standard <see cref="IOException"/> sources (e.g. native interop or custom
+    /// streams) that set a raw Unix errno rather than a normalised HRESULT.
     /// </summary>
     private static bool IsDiskFull(IOException ex)
     {
-        // Windows: HRESULT 0x80070070 = ERROR_DISK_FULL
+        // 0x80070070 = ERROR_DISK_FULL. .NET normalises ENOSPC to this on Linux/macOS, so this
+        // single check covers all platforms for standard file I/O.
         if ((uint)ex.HResult == 0x80070070)
         {
             return true;
         }
-        // Unix: errno 28 = ENOSPC
+        // Defensive fallback: raw ENOSPC errno (28) in the low 16 bits, for non-standard sources.
         if ((ex.HResult & 0xFFFF) == 28)
         {
             return true;
@@ -280,18 +298,22 @@ public sealed class AtomicBlobWriter
 
     /// <summary>
     /// Returns <see langword="true"/> when <paramref name="ex"/> represents a file-already-exists
-    /// condition: <c>ERROR_FILE_EXISTS</c> (Windows <c>0x80070050</c>), <c>ERROR_ALREADY_EXISTS</c>
-    /// (Windows <c>0x800700B7</c>), or <c>EEXIST</c> (Unix errno 17).
+    /// condition. Checks <c>ERROR_FILE_EXISTS</c> (<c>0x80070050</c>) and
+    /// <c>ERROR_ALREADY_EXISTS</c> (<c>0x800700B7</c>), which the .NET runtime uses on all
+    /// platforms — EEXIST is normalised to <c>ERROR_FILE_EXISTS</c> on Linux/macOS. The
+    /// raw-errno branch (<c>HResult &amp; 0xFFFF == 17</c>) is a defensive fallback for
+    /// non-standard <see cref="IOException"/> sources that set a raw Unix errno.
     /// </summary>
     private static bool IsFileExists(IOException ex)
     {
-        // Windows: ERROR_FILE_EXISTS = 0x80070050, ERROR_ALREADY_EXISTS = 0x800700B7
+        // 0x80070050 = ERROR_FILE_EXISTS, 0x800700B7 = ERROR_ALREADY_EXISTS. .NET normalises
+        // EEXIST to ERROR_FILE_EXISTS on Linux/macOS, so these checks cover all platforms.
         var hr = (uint)ex.HResult;
         if (hr == 0x80070050 || hr == 0x800700B7)
         {
             return true;
         }
-        // Unix: errno 17 = EEXIST
+        // Defensive fallback: raw EEXIST errno (17) in the low 16 bits, for non-standard sources.
         if ((ex.HResult & 0xFFFF) == 17)
         {
             return true;

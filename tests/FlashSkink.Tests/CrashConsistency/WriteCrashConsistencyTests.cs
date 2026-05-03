@@ -107,6 +107,22 @@ public sealed class WriteCrashConsistencyTests
         Assert.False(File.Exists(stagingPath),
             $"Orphan staging file found after rollback (crash step {crashAtStep}): {stagingPath}");
 
+        // 2b. Destination file state varies by crash step:
+        //   Step 4: MarkRenamed NOT called → DisposeAsync leaves the orphan for Phase-5 recovery.
+        //   Steps 1-3, 5: destination either never existed (1-3) or MarkRenamed WAS called (5)
+        //                 so DisposeAsync deleted it.
+        var destPath = AtomicBlobWriter.ComputeDestinationPath(skinkRoot, blobId);
+        if (crashAtStep == 4)
+        {
+            Assert.True(File.Exists(destPath),
+                $"Step 4: destination orphan must survive rollback (Phase-5 recovers it): {destPath}");
+        }
+        else
+        {
+            Assert.False(File.Exists(destPath),
+                $"Step {crashAtStep}: destination must not exist after rollback: {destPath}");
+        }
+
         // 3. No Files or Blobs rows — no brain commit happened in this PR.
         //    The §2.5 PR extends this property test to include Files/Blobs seeding.
         var filesCount = conn.QuerySingle<int>("SELECT COUNT(*) FROM Files");
