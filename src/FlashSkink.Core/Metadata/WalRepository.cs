@@ -71,9 +71,21 @@ public sealed class WalRepository
 
     /// <summary>
     /// Transitions a WAL row to a new phase. On compensation paths callers must pass
-    /// <see cref="CancellationToken.None"/> as a literal (Principle 17).
+    /// <see cref="CancellationToken.None"/> as a literal (Principle 17). When
+    /// <paramref name="transaction"/> is non-null the UPDATE participates in that transaction;
+    /// when null it auto-commits (existing behaviour).
     /// </summary>
-    public async Task<Result> TransitionAsync(string walId, string newPhase, CancellationToken ct)
+    /// <remarks>
+    /// The <paramref name="transaction"/> parameter is placed after <paramref name="ct"/> (rather
+    /// than before) to preserve existing call-site signatures — see Drift Note 1 in
+    /// <c>.claude/plans/pr-2.5.md</c>. This matches the deliberate ordering asymmetry of
+    /// <see cref="InsertAsync"/> where <c>transaction</c> precedes <c>ct</c>.
+    /// </remarks>
+    public async Task<Result> TransitionAsync(
+        string walId,
+        string newPhase,
+        CancellationToken ct,
+        SqliteTransaction? transaction = null)
     {
         try
         {
@@ -85,7 +97,7 @@ public sealed class WalRepository
                 Phase = newPhase,
                 UpdatedUtc = DateTime.UtcNow.ToString("O"),
                 WalId = walId,
-            }, cancellationToken: ct)).ConfigureAwait(false);
+            }, transaction, cancellationToken: ct)).ConfigureAwait(false);
             if (rows == 0)
             {
                 _logger.LogWarning("WAL transition found no row for {WalId}", walId);

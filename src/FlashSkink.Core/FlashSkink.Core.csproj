@@ -17,6 +17,8 @@
     <PackageReference Include="Dapper" />
     <PackageReference Include="K4os.Compression.LZ4" />
     <PackageReference Include="ZstdNet" />
+    <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" />
+    <PackageReference Include="System.IO.Hashing" />
   </ItemGroup>
 
   <ItemGroup>

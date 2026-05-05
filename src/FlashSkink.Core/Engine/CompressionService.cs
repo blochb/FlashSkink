@@ -10,7 +10,7 @@ namespace FlashSkink.Core.Engine;
 
 /// <summary>
 /// Compresses and decompresses pipeline payloads using LZ4 or Zstd; enforces the no-gain rule
-/// on compression and the 4 GiB plaintext cap on decompression.
+/// on compression and the <see cref="MaxPlaintextBytes"/> plaintext cap on decompression.
 /// </summary>
 /// <remarks>
 /// Holds <see cref="Compressor"/> and <see cref="Decompressor"/> as reusable fields to avoid
@@ -28,8 +28,12 @@ public sealed class CompressionService : IDisposable
     /// </summary>
     public const double NoGainThreshold = 0.95;
 
-    /// <summary>Maximum plaintext size accepted by <see cref="Decompress"/>.</summary>
-    public const long MaxPlaintextBytes = 4L * 1024 * 1024 * 1024;
+    /// <summary>
+    /// Maximum plaintext size accepted by <see cref="Decompress"/> and by
+    /// <c>WritePipeline.ReadIntoBufferAsync</c>. Equals <see cref="Array.MaxLength"/> so that
+    /// the single-buffer allocation path never overflows an <c>int</c> cast.
+    /// </summary>
+    public static readonly long MaxPlaintextBytes = Array.MaxLength;
 
     private readonly Compressor _compressor;
     private readonly Decompressor _decompressor;
@@ -118,7 +122,7 @@ public sealed class CompressionService : IDisposable
             if (plaintextSize > MaxPlaintextBytes)
             {
                 return Result.Fail(ErrorCode.FileTooLong,
-                    $"plaintextSize {plaintextSize} exceeds the 4 GiB maximum");
+                    $"plaintextSize {plaintextSize} exceeds the {MaxPlaintextBytes}-byte maximum");
             }
 
             if ((flags & BlobFlags.CompressedLz4) != 0 && (flags & BlobFlags.CompressedZstd) != 0)

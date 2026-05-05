@@ -1,11 +1,18 @@
+using System.Security.Cryptography;
 using Dapper;
+using FlashSkink.Core.Abstractions.Notifications;
+using FlashSkink.Core.Abstractions.Results;
+using FlashSkink.Core.Crypto;
+using FlashSkink.Core.Engine;
 using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Storage;
 using FlashSkink.Tests.Metadata;
 using FsCheck;
 using FsCheck.Xunit;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.IO;
 using Xunit;
 
 namespace FlashSkink.Tests.CrashConsistency;
@@ -179,4 +186,156 @@ public sealed class WriteCrashConsistencyTests
 
     private static string GetWalId(SqliteConnection conn) =>
         conn.QuerySingle<string>("SELECT WALID FROM WAL LIMIT 1");
+
+    // ── §2.5 extension: step 6 — brain INSERT INTO Files fails ───────────────
+
+    /// <summary>
+    /// Extends the §2.4 5-step crash model to 6 steps, adding step 6 = "brain INSERT INTO Files
+    /// fails (UNIQUE constraint)". For steps 1–5 the existing <see cref="RunScenario"/> runner
+    /// is reused unchanged. For step 6 a complete <see cref="WritePipeline.ExecuteAsync"/> run
+    /// triggers the UNIQUE-constraint path and the §21.3 invariant is verified afterward:
+    /// WAL row is FAILED, no orphan staging file, destination blob deleted by DisposeAsync,
+    /// and the pre-existing Files + Blobs rows (from the seed write) remain intact on disk.
+    /// </summary>
+    [Property(MaxTest = 200)]
+    public void WritePipelineCrash_AtAnyStep_PreservesInvariant(PositiveInt crashAtStepBoxed)
+    {
+        var crashAtStep = ((crashAtStepBoxed.Get - 1) % 6) + 1; // ∈ [1..6]
+
+        var iterRoot = Path.Combine(
+            Path.GetTempPath(), "flashskink-pipeline-crash-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(iterRoot);
+        try
+        {
+            if (crashAtStep <= 5)
+            {
+                // Steps 1–5: delegate to the §2.4 5-step WAL-recovery model unchanged.
+                RunScenario(crashAtStep, iterRoot);
+            }
+            else
+            {
+                // Step 6: brain INSERT INTO Files fails via UNIQUE constraint after WriteAsync.
+                RunPipelineBrainFailureScenario(iterRoot);
+            }
+        }
+        finally
+        {
+            Directory.Delete(iterRoot, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Simulates step 6: the on-disk write succeeds and MarkRenamed is set, but the brain
+    /// transaction fails with a UNIQUE constraint on INSERT INTO Files (path conflict). Verifies
+    /// that after the pipeline's internal rollback the §21.3 invariant holds: WAL row FAILED,
+    /// no orphan staging file, new destination blob deleted, pre-existing rows intact.
+    /// </summary>
+    private static void RunPipelineBrainFailureScenario(string skinkRoot)
+    {
+        // Create required skink directory structure.
+        Directory.CreateDirectory(Path.Combine(skinkRoot, ".flashskink", "staging"));
+        Directory.CreateDirectory(Path.Combine(skinkRoot, ".flashskink", "blobs"));
+
+        using var conn = BrainTestHelper.CreateInMemoryConnection();
+        BrainTestHelper.ApplySchemaAsync(conn).GetAwaiter().GetResult();
+
+        var loggerFactory = NullLoggerFactory.Instance;
+        var wal = new WalRepository(conn, loggerFactory.CreateLogger<WalRepository>());
+        var blobs = new BlobRepository(conn, loggerFactory.CreateLogger<BlobRepository>());
+        var files = new FileRepository(conn, wal, loggerFactory.CreateLogger<FileRepository>());
+        var activity = new ActivityLogRepository(conn, loggerFactory.CreateLogger<ActivityLogRepository>());
+
+        var pipeline = new WritePipeline(
+            new FileTypeService(),
+            new EntropyDetector(),
+            loggerFactory);
+
+        byte[] dek = new byte[32]; // all-zeros DEK
+
+        using var context = new VolumeContext(
+            brainConnection: conn,
+            dek: dek.AsMemory(),
+            skinkRoot: skinkRoot,
+            sha256: IncrementalHash.CreateHash(HashAlgorithmName.SHA256),
+            crypto: new CryptoPipeline(),
+            compression: new CompressionService(),
+            blobWriter: new AtomicBlobWriter(loggerFactory.CreateLogger<AtomicBlobWriter>()),
+            streamManager: new RecyclableMemoryStreamManager(),
+            notificationBus: new NullNotificationBus(),
+            blobs: blobs,
+            files: files,
+            wal: wal,
+            activityLog: activity);
+
+        // Root-level path — no folder creation needed; keeps the scenario focused on the
+        // Files UNIQUE constraint path rather than folder-creation idempotency.
+        const string virtualPath = "/crash-file.bin";
+
+        // ── Seed: first write commits successfully ────────────────────────────
+        var seedResult = pipeline.ExecuteAsync(
+            new MemoryStream([0x01, 0x02, 0x03]), virtualPath, context, CancellationToken.None)
+            .GetAwaiter().GetResult();
+        Assert.True(seedResult.Success, $"Seed write failed: {seedResult.Error?.Message}");
+        string priorBlobId = seedResult.Value!.BlobId; // ! safe: Success asserted above
+        string priorBlobPath = AtomicBlobWriter.ComputeDestinationPath(skinkRoot, priorBlobId);
+        Assert.Equal(1, conn.QuerySingle<int>("SELECT COUNT(*) FROM Blobs"));
+        Assert.Equal(1, conn.QuerySingle<int>("SELECT COUNT(*) FROM Files WHERE IsFolder = 0"));
+        Assert.True(File.Exists(priorBlobPath), "Pre-seeded blob must exist on disk.");
+
+        // ── Crash: different content, same path → UNIQUE constraint on Files ──
+        var crashResult = pipeline.ExecuteAsync(
+            new MemoryStream([0xAA, 0xBB, 0xCC]), virtualPath, context, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.False(crashResult.Success, "Expected PathConflict failure.");
+        Assert.Equal(ErrorCode.PathConflict, crashResult.Error!.Code); // ! safe: Success == false
+
+        // ── Assert §21.3 invariant ────────────────────────────────────────────
+
+        // 1. WAL row from the failed write is FAILED; no incomplete rows remain.
+        Assert.Equal(1, conn.QuerySingle<int>(
+            "SELECT COUNT(*) FROM WAL WHERE Phase = 'FAILED'"));
+        Assert.Equal(0, conn.QuerySingle<int>(
+            "SELECT COUNT(*) FROM WAL WHERE Phase NOT IN ('COMMITTED', 'FAILED')"));
+
+        // 2. No orphan staging file.
+        Assert.Empty(Directory.GetFiles(
+            Path.Combine(skinkRoot, ".flashskink", "staging"), "*", SearchOption.AllDirectories));
+
+        // 3. Brain transaction was rolled back — no new Blobs or Files rows committed.
+        Assert.Equal(1, conn.QuerySingle<int>("SELECT COUNT(*) FROM Blobs"));
+        Assert.Equal(1, conn.QuerySingle<int>("SELECT COUNT(*) FROM Files WHERE IsFolder = 0"));
+
+        // 4. Pre-seeded blob file survives the failed second write.
+        Assert.True(File.Exists(priorBlobPath),
+            "Pre-seeded blob file must survive the failed second write.");
+
+        // 5. Blobs directory contains exactly one file — the destination blob written for the
+        //    failed write was deleted by WriteWalScope.DisposeAsync (MarkRenamed was set before
+        //    CommitBrainAsync failed).
+        var blobDirFiles = Directory.GetFiles(
+            Path.Combine(skinkRoot, ".flashskink", "blobs"), "*", SearchOption.AllDirectories);
+        Assert.Single(blobDirFiles);
+
+        // 6. Core §21.3 invariant: every committed Files row references an existing Blobs row
+        //    whose on-disk blob file exists.
+        var blobIdsFromFiles = conn.Query<string>(
+            "SELECT BlobID FROM Files WHERE IsFolder = 0 AND BlobID IS NOT NULL").ToList();
+        foreach (var blobId in blobIdsFromFiles)
+        {
+            var blobRowCount = conn.QuerySingle<int>(
+                "SELECT COUNT(*) FROM Blobs WHERE BlobID = @BlobId", new { BlobId = blobId });
+            Assert.Equal(1, blobRowCount);
+            var blobFilePath = AtomicBlobWriter.ComputeDestinationPath(skinkRoot, blobId);
+            Assert.True(File.Exists(blobFilePath),
+                $"§21.3 invariant violated: BlobID={blobId} has no on-disk blob at {blobFilePath}");
+        }
+    }
+}
+
+/// <summary>No-op notification bus for crash-consistency test infrastructure.</summary>
+file sealed class NullNotificationBus : INotificationBus
+{
+    public ValueTask PublishAsync(Notification notification, CancellationToken ct = default) =>
+        ValueTask.CompletedTask;
 }
