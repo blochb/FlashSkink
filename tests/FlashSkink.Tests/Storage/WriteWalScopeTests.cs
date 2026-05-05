@@ -268,6 +268,81 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
             "Expected an Error log mentioning the WAL row ID.");
     }
 
+    // ── CompleteAsync — transaction parameter (§2.5) ─────────────────────────
+
+    [Fact]
+    public async Task CompleteAsync_WithTransaction_TransitionParticipatesInTx()
+    {
+        // Open a scope to create the WAL row in PREPARE.
+        var result = await OpenAsync();
+        Assert.True(result.Success);
+        await using var scope = result.Value!;
+        var walId = QueryWalId();
+
+        // Begin a transaction, complete the scope inside it, then roll back.
+        using var tx = _connection.BeginTransaction();
+        var completeResult = await scope.CompleteAsync(transaction: tx);
+        Assert.True(completeResult.Success);
+        tx.Rollback();
+
+        // The rollback must undo the COMMITTED transition — row must still be in PREPARE.
+        var phase = QueryPhase(walId);
+        Assert.Equal("PREPARE", phase);
+    }
+
+    [Fact]
+    public async Task ConfirmCommitted_AfterCompleteAsyncWithTransaction_DisposeAsync_IsNoOp()
+    {
+        var blobId = MakeBlobId();
+        var result = await OpenAsync(blobId: blobId);
+        Assert.True(result.Success);
+        var walId = QueryWalId();
+
+        using var tx = _connection.BeginTransaction();
+        var completeResult = await result.Value!.CompleteAsync(transaction: tx);
+        Assert.True(completeResult.Success);
+        tx.Commit();
+        result.Value!.ConfirmCommitted();
+
+        await result.Value!.DisposeAsync();
+
+        // Commit succeeded and ConfirmCommitted was called — DisposeAsync must not roll back.
+        Assert.Equal("COMMITTED", QueryPhase(walId));
+    }
+
+    [Fact]
+    public async Task CompleteAsync_WithTransaction_TxRolledBack_DisposeAsync_CleansUp()
+    {
+        // Simulates tx.Commit() throwing (e.g. SQLITE_IOERR) — SQLite rolls back the tx,
+        // undoing the WAL COMMITTED UPDATE. ConfirmCommitted is never called.
+        // DisposeAsync must still run cleanup because _completed was not set.
+        var blobId = MakeBlobId();
+        var stagingPath = AtomicBlobWriter.ComputeStagingPath(_skinkRoot, blobId);
+        var destPath = AtomicBlobWriter.ComputeDestinationPath(_skinkRoot, blobId);
+        Directory.CreateDirectory(Path.GetDirectoryName(stagingPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+        File.WriteAllBytes(stagingPath, [0x01]);
+        File.WriteAllBytes(destPath, [0x02]);
+
+        var result = await OpenAsync(blobId: blobId);
+        Assert.True(result.Success);
+        await using var scope = result.Value!;
+        var walId = QueryWalId();
+        scope.MarkRenamed();
+
+        using var tx = _connection.BeginTransaction();
+        var completeResult = await scope.CompleteAsync(transaction: tx);
+        Assert.True(completeResult.Success);
+        tx.Rollback(); // simulates commit failure — WAL UPDATE is undone; ConfirmCommitted not called
+
+        // DisposeAsync runs via await using — must clean up because _completed was never set.
+        await scope.DisposeAsync();
+
+        Assert.Equal("FAILED", QueryPhase(walId));
+        Assert.False(File.Exists(stagingPath));
+        Assert.False(File.Exists(destPath));
+    }
+
     // ── Principle 17 source-grep ──────────────────────────────────────────────
 
     [Fact]

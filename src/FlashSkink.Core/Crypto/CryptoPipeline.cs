@@ -22,9 +22,13 @@ public sealed class CryptoPipeline
     /// The caller must size <paramref name="outputOwner"/> to at least
     /// <c>BlobHeader.HeaderSize + plaintext.Length + BlobHeader.TagSize</c> bytes.
     /// </remarks>
-    /// <param name="plaintext">The bytes to encrypt.</param>
+    /// <param name="plaintext">The bytes to encrypt. When compression was applied this is the
+    /// compressed payload; <paramref name="flags"/> records which algorithm was used.</param>
     /// <param name="dek">The 256-bit (32-byte) Data Encryption Key.</param>
-    /// <param name="aad">Additional authenticated data (e.g. BlobID || PlaintextSHA256).</param>
+    /// <param name="aad">Additional authenticated data — 48 bytes: 16-byte raw BlobID GUID
+    /// followed by 32-byte raw plaintext SHA-256 digest (cross-cutting decision 3).</param>
+    /// <param name="flags">Compression flags to encode in the blob header.
+    /// Pass <see cref="BlobFlags.None"/> when the payload is not compressed.</param>
     /// <param name="outputOwner">Caller-supplied output buffer; must be large enough.</param>
     /// <param name="bytesWritten">On success: total bytes written. On failure: 0.</param>
     /// <returns>
@@ -36,6 +40,7 @@ public sealed class CryptoPipeline
         ReadOnlySpan<byte> plaintext,
         ReadOnlySpan<byte> dek,
         ReadOnlySpan<byte> aad,
+        BlobFlags flags,
         IMemoryOwner<byte> outputOwner,
         out int bytesWritten)
     {
@@ -61,7 +66,7 @@ public sealed class CryptoPipeline
             Span<byte> nonce = stackalloc byte[BlobHeader.NonceSize];
             RandomNumberGenerator.Fill(nonce);
 
-            BlobHeader.Write(output[..BlobHeader.HeaderSize], BlobFlags.None, nonce);
+            BlobHeader.Write(output[..BlobHeader.HeaderSize], flags, nonce);
 
             Span<byte> ciphertext = output[BlobHeader.HeaderSize..(BlobHeader.HeaderSize + plaintext.Length)];
             Span<byte> tag = output[(BlobHeader.HeaderSize + plaintext.Length)..requiredLength];

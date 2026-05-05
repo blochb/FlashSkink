@@ -152,6 +152,83 @@ and is a Principle 17 violation. The literal must appear at the call site.
 
 ---
 
+---
+
+## Worked example — `WritePipeline.ExecuteAsync` failure rollback (§2.5)
+
+This example walks the most complex failure interleaving: the atomic blob write succeeds (the
+file is renamed into its sharded destination), but the subsequent brain transaction fails with a
+UNIQUE-constraint violation. The §21.3 invariant must be restored — the on-disk blob must be
+deleted and the WAL row must end in `FAILED`.
+
+### Stage sequence
+
+```
+1. WriteWalScope.OpenAsync  → inserts WAL row in PREPARE (auto-committed, outside brain tx)
+2. AtomicBlobWriter.WriteAsync → staging write + fsync + rename → blobPath
+3. scope.MarkRenamed()          → sets _renameCompleted = true on the scope
+4. CommitBrainAsync
+   a. ctx.BrainConnection.BeginTransaction()
+   b. INSERT INTO Blobs    ✓
+   c. INSERT INTO Files    ✗ — UNIQUE constraint (VirtualPath already exists)
+      → SqliteException thrown
+   d. tx.Rollback()        — Blobs insert is rolled back
+   e. return Result.Fail(ErrorCode.PathConflict, ...)
+5. CommitBrainAsync returns a failed Result to ExecuteAsync
+6. ExecuteAsync calls await LogAndPublishAsync(...)   — publishes Error notification to bus
+7. ExecuteAsync returns Result.Fail(PathConflict) to caller
+8. The `await using var scope` fires WriteWalScope.DisposeAsync():
+   a. _completed == false  → rollback proceeds
+   b. BlobWriter.DeleteStagingAsync(...)     — no-op (staging already renamed)
+   c. _renameCompleted == true
+      → BlobWriter.DeleteDestinationAsync(...)  — deletes the renamed blob file
+   d. _wal.TransitionAsync(_walId, "FAILED", CancellationToken.None)
+      — WAL row transitions PREPARE → FAILED
+```
+
+### Post-failure invariant state
+
+| Resource | State |
+|---|---|
+| Staging file | Absent (renamed in step 2; deleted in step 8c) |
+| Destination blob file | Absent (deleted in step 8c — `MarkRenamed` was set) |
+| `Blobs` row | Absent (brain tx rolled back in step 4d) |
+| `Files` row | Absent (constraint failed before insert) |
+| WAL row | `FAILED` (step 8d) |
+| `ActivityLog` row | Absent (brain tx rolled back) |
+
+The §21.3 invariant holds: every `Files` row references an existing `Blobs` row with an
+existing on-disk blob, or is NULL. There are no orphan rows or orphan files.
+
+### Code sketch
+
+```csharp
+// In CommitBrainAsync — the tx failure path:
+catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
+{
+    tx?.Rollback();                             // rolls back Blobs and partial Files inserts
+    _logger.LogError(ex, "Path conflict ...");
+    return Result.Fail(ErrorCode.PathConflict, "A file named '...' already exists.", ex);
+}
+// CommitBrainAsync returns to ExecuteAsync:
+var commitResult = await CommitBrainAsync(context, args, scope, ct);
+if (!commitResult.Success)
+{
+    await LogAndPublishAsync(context, virtualPath, commitResult.Error!, ct);
+    return Result<WriteReceipt>.Fail(commitResult.Error!);
+}
+// The `await using var scope` in ExecuteAsync fires DisposeAsync on exit.
+// Inside DisposeAsync (Principle 17 — CancellationToken.None at every site):
+await _blobWriter.DeleteStagingAsync(skinkRoot, blobId, CancellationToken.None);
+if (_renameCompleted)
+{
+    await _blobWriter.DeleteDestinationAsync(skinkRoot, blobId, CancellationToken.None);
+}
+await _wal.TransitionAsync(_walId, "FAILED", CancellationToken.None);
+```
+
+---
+
 ## Caller pattern
 
 Callers (ViewModels, CLI command handlers) inspect `Result.Success` and log the

@@ -104,6 +104,28 @@ public class WalRepositoryTests : IAsyncLifetime
         Assert.Equal(prepare.WalId, result.Value![0].WalId);
     }
 
+    // ── TransitionAsync — transaction parameter (§2.5) ───────────────────────
+
+    [Fact]
+    public async Task TransitionAsync_WithTransaction_RolledBack_LeavesPhaseUnchanged()
+    {
+        // Insert a WAL row in PREPARE.
+        var row = MakeRow();
+        await _sut.InsertAsync(row, ct: CancellationToken.None);
+
+        // Begin a transaction, transition to COMMITTED inside it, then roll back.
+        using var tx = _connection.BeginTransaction();
+        var transitionResult = await _sut.TransitionAsync(
+            row.WalId, "COMMITTED", CancellationToken.None, transaction: tx);
+        Assert.True(transitionResult.Success);
+        tx.Rollback();
+
+        // The rollback must undo the transition — row must still be in PREPARE.
+        var phase = await _connection.QuerySingleAsync<string>(
+            "SELECT Phase FROM WAL WHERE WALID = @Id", new { Id = row.WalId });
+        Assert.Equal("PREPARE", phase);
+    }
+
     // ── DeleteAsync ───────────────────────────────────────────────────────────
 
     [Fact]
