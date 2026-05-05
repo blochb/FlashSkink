@@ -34,7 +34,7 @@ jobs:
         run: dotnet build --no-restore -c Release
 
       - name: Test
-        run: dotnet test tests/FlashSkink.Tests -c Release -r ${{ matrix.rid }}
+        run: dotnet test --no-build -c Release
 
       - name: Publish UI
         run: >
