@@ -583,6 +583,7 @@ public sealed class WritePipeline
             }
 
             tx.Commit();
+            scope.ConfirmCommitted(); // _completed only after the commit lands (§21.3)
             return Result.Ok();
         }
         catch (OperationCanceledException ex)

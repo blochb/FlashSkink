@@ -119,12 +119,16 @@ public sealed class WriteWalScope : IAsyncDisposable
     /// <see cref="Result.Ok()"/> without issuing a second transition.
     /// </summary>
     /// <remarks>
-    /// When <paramref name="transaction"/> is non-null, the WAL UPDATE is forwarded to
-    /// <see cref="WalRepository.TransitionAsync"/> with that transaction, allowing the COMMITTED
-    /// transition to ride inside the caller's brain commit transaction (§2.5 stage 10).
+    /// When <paramref name="transaction"/> is non-null, the WAL UPDATE rides inside the caller's
+    /// transaction. In this case <see cref="ConfirmCommitted"/> must be called after the
+    /// transaction commits successfully — only then does <see cref="DisposeAsync"/> treat the
+    /// scope as done and skip rollback cleanup. If the transaction is rolled back (e.g.
+    /// <c>SQLITE_IOERR</c> on <c>tx.Commit()</c>), the WAL UPDATE is undone by SQLite and
+    /// <see cref="DisposeAsync"/> runs cleanup as normal because <c>_completed</c> was never set.
+    /// When <paramref name="transaction"/> is null the WAL UPDATE auto-commits and
+    /// <c>_completed</c> is set immediately.
     /// The <paramref name="ct"/> parameter is accepted for API symmetry (Principle 13) but is
-    /// <em>not</em> forwarded to the WAL transition — once the brain transaction has committed
-    /// the COMMITTED transition must not be cancellable mid-flight (Principle 17).
+    /// <em>not</em> forwarded to the WAL transition (Principle 17).
     /// </remarks>
     public async Task<Result> CompleteAsync(
         SqliteTransaction? transaction = null,
@@ -147,8 +151,27 @@ public sealed class WriteWalScope : IAsyncDisposable
             return transition;
         }
 
-        _completed = true;
+        // When no transaction is provided the WAL UPDATE committed immediately — mark done now.
+        // When a transaction is provided the caller must invoke ConfirmCommitted() after
+        // tx.Commit() succeeds; until then _completed stays false so DisposeAsync can clean up
+        // if the commit fails (§21.3).
+        if (transaction is null)
+        {
+            _completed = true;
+        }
+
         return Result.Ok();
+    }
+
+    /// <summary>
+    /// Seals the scope after the caller's brain transaction has successfully committed.
+    /// Must be called immediately after <c>tx.Commit()</c> returns without throwing, when
+    /// <see cref="CompleteAsync"/> was invoked with a non-null transaction. After this call
+    /// <see cref="DisposeAsync"/> is a no-op. Synchronous — no I/O, no allocations.
+    /// </summary>
+    public void ConfirmCommitted()
+    {
+        _completed = true;
     }
 
     /// <summary>
