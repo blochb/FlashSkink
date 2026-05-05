@@ -23,7 +23,7 @@ jobs:
           track_progress: "true"
           claude_args: >-
             --model claude-opus-4-6
-            --max-turns 15
+            --max-turns 20
             --allowed-tools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(cat:*),Bash(ls:*)"
           prompt: |
             You are performing a focused code-quality review on this pull request.
