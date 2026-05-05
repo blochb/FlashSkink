@@ -268,6 +268,28 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
             "Expected an Error log mentioning the WAL row ID.");
     }
 
+    // ── CompleteAsync — transaction parameter (§2.5) ─────────────────────────
+
+    [Fact]
+    public async Task CompleteAsync_WithTransaction_TransitionParticipatesInTx()
+    {
+        // Open a scope to create the WAL row in PREPARE.
+        var result = await OpenAsync();
+        Assert.True(result.Success);
+        await using var scope = result.Value!;
+        var walId = QueryWalId();
+
+        // Begin a transaction, complete the scope inside it, then roll back.
+        using var tx = _connection.BeginTransaction();
+        var completeResult = await scope.CompleteAsync(transaction: tx);
+        Assert.True(completeResult.Success);
+        tx.Rollback();
+
+        // The rollback must undo the COMMITTED transition — row must still be in PREPARE.
+        var phase = QueryPhase(walId);
+        Assert.Equal("PREPARE", phase);
+    }
+
     // ── Principle 17 source-grep ──────────────────────────────────────────────
 
     [Fact]

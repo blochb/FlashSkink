@@ -126,7 +126,7 @@ public class CryptoPipelineTests
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
 
-        Result encResult = _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
+        Result encResult = _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
         Assert.True(encResult.Success);
 
         ReadOnlySpan<byte> blob = encBuf.Memory.Span[..encBytes];
@@ -144,7 +144,7 @@ public class CryptoPipelineTests
         using IMemoryOwner<byte> encBuf = RentForEncrypt(0);
         using IMemoryOwner<byte> decBuf = MemoryPool<byte>.Shared.Rent(1);
 
-        Result encResult = _pipeline.Encrypt([], Dek, Aad, encBuf, out int encBytes);
+        Result encResult = _pipeline.Encrypt([], Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
         Assert.True(encResult.Success);
         Assert.Equal(BlobHeader.HeaderSize + BlobHeader.TagSize, encBytes);
 
@@ -159,7 +159,7 @@ public class CryptoPipelineTests
         byte[] plaintext = RandomNumberGenerator.GetBytes(100);
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
 
-        _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int bytesWritten);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int bytesWritten);
 
         Assert.Equal(BlobHeader.HeaderSize + plaintext.Length + BlobHeader.TagSize, bytesWritten);
     }
@@ -171,8 +171,8 @@ public class CryptoPipelineTests
         using IMemoryOwner<byte> buf1 = RentForEncrypt(plaintext.Length);
         using IMemoryOwner<byte> buf2 = RentForEncrypt(plaintext.Length);
 
-        _pipeline.Encrypt(plaintext, Dek, Aad, buf1, out int len1);
-        _pipeline.Encrypt(plaintext, Dek, Aad, buf2, out int len2);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, buf1, out int len1);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, buf2, out int len2);
 
         ReadOnlySpan<byte> nonce1 = buf1.Memory.Span.Slice(8, BlobHeader.NonceSize);
         ReadOnlySpan<byte> nonce2 = buf2.Memory.Span.Slice(8, BlobHeader.NonceSize);
@@ -184,7 +184,7 @@ public class CryptoPipelineTests
     {
         byte[] plaintext = RandomNumberGenerator.GetBytes(64);
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
-        _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
 
         byte[] blob = encBuf.Memory.Span[..encBytes].ToArray();
         blob[BlobHeader.HeaderSize]++;
@@ -201,7 +201,7 @@ public class CryptoPipelineTests
     {
         byte[] plaintext = RandomNumberGenerator.GetBytes(64);
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
-        _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
 
         byte[] wrongDek = RandomNumberGenerator.GetBytes(32);
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
@@ -216,7 +216,7 @@ public class CryptoPipelineTests
     {
         byte[] plaintext = RandomNumberGenerator.GetBytes(64);
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
-        _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
 
         byte[] blob = encBuf.Memory.Span[..encBytes].ToArray();
         blob[^1]++;
@@ -233,7 +233,7 @@ public class CryptoPipelineTests
     {
         byte[] plaintext = RandomNumberGenerator.GetBytes(64);
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
-        _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
 
         byte[] blob = encBuf.Memory.Span[..encBytes].ToArray();
         blob[0] = (byte)'X';
@@ -250,7 +250,7 @@ public class CryptoPipelineTests
     {
         byte[] plaintext = RandomNumberGenerator.GetBytes(64);
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
-        _pipeline.Encrypt(plaintext, Dek, "aad-A"u8.ToArray(), encBuf, out int encBytes);
+        _pipeline.Encrypt(plaintext, Dek, "aad-A"u8.ToArray(), BlobFlags.None, encBuf, out int encBytes);
 
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
         Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, "aad-B"u8.ToArray(), decBuf, out _, out _);
@@ -265,7 +265,7 @@ public class CryptoPipelineTests
         byte[] shortDek = new byte[16];
         using IMemoryOwner<byte> buf = RentForEncrypt(32);
 
-        Result result = _pipeline.Encrypt(new byte[32], shortDek, Aad, buf, out int bytesWritten);
+        Result result = _pipeline.Encrypt(new byte[32], shortDek, Aad, BlobFlags.None, buf, out int bytesWritten);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
@@ -279,7 +279,7 @@ public class CryptoPipelineTests
         int needed = BlobHeader.HeaderSize + plaintext.Length + BlobHeader.TagSize;
         using IMemoryOwner<byte> buf = ExactBuffer(needed - 1);
 
-        Result result = _pipeline.Encrypt(plaintext, Dek, Aad, buf, out int bytesWritten);
+        Result result = _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, buf, out int bytesWritten);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
@@ -304,7 +304,7 @@ public class CryptoPipelineTests
     {
         byte[] plaintext = new byte[64];
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
-        _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
 
         using IMemoryOwner<byte> tinyBuf = ExactBuffer(plaintext.Length - 1);
         Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, Aad, tinyBuf, out _, out int bytesWritten);
@@ -319,7 +319,7 @@ public class CryptoPipelineTests
     {
         byte[] plaintext = RandomNumberGenerator.GetBytes(64);
         using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
-        _pipeline.Encrypt(plaintext, Dek, Aad, encBuf, out int encBytes);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
 
         byte[] shortDek = new byte[16];
         using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
@@ -328,5 +328,50 @@ public class CryptoPipelineTests
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
         Assert.Equal(0, bytesWritten);
+    }
+
+    // ── New tests for §2.5 — BlobFlags round-trip via Encrypt ────────────────
+
+    [Fact]
+    public void Encrypt_WithCompressedLz4Flag_HeaderEncodesFlag()
+    {
+        byte[] plaintext = RandomNumberGenerator.GetBytes(64);
+        using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
+
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.CompressedLz4, encBuf, out int encBytes);
+
+        Result parseResult = BlobHeader.Parse(encBuf.Memory.Span[..encBytes], out BlobFlags flags, out _);
+        Assert.True(parseResult.Success);
+        Assert.Equal(BlobFlags.CompressedLz4, flags);
+    }
+
+    [Fact]
+    public void Encrypt_WithCompressedZstdFlag_HeaderEncodesFlag()
+    {
+        byte[] plaintext = RandomNumberGenerator.GetBytes(64);
+        using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
+
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.CompressedZstd, encBuf, out int encBytes);
+
+        Result parseResult = BlobHeader.Parse(encBuf.Memory.Span[..encBytes], out BlobFlags flags, out _);
+        Assert.True(parseResult.Success);
+        Assert.Equal(BlobFlags.CompressedZstd, flags);
+    }
+
+    [Fact]
+    public void EncryptThenDecrypt_FlagsRoundTrip()
+    {
+        byte[] plaintext = RandomNumberGenerator.GetBytes(64);
+        using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
+        using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
+
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.CompressedLz4, encBuf, out int encBytes);
+
+        Result decResult = _pipeline.Decrypt(
+            encBuf.Memory.Span[..encBytes], Dek, Aad, decBuf, out BlobFlags outFlags, out int decBytes);
+        Assert.True(decResult.Success);
+        Assert.Equal(BlobFlags.CompressedLz4, outFlags);
+        Assert.Equal(plaintext.Length, decBytes);
+        Assert.True(decBuf.Memory.Span[..decBytes].SequenceEqual(plaintext));
     }
 }

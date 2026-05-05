@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Metadata;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace FlashSkink.Core.Storage;
@@ -115,19 +116,27 @@ public sealed class WriteWalScope : IAsyncDisposable
 
     /// <summary>
     /// Transitions the WAL row <c>PREPARE → COMMITTED</c>. Idempotent — calling twice returns
-    /// <see cref="Result.Ok()"/> without issuing a second transition. The
-    /// <paramref name="ct"/> parameter is accepted for API symmetry (Principle 13) but is not
-    /// forwarded to the WAL transition; once the brain transaction has committed the COMMITTED
-    /// transition must not be cancellable mid-flight (Principle 17).
+    /// <see cref="Result.Ok()"/> without issuing a second transition.
     /// </summary>
-    public async Task<Result> CompleteAsync(CancellationToken ct = default)
+    /// <remarks>
+    /// When <paramref name="transaction"/> is non-null, the WAL UPDATE is forwarded to
+    /// <see cref="WalRepository.TransitionAsync"/> with that transaction, allowing the COMMITTED
+    /// transition to ride inside the caller's brain commit transaction (§2.5 stage 10).
+    /// The <paramref name="ct"/> parameter is accepted for API symmetry (Principle 13) but is
+    /// <em>not</em> forwarded to the WAL transition — once the brain transaction has committed
+    /// the COMMITTED transition must not be cancellable mid-flight (Principle 17).
+    /// </remarks>
+    public async Task<Result> CompleteAsync(
+        SqliteTransaction? transaction = null,
+        CancellationToken ct = default)
     {
         if (_completed)
         {
             return Result.Ok();
         }
 
-        var transition = await _wal.TransitionAsync(_walId, "COMMITTED", CancellationToken.None)
+        var transition = await _wal.TransitionAsync(
+                _walId, "COMMITTED", CancellationToken.None, transaction)
             .ConfigureAwait(false);
         if (!transition.Success)
         {
