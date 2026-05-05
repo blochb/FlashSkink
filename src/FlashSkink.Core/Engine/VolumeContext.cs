@@ -29,10 +29,11 @@ public sealed class VolumeContext : IDisposable
     private int _disposed;
 
     /// <summary>
-    /// The 4 GiB plaintext cap (cross-cutting decision 2).
-    /// Aliases <see cref="CompressionService.MaxPlaintextBytes"/>.
+    /// Maximum plaintext bytes per file. Equals <see cref="Array.MaxLength"/> (~2 GiB) so that
+    /// the single-buffer allocation in <c>ReadIntoBufferAsync</c> never overflows an <c>int</c>
+    /// cast. Aliases <see cref="CompressionService.MaxPlaintextBytes"/>.
     /// </summary>
-    public const long MaxPlaintextBytes = CompressionService.MaxPlaintextBytes;
+    public static readonly long MaxPlaintextBytes = CompressionService.MaxPlaintextBytes;
 
     /// <summary>Open encrypted brain connection; lifetime owned by <c>VolumeSession</c>, not by this context.</summary>
     public SqliteConnection BrainConnection { get; }

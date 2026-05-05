@@ -120,9 +120,9 @@ public sealed class VolumeContextTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
-    public void MaxPlaintextBytes_Equals4GiB()
+    public void MaxPlaintextBytes_EqualsArrayMaxLength()
     {
-        Assert.Equal(4L * 1024 * 1024 * 1024, VolumeContext.MaxPlaintextBytes);
+        Assert.Equal((long)Array.MaxLength, VolumeContext.MaxPlaintextBytes);
     }
 }
 

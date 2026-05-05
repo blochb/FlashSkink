@@ -20,7 +20,7 @@ transaction.
 that this PR consumes (`BlobRepository`, `FileRepository`, `WalRepository`,
 `ActivityLogRepository`), and the skink root path. The DEK is borrowed via
 `ReadOnlyMemory<byte>` from `VolumeSession` (lifetime owned by the session, not the context).
-`VolumeContext.MaxPlaintextBytes` re-exports the 4 GiB cap (cross-cutting decision 2). §2.7
+`VolumeContext.MaxPlaintextBytes` re-exports the plaintext cap (originally cross-cutting decision 2; corrected post-review to `Array.MaxLength` ~2 GiB to match the single-buffer allocation constraint). §2.7
 will construct one inside `FlashSkinkVolume`; this PR exercises it from tests by constructing
 it directly against an in-memory brain plus a per-test temp skink root.
 
@@ -153,7 +153,7 @@ volume-scoped pipeline instances, repositories, and infrastructure that pipeline
 ```csharp
 public sealed class VolumeContext : IDisposable
 {
-    /// <summary>The 4 GiB plaintext cap (cross-cutting decision 2). Aliases CompressionService.MaxPlaintextBytes.</summary>
+    /// <summary>Maximum plaintext bytes per file (Array.MaxLength, ~2 GiB). Aliases CompressionService.MaxPlaintextBytes.</summary>
     public const long MaxPlaintextBytes = CompressionService.MaxPlaintextBytes;
 
     /// <summary>Open encrypted brain connection, lifetime owned by VolumeSession.</summary>
@@ -290,7 +290,7 @@ for symmetry but not forwarded.
 
 - `private static long? TryGetSourceLength(Stream source)` — returns `source.Length` when
   `source.CanSeek && source.Length >= 0`, else `null`. Used by stage 1 to short-circuit the
-  4 GiB cap check before allocation.
+  `MaxPlaintextBytes` cap check before allocation.
 - `private async ValueTask<Result<IMemoryOwner<byte>>> ReadIntoBufferAsync(Stream source, long? knownLength, IncrementalHash hasher, CancellationToken ct)` —
   reads `source` to the end into a single `ClearOnDisposeOwner` while feeding `hasher`. When
   `knownLength` is non-null and within the cap, rents exactly that size up-front. Otherwise
@@ -766,8 +766,7 @@ added. Compression-result and hash-equality assertions reference `BlobFlags.None
 - `Dispose_IsIdempotent` — dispose twice; spies report exactly one dispose each.
 - `Dispose_DoesNotDisposeBrainConnection` — pass an open `SqliteConnection`; after
   `context.Dispose()`, the connection is still open. (Lifetime owned by `VolumeSession`.)
-- `MaxPlaintextBytes_Equals4GiB` — assert `VolumeContext.MaxPlaintextBytes == 4L * 1024 *
-  1024 * 1024`. (Re-export sanity check.)
+- `MaxPlaintextBytes_EqualsArrayMaxLength` — assert `VolumeContext.MaxPlaintextBytes == (long)Array.MaxLength`. (Re-export sanity check.)
 
 ### `tests/FlashSkink.Tests/Engine/WritePipelineTests.cs`
 
