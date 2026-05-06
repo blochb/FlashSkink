@@ -59,6 +59,11 @@ public sealed class CryptoPipeline
                 $"Output buffer is too small; need {requiredLength} bytes, got {outputOwner.Memory.Length}.");
         }
 
+        if (aad.Length > 512)
+        {
+            return Result.Fail(ErrorCode.Unknown, "AAD is too long.");
+        }
+
         Span<byte> output = outputOwner.Memory.Span;
 
         try
@@ -68,11 +73,15 @@ public sealed class CryptoPipeline
 
             BlobHeader.Write(output[..BlobHeader.HeaderSize], flags, nonce);
 
+            Span<byte> fullAad = stackalloc byte[BlobHeader.HeaderSize + aad.Length];
+            output[..BlobHeader.HeaderSize].CopyTo(fullAad);
+            aad.CopyTo(fullAad[BlobHeader.HeaderSize..]);
+
             Span<byte> ciphertext = output[BlobHeader.HeaderSize..(BlobHeader.HeaderSize + plaintext.Length)];
             Span<byte> tag = output[(BlobHeader.HeaderSize + plaintext.Length)..requiredLength];
 
             using var aes = new AesGcm(dek, BlobHeader.TagSize);
-            aes.Encrypt(nonce, plaintext, ciphertext, tag, aad);
+            aes.Encrypt(nonce, plaintext, ciphertext, tag, fullAad);
 
             bytesWritten = requiredLength;
             return Result.Ok();
@@ -126,6 +135,11 @@ public sealed class CryptoPipeline
                 $"DEK must be exactly {DekBytes} bytes; got {dek.Length}.");
         }
 
+        if (aad.Length > 512)
+        {
+            return Result.Fail(ErrorCode.Unknown, "AAD is too long.");
+        }
+
         if (blob.Length < minBlobLength)
         {
             return Result.Fail(ErrorCode.VolumeCorrupt,
@@ -152,8 +166,12 @@ public sealed class CryptoPipeline
 
         try
         {
+            Span<byte> fullAad = stackalloc byte[BlobHeader.HeaderSize + aad.Length];
+            blob[..BlobHeader.HeaderSize].CopyTo(fullAad);
+            aad.CopyTo(fullAad[BlobHeader.HeaderSize..]);
+
             using var aes = new AesGcm(dek, BlobHeader.TagSize);
-            aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
+            aes.Decrypt(nonce, ciphertext, tag, plaintext, fullAad);
 
             bytesWritten = ciphertextLength;
             return Result.Ok();

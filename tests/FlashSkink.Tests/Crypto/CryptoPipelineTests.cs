@@ -95,6 +95,36 @@ public class BlobHeaderTests
         ushort version = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(buf[4..]);
         Assert.Equal(1, version);
     }
+
+    // ── Header auth hardening ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Parse_UnknownFlagBits_ReturnsVolumeCorrupt()
+    {
+        Span<byte> buf = stackalloc byte[BlobHeader.HeaderSize];
+        Span<byte> nonce = stackalloc byte[BlobHeader.NonceSize];
+        BlobHeader.Write(buf, BlobFlags.None, nonce);
+        // overwrite flags with a value that has unknown bits (bits 2–7 set)
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(buf[6..], 0x00FF);
+
+        Result result = BlobHeader.Parse(buf, out _, out _);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+    }
+
+    [Fact]
+    public void Parse_AllKnownFlagBitsSet_Succeeds()
+    {
+        Span<byte> buf = stackalloc byte[BlobHeader.HeaderSize];
+        Span<byte> nonce = stackalloc byte[BlobHeader.NonceSize];
+        BlobHeader.Write(buf, BlobFlags.CompressedLz4 | BlobFlags.CompressedZstd, nonce);
+
+        Result result = BlobHeader.Parse(buf, out BlobFlags flags, out _);
+
+        Assert.True(result.Success);
+        Assert.Equal(BlobFlags.CompressedLz4 | BlobFlags.CompressedZstd, flags);
+    }
 }
 
 /// <summary>IMemoryOwner that wraps an exact-length byte array — no over-allocation.</summary>
@@ -373,5 +403,41 @@ public class CryptoPipelineTests
         Assert.Equal(BlobFlags.CompressedLz4, outFlags);
         Assert.Equal(plaintext.Length, decBytes);
         Assert.True(decBuf.Memory.Span[..decBytes].SequenceEqual(plaintext));
+    }
+
+    // ── Header auth hardening ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Decrypt_TamperedFlagByte_ReturnsDecryptionFailed()
+    {
+        byte[] plaintext = RandomNumberGenerator.GetBytes(64);
+        using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
+
+        byte[] blob = encBuf.Memory.Span[..encBytes].ToArray();
+        blob[6] ^= 0x01; // flip CompressedLz4 bit in flags low byte
+
+        using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
+        Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+    }
+
+    [Fact]
+    public void Decrypt_TamperedVersionByte_ReturnsVolumeIncompatibleVersion()
+    {
+        byte[] plaintext = RandomNumberGenerator.GetBytes(64);
+        using IMemoryOwner<byte> encBuf = RentForEncrypt(plaintext.Length);
+        _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, encBuf, out int encBytes);
+
+        byte[] blob = encBuf.Memory.Span[..encBytes].ToArray();
+        blob[4] = 0x02; // set version to 2
+
+        using IMemoryOwner<byte> decBuf = RentForDecrypt(plaintext.Length);
+        Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.Error!.Code);
     }
 }
