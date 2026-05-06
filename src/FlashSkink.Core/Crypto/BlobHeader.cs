@@ -33,6 +33,7 @@ public static class BlobHeader
     public const int TagSize = 16;
 
     private const ushort SupportedVersion = 1;
+    private const ushort AllValidFlagsMask = (ushort)(BlobFlags.CompressedLz4 | BlobFlags.CompressedZstd);
     private static ReadOnlySpan<byte> Magic => "FSBL"u8;
 
     /// <summary>
@@ -103,7 +104,13 @@ public static class BlobHeader
                 $"Blob header version {version} is not supported by this build (expected {SupportedVersion}).");
         }
 
-        flags = (BlobFlags)BinaryPrimitives.ReadUInt16LittleEndian(source[6..]);
+        ushort rawFlags = BinaryPrimitives.ReadUInt16LittleEndian(source[6..]);
+        if ((rawFlags & ~AllValidFlagsMask) != 0)
+        {
+            return Result.Fail(ErrorCode.VolumeCorrupt, $"Blob header contains unknown flag bits: 0x{rawFlags:X4}.");
+        }
+
+        flags = (BlobFlags)rawFlags;
         nonce = source.Slice(8, NonceSize);
         return Result.Ok();
     }
