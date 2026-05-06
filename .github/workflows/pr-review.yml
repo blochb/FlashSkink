@@ -17,6 +17,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          mkdir -p ~/.local/bin
+          ln -sf "$(npm config get prefix)/bin/claude" ~/.local/bin/claude
+
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

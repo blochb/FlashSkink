@@ -22,6 +22,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          mkdir -p ~/.local/bin
+          ln -sf "$(npm config get prefix)/bin/claude" ~/.local/bin/claude
+
       # Pre-compute ALL inputs into a single context file so Claude has
       # nothing to explore — it reads one file and posts the comment.
       - name: Build review context
