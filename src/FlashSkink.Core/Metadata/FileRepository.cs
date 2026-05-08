@@ -164,6 +164,45 @@ public sealed class FileRepository
     }
 
     /// <summary>
+    /// Returns the <see cref="VolumeFile"/> at the given virtual path, or a successful result
+    /// with <see langword="null"/> value when no matching row exists.
+    /// </summary>
+    public async Task<Result<VolumeFile?>> GetByVirtualPathAsync(string virtualPath, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            const string sql =
+                """
+                SELECT FileID, ParentID, IsFolder, IsSymlink, SymlinkTarget, Name, Extension,
+                       MimeType, VirtualPath, SizeBytes, CreatedUtc, ModifiedUtc, AddedUtc, BlobID
+                FROM Files
+                WHERE VirtualPath = @VirtualPath
+                """;
+            var rows = await _connection.QueryAsync<dynamic>(
+                new CommandDefinition(sql, new { VirtualPath = virtualPath }, cancellationToken: ct))
+                .ConfigureAwait(false);
+            var row = rows.FirstOrDefault();
+            return Result<VolumeFile?>.Ok(row is null ? null : MapFile(row));
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogInformation("GetByVirtualPathAsync cancelled for '{VirtualPath}'", virtualPath);
+            return Result<VolumeFile?>.Fail(ErrorCode.Cancelled, "File fetch was cancelled.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            _logger.LogError(ex, "Database error fetching file at '{VirtualPath}'", virtualPath);
+            return Result<VolumeFile?>.Fail(ErrorCode.DatabaseReadFailed, "Failed to fetch file.", ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error fetching file at '{VirtualPath}'", virtualPath);
+            return Result<VolumeFile?>.Fail(ErrorCode.Unknown, "Unexpected error fetching file.", ex);
+        }
+    }
+
+    /// <summary>
     /// Returns the immediate children of <paramref name="parentId"/> (or root-level items when
     /// <see langword="null"/>), ordered folders-first then alphabetically within each group (§16.4).
     /// </summary>
