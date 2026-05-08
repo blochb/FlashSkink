@@ -51,7 +51,7 @@ public sealed class ReadPipeline
             if (!fileResult.Success)
             {
                 return await FailWithLogAndPublishAsync(
-                    context, virtualPath, fileResult.Error!, NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    context, virtualPath, fileResult.Error!, NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             if (fileResult.Value is not { } fileRow)
@@ -59,7 +59,7 @@ public sealed class ReadPipeline
                 return await FailWithLogAndPublishAsync(
                     context, virtualPath,
                     new ErrorContext { Code = ErrorCode.FileNotFound, Message = "No file exists at that path." },
-                    NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             if (fileRow.IsFolder)
@@ -67,7 +67,7 @@ public sealed class ReadPipeline
                 return await FailWithLogAndPublishAsync(
                     context, virtualPath,
                     new ErrorContext { Code = ErrorCode.FileNotFound, Message = "That path is a folder, not a file." },
-                    NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             if (fileRow.BlobId is null)
@@ -75,14 +75,14 @@ public sealed class ReadPipeline
                 return await FailWithLogAndPublishAsync(
                     context, virtualPath,
                     new ErrorContext { Code = ErrorCode.BlobCorrupt, Message = "The file has no blob reference." },
-                    NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             var blobResult = await context.Blobs.GetByIdAsync(fileRow.BlobId, ct).ConfigureAwait(false);
             if (!blobResult.Success)
             {
                 return await FailWithLogAndPublishAsync(
-                    context, virtualPath, blobResult.Error!, NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    context, virtualPath, blobResult.Error!, NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             if (blobResult.Value is not { } blobRow)
@@ -90,7 +90,7 @@ public sealed class ReadPipeline
                 return await FailWithLogAndPublishAsync(
                     context, virtualPath,
                     new ErrorContext { Code = ErrorCode.BlobCorrupt, Message = "The brain references a blob that no longer exists." },
-                    NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             if (blobRow.PlaintextSize > VolumeContext.MaxPlaintextBytes)
@@ -102,7 +102,7 @@ public sealed class ReadPipeline
                         Code = ErrorCode.FileTooLong,
                         Message = $"The file is too large; the maximum supported size is {VolumeContext.MaxPlaintextBytes} bytes.",
                     },
-                    NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             // ── Stage 2-3 — blob open + full read ────────────────────────────
@@ -111,7 +111,7 @@ public sealed class ReadPipeline
             if (!blobReadResult.Success)
             {
                 return await FailWithLogAndPublishAsync(
-                    context, virtualPath, blobReadResult.Error!, NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    context, virtualPath, blobReadResult.Error!, NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             using var encryptedBuffer = blobReadResult.Value!;
@@ -123,7 +123,7 @@ public sealed class ReadPipeline
                 return await FailWithLogAndPublishAsync(
                     context, virtualPath,
                     new ErrorContext { Code = ErrorCode.BlobCorrupt, Message = "The blob identifier is malformed." },
-                    NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             byte[] expectedSha256;
@@ -142,7 +142,7 @@ public sealed class ReadPipeline
                         ExceptionType = ex.GetType().FullName,
                         ExceptionMessage = ex.Message,
                     },
-                    NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             // AAD: 16-byte raw GUID || 32-byte raw SHA-256 digest (cross-cutting decision 3).
@@ -156,7 +156,7 @@ public sealed class ReadPipeline
                 return await FailWithLogAndPublishAsync(
                     context, virtualPath,
                     new ErrorContext { Code = ErrorCode.BlobCorrupt, Message = "The blob is too small to contain a header and tag." },
-                    NotificationSeverity.Error, ct).ConfigureAwait(false);
+                    NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             using var payloadBuffer = ClearOnDisposeOwner.Rent(ciphertextLength == 0 ? 1 : ciphertextLength);
@@ -174,7 +174,7 @@ public sealed class ReadPipeline
                 return await FailWithLogAndPublishAsync(
                     context, virtualPath, decryptResult.Error!,
                     isTampered ? NotificationSeverity.Critical : NotificationSeverity.Error,
-                    ct, requiresUserAction: isTampered).ConfigureAwait(false);
+                    requiresUserAction: isTampered).ConfigureAwait(false);
             }
 
             // ── Stage 5 — decompress (conditional) ───────────────────────────
@@ -193,14 +193,22 @@ public sealed class ReadPipeline
                             Code = ErrorCode.BlobCorrupt,
                             Message = $"Plaintext length {payloadLen} does not match recorded size {blobRow.PlaintextSize}.",
                         },
-                        NotificationSeverity.Error, ct).ConfigureAwait(false);
+                        NotificationSeverity.Error).ConfigureAwait(false);
                 }
 
                 int plaintextSizeInt = checked((int)blobRow.PlaintextSize);
                 var copy = ClearOnDisposeOwner.Rent(plaintextSizeInt == 0 ? 1 : plaintextSizeInt);
-                payloadBuffer.Memory[..plaintextSizeInt].CopyTo(copy.Memory);
-                plaintextOwner = copy;
-                plaintextWritten = plaintextSizeInt;
+                try
+                {
+                    payloadBuffer.Memory[..plaintextSizeInt].CopyTo(copy.Memory);
+                    plaintextOwner = copy;
+                    plaintextWritten = plaintextSizeInt;
+                }
+                catch
+                {
+                    copy.Dispose();
+                    throw;
+                }
             }
             else
             {
@@ -219,7 +227,7 @@ public sealed class ReadPipeline
                     {
                         plaintext.Dispose();
                         return await FailWithLogAndPublishAsync(
-                            context, virtualPath, decompressResult.Error!, NotificationSeverity.Error, ct).ConfigureAwait(false);
+                            context, virtualPath, decompressResult.Error!, NotificationSeverity.Error).ConfigureAwait(false);
                     }
 
                     if (plaintextWritten != plaintextSizeInt)
@@ -232,7 +240,7 @@ public sealed class ReadPipeline
                                 Code = ErrorCode.BlobCorrupt,
                                 Message = $"Decompressed length {plaintextWritten} does not match recorded size {plaintextSizeInt}.",
                             },
-                            NotificationSeverity.Error, ct).ConfigureAwait(false);
+                            NotificationSeverity.Error).ConfigureAwait(false);
                     }
 
                     plaintextOwner = plaintext;
@@ -247,7 +255,11 @@ public sealed class ReadPipeline
             using (plaintextOwner)
             {
                 // ── Stage 6 — hash verify ─────────────────────────────────────
-                _ = context.Sha256.GetHashAndReset();
+                // Discard any state left by a prior call before computing the new digest.
+                // stackalloc is safe here — synchronous, no await between alloc and last use
+                // (Principle 20). Avoids the byte[] allocation of GetHashAndReset() (Principle 18).
+                Span<byte> discard = stackalloc byte[32];
+                context.Sha256.TryGetHashAndReset(discard, out _);
                 context.Sha256.AppendData(plaintextOwner.Memory.Span[..plaintextWritten]);
                 byte[] computed = new byte[32];
 
@@ -256,7 +268,7 @@ public sealed class ReadPipeline
                     return await FailWithLogAndPublishAsync(
                         context, virtualPath,
                         new ErrorContext { Code = ErrorCode.Unknown, Message = "SHA-256 hash computation failed." },
-                        NotificationSeverity.Error, ct).ConfigureAwait(false);
+                        NotificationSeverity.Error).ConfigureAwait(false);
                 }
 
                 if (!CryptographicOperations.FixedTimeEquals(computed, expectedSha256))
@@ -268,7 +280,7 @@ public sealed class ReadPipeline
                             Code = ErrorCode.ChecksumMismatch,
                             Message = "The file's contents do not match its recorded fingerprint. The skink may be damaged.",
                         },
-                        NotificationSeverity.Critical, ct, requiresUserAction: true).ConfigureAwait(false);
+                        NotificationSeverity.Critical, requiresUserAction: true).ConfigureAwait(false);
                 }
 
                 // ── Stage 7 — copy to destination (only after verification) ──
@@ -292,7 +304,7 @@ public sealed class ReadPipeline
                 ExceptionMessage = ex.Message,
                 StackTrace = ex.StackTrace,
             };
-            await LogAndPublishAsync(context, virtualPath, err, NotificationSeverity.Error, false, ct).ConfigureAwait(false);
+            await LogAndPublishAsync(context, virtualPath, err, NotificationSeverity.Error, false).ConfigureAwait(false);
             return Result.Fail(err);
         }
         catch (Exception ex)
@@ -305,7 +317,7 @@ public sealed class ReadPipeline
                 ExceptionMessage = ex.Message,
                 StackTrace = ex.StackTrace,
             };
-            await LogAndPublishAsync(context, virtualPath, err, NotificationSeverity.Error, false, ct).ConfigureAwait(false);
+            await LogAndPublishAsync(context, virtualPath, err, NotificationSeverity.Error, false).ConfigureAwait(false);
             return Result.Fail(err);
         }
     }
@@ -428,15 +440,17 @@ public sealed class ReadPipeline
 
     /// <summary>
     /// Logs the error and publishes a user-facing <see cref="Notification"/>. Cancellation
-    /// errors are logged at Information and NOT published (Principles 14 and 24). Never throws.
+    /// errors are logged at Information and NOT published (Principles 14 and 24). The sole
+    /// async operation inside uses <see cref="CancellationToken.None"/> (Principle 17) — a
+    /// <c>ct</c> parameter would be unused and misleading, so it is intentionally omitted.
+    /// Never throws.
     /// </summary>
     private async ValueTask LogAndPublishAsync(
         VolumeContext ctx,
         string virtualPath,
         ErrorContext err,
         NotificationSeverity severity,
-        bool requiresUserAction,
-        CancellationToken ct)
+        bool requiresUserAction)
     {
         if (err.Code == ErrorCode.Cancelled)
         {
@@ -478,10 +492,9 @@ public sealed class ReadPipeline
         string virtualPath,
         ErrorContext err,
         NotificationSeverity severity,
-        CancellationToken ct,
         bool requiresUserAction = false)
     {
-        await LogAndPublishAsync(ctx, virtualPath, err, severity, requiresUserAction, ct).ConfigureAwait(false);
+        await LogAndPublishAsync(ctx, virtualPath, err, severity, requiresUserAction).ConfigureAwait(false);
         return Result.Fail(err);
     }
 }

@@ -9,8 +9,18 @@ namespace FlashSkink.Tests.Engine;
 internal sealed class RecordingNotificationBus : INotificationBus
 {
     private readonly List<Notification> _notifications = [];
+    private readonly Lock _lock = new();
 
-    public IReadOnlyList<Notification> Published => _notifications;
+    public IReadOnlyList<Notification> Published
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _notifications.ToArray();
+            }
+        }
+    }
 
     public bool ThrowOnPublish { get; set; }
 
@@ -21,7 +31,11 @@ internal sealed class RecordingNotificationBus : INotificationBus
             throw new InvalidOperationException("Test bus configured to throw.");
         }
 
-        _notifications.Add(notification);
+        lock (_lock)
+        {
+            _notifications.Add(notification);
+        }
+
         return ValueTask.CompletedTask;
     }
 }

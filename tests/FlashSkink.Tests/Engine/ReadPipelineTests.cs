@@ -338,6 +338,27 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_BlobFileLongerThanRecorded_ReturnsBlobCorrupt()
+    {
+        // Symmetric counterpart to BlobFileShorterThanRecorded — appending bytes exercises the
+        // fs.Length != expectedSize guard from the other direction.
+        var payload = new byte[256];
+        new Random(8).NextBytes(payload);
+        string blobId = await WriteAndGetBlobIdAsync("/long.bin", payload);
+        string blobPath = GetBlobPath(blobId);
+
+        await using (var fs = new FileStream(blobPath, FileMode.Append))
+        {
+            fs.Write(new byte[64]); // append 64 garbage bytes
+        }
+
+        var (result, _) = await ReadFileAsync("/long.bin");
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_TamperedHeaderMagic_ReturnsVolumeCorrupt()
     {
         // Header layout: [magic 4B][version 2B][flags 2B][nonce 12B] = 20 bytes
@@ -604,6 +625,14 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         string blobId = await WriteAndGetBlobIdAsync("/vocab-test-corrupt.bin", new byte[32]);
         File.Delete(GetBlobPath(blobId));
         await ReadFileAsync("/vocab-test-corrupt.bin");
+
+        // DecryptionFailed path — Critical severity; produces different Title/Message strings
+        // ("File integrity check failed", "The skink may be damaged…") not reached by Error paths.
+        string tamperBlobId = await WriteAndGetBlobIdAsync("/vocab-test-tamper.bin", new byte[64]);
+        byte[] tamperBlob = File.ReadAllBytes(GetBlobPath(tamperBlobId));
+        tamperBlob[20] ^= 0xFF; // flip one ciphertext byte → GCM tag mismatch
+        File.WriteAllBytes(GetBlobPath(tamperBlobId), tamperBlob);
+        await ReadFileAsync("/vocab-test-tamper.bin");
 
         // Collect every notification title + message published so far.
         string allText = string.Join(" ", _bus.Published.Select(n => n.Title + " " + n.Message));
