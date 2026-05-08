@@ -434,4 +434,53 @@ public class FileRepositoryTests : IAsyncLifetime
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.BlobNotFound, result.Error!.Code);
     }
+
+    // ── GetByVirtualPathAsync ─────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetByVirtualPathAsync_ExistingPath_ReturnsRow()
+    {
+        await _sut.InsertAsync(MakeFile("f1", "y.txt", virtualPath: "x/y.txt"), CancellationToken.None);
+
+        var result = await _sut.GetByVirtualPathAsync("x/y.txt", CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Value);
+        Assert.Equal("f1", result.Value!.FileId);
+        Assert.Equal("x/y.txt", result.Value.VirtualPath);
+        Assert.False(result.Value.IsFolder);
+    }
+
+    [Fact]
+    public async Task GetByVirtualPathAsync_NonexistentPath_ReturnsNullSuccess()
+    {
+        var result = await _sut.GetByVirtualPathAsync("does/not/exist.txt", CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task GetByVirtualPathAsync_FolderPath_ReturnsFolderRow()
+    {
+        await _sut.InsertAsync(MakeFolder("fd1", "myfolder", virtualPath: "myfolder"), CancellationToken.None);
+
+        var result = await _sut.GetByVirtualPathAsync("myfolder", CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Value);
+        Assert.True(result.Value!.IsFolder);
+    }
+
+    [Fact]
+    public async Task GetByVirtualPathAsync_Cancelled_ReturnsCancelled()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var result = await _sut.GetByVirtualPathAsync("any/path.txt", cts.Token);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+    }
 }
