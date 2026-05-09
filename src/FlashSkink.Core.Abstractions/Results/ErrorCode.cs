@@ -158,6 +158,9 @@ public enum ErrorCode
 
     // ── File operations ───────────────────────────────────────────────────────
 
+    /// <summary>A caller-supplied argument is invalid (e.g. an empty or path-separator-containing folder name).</summary>
+    InvalidArgument,
+
     /// <summary>The source file was modified while it was being read into the pipeline.</summary>
     FileChangedDuringRead,
 
