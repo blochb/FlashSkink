@@ -650,35 +650,3 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
         return brainResult.Value!;
     }
 }
-
-// ── Test stream helpers ───────────────────────────────────────────────────────
-
-/// <summary>
-/// Cancels the supplied <see cref="CancellationTokenSource"/> on the first
-/// <see cref="WriteAsync"/> call. Used to simulate mid-read cancellation.
-/// </summary>
-internal sealed class CancelOnFirstWriteStream(CancellationTokenSource cts) : Stream
-{
-    public override bool CanRead => false;
-    public override bool CanSeek => false;
-    public override bool CanWrite => true;
-    public override long Length => throw new NotSupportedException();
-    public override long Position { get => 0; set => throw new NotSupportedException(); }
-    public override void Flush() { }
-    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-    public override void SetLength(long value) => throw new NotSupportedException();
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
-    {
-        cts.Cancel();
-        return ValueTask.CompletedTask;
-    }
-
-    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-    {
-        cts.Cancel();
-        return Task.CompletedTask;
-    }
-}

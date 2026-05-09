@@ -593,7 +593,10 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         finally
         {
             _gate.Release();
-            _gate.Dispose();
+            // _gate is intentionally not disposed: SemaphoreSlim holds no unmanaged resources
+            // unless AvailableWaitHandle is accessed (which this code never does), and disposing
+            // it would race with concurrent callers that passed ThrowIfDisposed but haven't yet
+            // called WaitAsync, causing an ObjectDisposedException to escape the public API.
         }
     }
 
@@ -667,12 +670,12 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             const string upsert = "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@Key, @Value)";
             var appVersion = typeof(FlashSkinkVolume).Assembly.GetName().Version?.ToString() ?? "0.0.0.0";
-            await connection.ExecuteAsync(upsert, new { Key = "GracePeriodDays", Value = "30" }).ConfigureAwait(false);
-            await connection.ExecuteAsync(upsert, new { Key = "AuditIntervalHours", Value = "168" }).ConfigureAwait(false);
-            await connection.ExecuteAsync(upsert, new { Key = "VolumeCreatedUtc", Value = DateTime.UtcNow.ToString("O") }).ConfigureAwait(false);
-            await connection.ExecuteAsync(upsert, new { Key = "AppVersion", Value = appVersion }).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "GracePeriodDays", Value = "30" }, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = DateTime.UtcNow.ToString("O") }, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersion", Value = appVersion }, cancellationToken: ct)).ConfigureAwait(false);
             // Stored in Settings (not logged, not surfaced through ErrorContext.Metadata) — Principle 26.
-            await connection.ExecuteAsync(upsert, new { Key = "RecoveryPhrase", Value = string.Join(" ", mnemonicWords) }).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "RecoveryPhrase", Value = string.Join(" ", mnemonicWords) }, cancellationToken: ct)).ConfigureAwait(false);
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
