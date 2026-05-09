@@ -103,6 +103,25 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
         Assert.False(open.Success);
     }
 
+    [Fact]
+    public async Task CreateAsync_StaleBrainDb_NoVault_FailsGracefullyAndCleansVault()
+    {
+        // Simulates the state left by a prior interrupted CreateAsync: brain.db contains
+        // garbage (encrypted with an old DEK), vault.bin was already cleaned up.
+        // CreateAsync must return a failure result (not throw) and must not leave
+        // a vault.bin on disk (vault created in this attempt must be cleaned up).
+        var flashskinkDir = Path.Combine(_skinkRoot, ".flashskink");
+        Directory.CreateDirectory(flashskinkDir);
+        await File.WriteAllBytesAsync(
+            Path.Combine(flashskinkDir, "brain.db"),
+            RandomNumberGenerator.GetBytes(64));
+
+        var result = await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, DefaultOptions);
+
+        Assert.False(result.Success);
+        Assert.False(File.Exists(Path.Combine(flashskinkDir, "vault.bin")));
+    }
+
     // ── WriteFileAsync / ReadFileAsync ────────────────────────────────────────
 
     [Fact]
@@ -234,6 +253,20 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
         Assert.True(children.Success);
         Assert.Single(children.Value!);
         Assert.Equal("docs/ref", children.Value![0].VirtualPath);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("a/b")]
+    [InlineData("sub/path")]
+    public async Task CreateFolder_InvalidName_ReturnsInvalidArgument(string name)
+    {
+        await using var volume = (await FlashSkinkVolume.CreateAsync(
+            _skinkRoot, Password, DefaultOptions)).Value!;
+
+        var result = await volume.CreateFolderAsync(name, null);
+        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
     }
 
     [Fact]

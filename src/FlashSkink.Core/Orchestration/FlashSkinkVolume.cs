@@ -102,6 +102,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         byte[]? dek = null;
         SqliteConnection? connection = null;
         bool vaultCreated = false;
+        bool brainCreated = false;
 
         try
         {
@@ -128,6 +129,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 return Result<FlashSkinkVolume>.Fail(brainResult.Error!);
             }
 
+            brainCreated = true;
             connection = brainResult.Value!;
 
             var migrationResult = await migrationRunner.RunAsync(connection, ct).ConfigureAwait(false);
@@ -148,12 +150,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 return Result<FlashSkinkVolume>.Fail(seedResult.Error!);
             }
 
-            // Take ownership — clear locals so finally does not double-zero or delete vault.
+            // Take ownership — clear locals so finally does not double-zero or delete files.
             var ownedDek = dek;
             var ownedConnection = connection;
             dek = null;
             connection = null;
             vaultCreated = false;
+            brainCreated = false;
 
             var session = new VolumeSession(ownedDek, ownedConnection);
             var volume = BuildVolumeFromSession(session, skinkRoot, streamManager,
@@ -179,6 +182,10 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 CryptographicOperations.ZeroMemory(dek);
             }
             connection?.Dispose();
+            if (brainCreated && File.Exists(brainPath))
+            {
+                try { File.Delete(brainPath); } catch { /* best-effort brain cleanup on failure */ }
+            }
             if (vaultCreated && File.Exists(vaultPath))
             {
                 try { File.Delete(vaultPath); } catch { /* best-effort vault cleanup on failure */ }
@@ -343,6 +350,12 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
+        if (string.IsNullOrWhiteSpace(name) || name.Contains('/'))
+        {
+            return Result<string>.Fail(ErrorCode.InvalidArgument,
+                "Folder name must not be empty, whitespace, or contain '/'.");
+        }
+
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result<string>.Fail(ErrorCode.Cancelled, "Create folder cancelled.", ex); }
         try
