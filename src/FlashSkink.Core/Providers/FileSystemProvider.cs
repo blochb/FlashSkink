@@ -35,11 +35,11 @@ namespace FlashSkink.Core.Providers;
 /// <c>_brain/</c> and <c>_health/</c> subdirectories co-exist at the root level.
 /// </para>
 /// <para>
-/// <strong>Hash-check capability (<c>ISupportsRemoteHashCheck</c>)</strong> is wired in §3.3
-/// when that interface is introduced.
+/// <strong>Hash-check capability:</strong> implements <see cref="ISupportsRemoteHashCheck"/> —
+/// re-reads the finalised file and computes XXHash64 (§15.7 FileSystem row).
 /// </para>
 /// </remarks>
-public sealed class FileSystemProvider : IStorageProvider
+public sealed class FileSystemProvider : IStorageProvider, ISupportsRemoteHashCheck
 {
     private readonly string _rootPath;
     private readonly ILogger<FileSystemProvider> _logger;
@@ -560,14 +560,15 @@ public sealed class FileSystemProvider : IStorageProvider
         }
     }
 
-    // ── XXHash64 capability (wired in §3.3 when ISupportsRemoteHashCheck is introduced) ──────
+    // ── ISupportsRemoteHashCheck (§15.7 FileSystem row) ──────────────────────────────────────
 
-    /// <summary>
-    /// Re-reads the finalised object at <paramref name="remoteId"/> and computes its XXHash64.
-    /// Blueprint §15.7 FileSystem row. Called by <c>RangeUploader</c> via <c>ISupportsRemoteHashCheck</c>
-    /// once that interface is introduced in §3.3.
-    /// </summary>
-    internal async Task<Result<ulong>> GetRemoteXxHash64Async(string remoteId, CancellationToken ct)
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Re-reads the finalised object at <paramref name="remoteId"/> in 80 KiB chunks and computes
+    /// its XXHash64 incrementally. Called by <c>RangeUploader</c> (§3.3) during the
+    /// post-finalisation verification step.
+    /// </remarks>
+    public async Task<Result<ulong>> GetRemoteXxHash64Async(string remoteId, CancellationToken ct)
     {
         try
         {

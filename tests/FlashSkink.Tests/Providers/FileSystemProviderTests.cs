@@ -466,4 +466,33 @@ public sealed class FileSystemProviderTests : IDisposable
             Assert.Equal(sourceData, readBuffer);
         }
     }
+
+    // ── ISupportsRemoteHashCheck (§3.3) ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Provider_ImplementsISupportsRemoteHashCheck_AndComputesHashOnFinalisedBlob()
+    {
+        // FileSystemProvider declares the capability interface.
+        Assert.IsAssignableFrom<ISupportsRemoteHashCheck>(_sut);
+
+        // Upload a small blob, finalise it, then ask for the remote XXHash64.
+        var data = MakeBytes(2048);
+        var begin = await _sut.BeginUploadAsync("abcd1234.bin", data.Length, CancellationToken.None);
+        Assert.True(begin.Success);
+        var session = begin.Value!;
+
+        var rangeResult = await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
+        Assert.True(rangeResult.Success);
+
+        var finalise = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
+        Assert.True(finalise.Success);
+        var remoteId = finalise.Value!;
+
+        ISupportsRemoteHashCheck hashCheck = _sut;
+        var hashResult = await hashCheck.GetRemoteXxHash64Async(remoteId, CancellationToken.None);
+
+        Assert.True(hashResult.Success);
+        ulong expected = System.IO.Hashing.XxHash64.HashToUInt64(data);
+        Assert.Equal(expected, hashResult.Value);
+    }
 }

@@ -12,14 +12,21 @@ namespace FlashSkink.Tests.Providers;
 /// Latency injection uses <see cref="Task.Delay(TimeSpan)"/> directly in §3.1. §3.3 will swap
 /// this to <c>IClock.Delay</c> once the clock abstraction (§3.2) is available.
 /// </remarks>
-internal sealed class FaultInjectingStorageProvider : IStorageProvider
+internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupportsRemoteHashCheck
 {
     private readonly IStorageProvider _inner;
     private int _failNextRangeCount;
     private ErrorCode _failNextRangeCode = ErrorCode.UploadFailed;
     private int _expiryAfterRanges = int.MaxValue;
+    private bool _expiryFired;
     private int _rangesUploaded;
     private TimeSpan _rangeLatency = TimeSpan.Zero;
+    private int _failNextHashCheckCount;
+    private ErrorCode _failNextHashCheckCode = ErrorCode.ProviderUnreachable;
+    private int _failNextBeginCount;
+    private ErrorCode _failNextBeginCode = ErrorCode.ProviderUnreachable;
+    private int _failNextFinaliseCount;
+    private ErrorCode _failNextFinaliseCode = ErrorCode.UploadFailed;
 
     public FaultInjectingStorageProvider(IStorageProvider inner)
     {
@@ -48,13 +55,39 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider
 
     /// <summary>
     /// Causes <see cref="UploadRangeAsync"/> to return <see cref="ErrorCode.UploadSessionExpired"/>
-    /// on the call at index <paramref name="rangesUploaded"/> (0-based count of successful uploads).
+    /// once, on the call at index <paramref name="rangesUploaded"/> (0-based count of successful
+    /// uploads). The expiry is single-shot — once fired, subsequent calls do not retrigger the
+    /// expiry, so callers can exercise the expired-session restart path without infinite-looping.
     /// </summary>
-    public void ForceSessionExpiryAfter(int rangesUploaded) =>
+    public void ForceSessionExpiryAfter(int rangesUploaded)
+    {
         _expiryAfterRanges = rangesUploaded;
+        _expiryFired = false;
+    }
 
     /// <summary>Adds a <see cref="Task.Delay"/> before each <see cref="UploadRangeAsync"/> call.</summary>
     public void SetRangeLatency(TimeSpan delay) => _rangeLatency = delay;
+
+    /// <summary>Causes the next <see cref="GetRemoteXxHash64Async"/> call to fail with <paramref name="code"/>.</summary>
+    public void FailNextHashCheckWith(ErrorCode code)
+    {
+        _failNextHashCheckCount++;
+        _failNextHashCheckCode = code;
+    }
+
+    /// <summary>Causes the next <see cref="BeginUploadAsync"/> call to fail with <paramref name="code"/>.</summary>
+    public void FailNextBeginWith(ErrorCode code)
+    {
+        _failNextBeginCount++;
+        _failNextBeginCode = code;
+    }
+
+    /// <summary>Causes the next <see cref="FinaliseUploadAsync"/> call to fail with <paramref name="code"/>.</summary>
+    public void FailNextFinaliseWith(ErrorCode code)
+    {
+        _failNextFinaliseCount++;
+        _failNextFinaliseCode = code;
+    }
 
     /// <summary>Resets all injected faults to defaults (no failures, no latency).</summary>
     public void Reset()
@@ -62,14 +95,30 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider
         _failNextRangeCount = 0;
         _failNextRangeCode = ErrorCode.UploadFailed;
         _expiryAfterRanges = int.MaxValue;
+        _expiryFired = false;
         _rangesUploaded = 0;
         _rangeLatency = TimeSpan.Zero;
+        _failNextHashCheckCount = 0;
+        _failNextHashCheckCode = ErrorCode.ProviderUnreachable;
+        _failNextBeginCount = 0;
+        _failNextBeginCode = ErrorCode.ProviderUnreachable;
+        _failNextFinaliseCount = 0;
+        _failNextFinaliseCode = ErrorCode.UploadFailed;
     }
 
     // ── IStorageProvider ─────────────────────────────────────────────────────────────────────
 
-    public Task<Result<UploadSession>> BeginUploadAsync(string remoteName, long totalBytes, CancellationToken ct) =>
-        _inner.BeginUploadAsync(remoteName, totalBytes, ct);
+    public Task<Result<UploadSession>> BeginUploadAsync(string remoteName, long totalBytes, CancellationToken ct)
+    {
+        if (_failNextBeginCount > 0)
+        {
+            _failNextBeginCount--;
+            return Task.FromResult(Result<UploadSession>.Fail(
+                _failNextBeginCode, $"Injected begin-upload failure: {_failNextBeginCode}."));
+        }
+
+        return _inner.BeginUploadAsync(remoteName, totalBytes, ct);
+    }
 
     public Task<Result<long>> GetUploadedBytesAsync(UploadSession session, CancellationToken ct) =>
         _inner.GetUploadedBytesAsync(session, ct);
@@ -82,8 +131,9 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider
             await Task.Delay(_rangeLatency, ct).ConfigureAwait(false);
         }
 
-        if (_rangesUploaded >= _expiryAfterRanges)
+        if (!_expiryFired && _rangesUploaded >= _expiryAfterRanges)
         {
+            _expiryFired = true;
             return Result.Fail(ErrorCode.UploadSessionExpired, "Injected session expiry.");
         }
 
@@ -102,8 +152,17 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider
         return result;
     }
 
-    public Task<Result<string>> FinaliseUploadAsync(UploadSession session, CancellationToken ct) =>
-        _inner.FinaliseUploadAsync(session, ct);
+    public Task<Result<string>> FinaliseUploadAsync(UploadSession session, CancellationToken ct)
+    {
+        if (_failNextFinaliseCount > 0)
+        {
+            _failNextFinaliseCount--;
+            return Task.FromResult(Result<string>.Fail(
+                _failNextFinaliseCode, $"Injected finalise failure: {_failNextFinaliseCode}."));
+        }
+
+        return _inner.FinaliseUploadAsync(session, ct);
+    }
 
     public Task<Result> AbortUploadAsync(UploadSession session, CancellationToken ct) =>
         _inner.AbortUploadAsync(session, ct);
@@ -128,4 +187,30 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider
 
     public Task<Result<long?>> GetQuotaBytesAsync(CancellationToken ct) =>
         _inner.GetQuotaBytesAsync(ct);
+
+    // ── ISupportsRemoteHashCheck ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Delegates to <see cref="ISupportsRemoteHashCheck.GetRemoteXxHash64Async"/> on the inner
+    /// provider after applying any pending hash-check fault. Tests that rely on this being a
+    /// capability-bearing decorator must construct over an inner that itself implements
+    /// <see cref="ISupportsRemoteHashCheck"/> (e.g. <c>FileSystemProvider</c>).
+    /// </summary>
+    public Task<Result<ulong>> GetRemoteXxHash64Async(string remoteId, CancellationToken ct)
+    {
+        if (_failNextHashCheckCount > 0)
+        {
+            _failNextHashCheckCount--;
+            return Task.FromResult(Result<ulong>.Fail(
+                _failNextHashCheckCode, $"Injected hash-check failure: {_failNextHashCheckCode}."));
+        }
+
+        if (_inner is ISupportsRemoteHashCheck hashCheck)
+        {
+            return hashCheck.GetRemoteXxHash64Async(remoteId, ct);
+        }
+
+        return Task.FromResult(Result<ulong>.Fail(
+            ErrorCode.Unknown, "Inner provider does not support remote hash check."));
+    }
 }
