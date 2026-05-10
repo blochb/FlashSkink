@@ -16,6 +16,13 @@ public sealed class SystemClock : IClock
     public DateTime UtcNow => DateTime.UtcNow;
 
     /// <inheritdoc/>
-    public ValueTask Delay(TimeSpan delay, CancellationToken ct) =>
-        new(Task.Delay(delay, ct));
+    public ValueTask Delay(TimeSpan delay, CancellationToken ct)
+    {
+        if (delay <= TimeSpan.Zero)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return new(Task.Delay(delay, ct));
+    }
 }

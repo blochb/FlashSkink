@@ -142,7 +142,24 @@ public sealed class FakeClockTests
         Assert.True(delayTask.IsCompletedSuccessfully);
     }
 
-    // ── PendingDelayCount ──────────────────────────────────────────────────────
+    // ── PendingDelayCount — cancellation ──────────────────────────────────────
+
+    [Fact]
+    public async Task PendingDelayCount_DecrementsAfterCancellation()
+    {
+        using var clock = new FakeClock(StartTime);
+        using var cts = new CancellationTokenSource();
+
+        Task t = clock.Delay(TimeSpan.FromSeconds(10), cts.Token).AsTask();
+        Assert.Equal(1, clock.PendingDelayCount);
+
+        cts.Cancel();
+        await Assert.ThrowsAsync<TaskCanceledException>(() => t);
+
+        Assert.Equal(0, clock.PendingDelayCount);
+    }
+
+    // ── PendingDelayCount — advance ───────────────────────────────────────────
 
     [Fact]
     public void PendingDelayCount_ReflectsActiveDelays()

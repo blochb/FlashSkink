@@ -68,12 +68,19 @@ internal sealed class FakeClock : IClock, IDisposable
             var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var entry = new PendingDelay(deadline, tcs);
 
-            // Register cancellation outside the TCS set — if the token fires, complete via Cancel.
+            // Register cancellation — on cancel, remove from _pending (fixing PendingDelayCount)
+            // then cancel the TCS. The lock ensures the entry is in _pending before the callback
+            // can run (we hold _lock here; the callback acquires it before removing).
             CancellationTokenRegistration reg = ct.Register(static state =>
             {
-                var (e, token) = ((PendingDelay, CancellationToken))state!;
+                var (self, e, token) = ((FakeClock, PendingDelay, CancellationToken))state!;
+                lock (self._lock)
+                {
+                    self._pending.Remove(e);
+                }
+
                 e.Tcs.TrySetCanceled(token);
-            }, (entry, ct));
+            }, (this, entry, ct));
 
             entry.Registration = reg;
 
