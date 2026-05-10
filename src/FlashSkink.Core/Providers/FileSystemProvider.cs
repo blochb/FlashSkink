@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.IO.Hashing;
 using System.Text.Json;
@@ -317,7 +318,8 @@ public sealed class FileSystemProvider : IStorageProvider
     /// <inheritdoc/>
     public Task<Result> AbortUploadAsync(UploadSession session, CancellationToken ct)
     {
-        // Best-effort: swallow errors — the orchestrator has already moved on.
+        // ct is intentionally not observed: abort is fire-and-forget cleanup the orchestrator calls
+        // after moving on. Honouring cancellation would leave staging files with no future cleanup owner.
         TryDeleteFile(PartialPath(session.SessionUri));
         TryDeleteFile(SidecarPath(session.SessionUri));
         return Task.FromResult(Result.Ok());
@@ -441,6 +443,7 @@ public sealed class FileSystemProvider : IStorageProvider
             var results = Directory
                 .EnumerateFiles(searchRoot, "*", SearchOption.AllDirectories)
                 .Select(f => Path.GetRelativePath(_rootPath, f).Replace('\\', '/'))
+                .Where(rel => !rel.StartsWith(".flashskink-staging/", StringComparison.Ordinal))
                 .ToArray() as IReadOnlyList<string>;
 
             return Task.FromResult(Result<IReadOnlyList<string>>.Ok(results));
@@ -570,9 +573,23 @@ public sealed class FileSystemProvider : IStorageProvider
         {
             ct.ThrowIfCancellationRequested();
             var fullPath = FullPath(remoteId);
-            var bytes = await File.ReadAllBytesAsync(fullPath, ct).ConfigureAwait(false);
-            var hash = XxHash64.HashToUInt64(bytes);
-            return Result<ulong>.Ok(hash);
+            var hasher = new XxHash64();
+            await using var fs = File.OpenRead(fullPath);
+            var buffer = ArrayPool<byte>.Shared.Rent(81_920);
+            try
+            {
+                int read;
+                while ((read = await fs.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false)) > 0)
+                {
+                    hasher.Append(buffer.AsSpan(0, read));
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            return Result<ulong>.Ok(hasher.GetCurrentHashAsUInt64());
         }
         catch (OperationCanceledException ex)
         {

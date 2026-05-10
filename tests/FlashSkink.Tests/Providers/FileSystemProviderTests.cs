@@ -196,6 +196,22 @@ public sealed class FileSystemProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task FinaliseUploadAsync_Cancelled_ReturnsCancelled()
+    {
+        const int total = 64;
+        var remote = "aabb998877001122.bin";
+        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        await _sut.UploadRangeAsync(session, 0, MakeBytes(total), CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var result = await _sut.FinaliseUploadAsync(session, cts.Token);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+    }
+
+    [Fact]
     public async Task FinaliseUploadAsync_SizeMismatch_ReturnsUploadFailed()
     {
         const int total = 1024;

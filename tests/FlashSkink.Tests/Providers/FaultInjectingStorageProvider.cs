@@ -36,6 +36,10 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider
     public void FailNextRange() => FailNextRangeWith(ErrorCode.UploadFailed);
 
     /// <summary>Causes the next <see cref="UploadRangeAsync"/> call to fail with <paramref name="code"/>.</summary>
+    /// <remarks>
+    /// When stacked with prior calls, all pending failures share the last-set code — stacking
+    /// different error codes per failure is not supported by this implementation.
+    /// </remarks>
     public void FailNextRangeWith(ErrorCode code)
     {
         _failNextRangeCount++;
