@@ -215,15 +215,18 @@ public sealed class RangeUploader
         }
         catch (FileNotFoundException ex)
         {
+            // A missing local blob is permanent — every retry would hit the same exception and
+            // burn through the cycle ladder for no reason. Return a permanent outcome so the
+            // caller marks the row FAILED on the first attempt.
             _logger.LogError(ex, "Local blob file missing: {BlobPath}", blobAbsolutePath);
-            return Result<UploadOutcome>.Fail(
-                ErrorCode.BlobCorrupt, "Local blob file is missing.", ex);
+            return Result<UploadOutcome>.Ok(UploadOutcome.Permanent(
+                ErrorCode.BlobCorrupt, "Local blob file is missing."));
         }
         catch (DirectoryNotFoundException ex)
         {
             _logger.LogError(ex, "Local blob directory missing: {BlobPath}", blobAbsolutePath);
-            return Result<UploadOutcome>.Fail(
-                ErrorCode.BlobCorrupt, "Local blob directory is missing.", ex);
+            return Result<UploadOutcome>.Ok(UploadOutcome.Permanent(
+                ErrorCode.BlobCorrupt, "Local blob directory is missing."));
         }
         catch (UnauthorizedAccessException ex)
         {

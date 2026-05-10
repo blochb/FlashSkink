@@ -23,6 +23,10 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
     private TimeSpan _rangeLatency = TimeSpan.Zero;
     private int _failNextHashCheckCount;
     private ErrorCode _failNextHashCheckCode = ErrorCode.ProviderUnreachable;
+    private int _failNextBeginCount;
+    private ErrorCode _failNextBeginCode = ErrorCode.ProviderUnreachable;
+    private int _failNextFinaliseCount;
+    private ErrorCode _failNextFinaliseCode = ErrorCode.UploadFailed;
 
     public FaultInjectingStorageProvider(IStorageProvider inner)
     {
@@ -71,6 +75,20 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
         _failNextHashCheckCode = code;
     }
 
+    /// <summary>Causes the next <see cref="BeginUploadAsync"/> call to fail with <paramref name="code"/>.</summary>
+    public void FailNextBeginWith(ErrorCode code)
+    {
+        _failNextBeginCount++;
+        _failNextBeginCode = code;
+    }
+
+    /// <summary>Causes the next <see cref="FinaliseUploadAsync"/> call to fail with <paramref name="code"/>.</summary>
+    public void FailNextFinaliseWith(ErrorCode code)
+    {
+        _failNextFinaliseCount++;
+        _failNextFinaliseCode = code;
+    }
+
     /// <summary>Resets all injected faults to defaults (no failures, no latency).</summary>
     public void Reset()
     {
@@ -82,12 +100,25 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
         _rangeLatency = TimeSpan.Zero;
         _failNextHashCheckCount = 0;
         _failNextHashCheckCode = ErrorCode.ProviderUnreachable;
+        _failNextBeginCount = 0;
+        _failNextBeginCode = ErrorCode.ProviderUnreachable;
+        _failNextFinaliseCount = 0;
+        _failNextFinaliseCode = ErrorCode.UploadFailed;
     }
 
     // ── IStorageProvider ─────────────────────────────────────────────────────────────────────
 
-    public Task<Result<UploadSession>> BeginUploadAsync(string remoteName, long totalBytes, CancellationToken ct) =>
-        _inner.BeginUploadAsync(remoteName, totalBytes, ct);
+    public Task<Result<UploadSession>> BeginUploadAsync(string remoteName, long totalBytes, CancellationToken ct)
+    {
+        if (_failNextBeginCount > 0)
+        {
+            _failNextBeginCount--;
+            return Task.FromResult(Result<UploadSession>.Fail(
+                _failNextBeginCode, $"Injected begin-upload failure: {_failNextBeginCode}."));
+        }
+
+        return _inner.BeginUploadAsync(remoteName, totalBytes, ct);
+    }
 
     public Task<Result<long>> GetUploadedBytesAsync(UploadSession session, CancellationToken ct) =>
         _inner.GetUploadedBytesAsync(session, ct);
@@ -121,8 +152,17 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
         return result;
     }
 
-    public Task<Result<string>> FinaliseUploadAsync(UploadSession session, CancellationToken ct) =>
-        _inner.FinaliseUploadAsync(session, ct);
+    public Task<Result<string>> FinaliseUploadAsync(UploadSession session, CancellationToken ct)
+    {
+        if (_failNextFinaliseCount > 0)
+        {
+            _failNextFinaliseCount--;
+            return Task.FromResult(Result<string>.Fail(
+                _failNextFinaliseCode, $"Injected finalise failure: {_failNextFinaliseCode}."));
+        }
+
+        return _inner.FinaliseUploadAsync(session, ct);
+    }
 
     public Task<Result> AbortUploadAsync(UploadSession session, CancellationToken ct) =>
         _inner.AbortUploadAsync(session, ct);

@@ -504,10 +504,70 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
 
+    // ── Finalise failure paths ───────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task UploadAsync_FinaliseFailsWithRetryableCode_ReturnsRetryable()
+    {
+        int size = 1024;
+        var (path, record, _) = CreateLocalBlob(size);
+
+        var fault = new FaultInjectingStorageProvider(_fsProvider);
+        fault.FailNextFinaliseWith(ErrorCode.ProviderUnreachable);
+
+        var result = await _sut.UploadAsync(
+            FileId, ProviderId, fault, record, path, null, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.Value!.Status);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.Value.FailureCode);
+    }
+
+    [Fact]
+    public async Task UploadAsync_FinaliseFailsWithPermanentCode_ReturnsPermanent()
+    {
+        int size = 1024;
+        var (path, record, _) = CreateLocalBlob(size);
+
+        var fault = new FaultInjectingStorageProvider(_fsProvider);
+        fault.FailNextFinaliseWith(ErrorCode.ProviderQuotaExceeded);
+
+        var result = await _sut.UploadAsync(
+            FileId, ProviderId, fault, record, path, null, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(ErrorCode.ProviderQuotaExceeded, result.Value.FailureCode);
+    }
+
+    // ── BeginUploadAsync failure ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task UploadAsync_BeginUploadFails_ReturnsResultFailWithProviderError()
+    {
+        int size = 1024;
+        var (path, record, _) = CreateLocalBlob(size);
+
+        var fault = new FaultInjectingStorageProvider(_fsProvider);
+        fault.FailNextBeginWith(ErrorCode.ProviderUnreachable);
+
+        var result = await _sut.UploadAsync(
+            FileId, ProviderId, fault, record, path, null, CancellationToken.None);
+
+        // A BeginUploadAsync failure propagates as Result.Fail — the caller (UploadQueueService,
+        // §3.4) treats this as a transient failure of the call itself; the next cycle re-enters
+        // UploadAsync with no existing session and tries Begin again.
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+
+        // No session row was persisted because Begin failed before GetOrCreateSessionAsync.
+        Assert.Null(await ReadSessionRowAsync());
+    }
+
     // ── Local blob preconditions ─────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task UploadAsync_LocalBlobMissing_ReturnsResultFailBlobCorrupt()
+    public async Task UploadAsync_LocalBlobMissing_ReturnsPermanentBlobCorrupt()
     {
         int size = 1024;
         var (path, record, _) = CreateLocalBlob(size);
@@ -516,8 +576,25 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         var result = await _sut.UploadAsync(
             FileId, ProviderId, _fsProvider, record, path, null, CancellationToken.None);
 
-        Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        // A missing local blob is permanent — retrying every cycle would be futile.
+        Assert.True(result.Success);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.Value.FailureCode);
+    }
+
+    [Fact]
+    public async Task UploadAsync_LocalBlobDirectoryMissing_ReturnsPermanentBlobCorrupt()
+    {
+        int size = 1024;
+        var (path, record, _) = CreateLocalBlob(size);
+        Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
+
+        var result = await _sut.UploadAsync(
+            FileId, ProviderId, _fsProvider, record, path, null, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.Value.FailureCode);
     }
 
     [Fact]
