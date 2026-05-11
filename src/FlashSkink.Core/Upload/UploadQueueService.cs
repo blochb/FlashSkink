@@ -570,9 +570,8 @@ public sealed class UploadQueueService : IAsyncDisposable
             }
 
             // 7. Apply the per-blob outcome — brain transaction lives inside.
-            await ApplyOutcomeAsync(row, file, provider, uploadResult.Value!, ct)
+            return await ApplyOutcomeAsync(row, file, provider, uploadResult.Value!, ct)
                 .ConfigureAwait(false);
-            return Result.Ok();
         }
         catch (OperationCanceledException ex)
         {
@@ -581,27 +580,20 @@ public sealed class UploadQueueService : IAsyncDisposable
         }
     }
 
-    private async Task ApplyOutcomeAsync(
+    private Task<Result> ApplyOutcomeAsync(
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
-        UploadOutcome outcome, CancellationToken ct)
-    {
-        switch (outcome.Status)
+        UploadOutcome outcome, CancellationToken ct) => outcome.Status switch
         {
-            case UploadOutcomeStatus.Completed:
-                await ApplyCompletedAsync(row, file, provider, outcome, ct).ConfigureAwait(false);
-                break;
+            UploadOutcomeStatus.Completed =>
+                ApplyCompletedAsync(row, file, provider, outcome, ct),
+            UploadOutcomeStatus.RetryableFailure =>
+                ApplyRetryableAsync(row, file, provider, outcome, ct),
+            UploadOutcomeStatus.PermanentFailure =>
+                ApplyPermanentAsync(row, file, provider, outcome, ct),
+            _ => Task.FromResult(Result.Ok()),
+        };
 
-            case UploadOutcomeStatus.RetryableFailure:
-                await ApplyRetryableAsync(row, file, provider, outcome, ct).ConfigureAwait(false);
-                break;
-
-            case UploadOutcomeStatus.PermanentFailure:
-                await ApplyPermanentAsync(row, file, provider, outcome, ct).ConfigureAwait(false);
-                break;
-        }
-    }
-
-    private async Task ApplyCompletedAsync(
+    private async Task<Result> ApplyCompletedAsync(
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
         UploadOutcome outcome, CancellationToken ct)
     {
@@ -614,10 +606,9 @@ public sealed class UploadQueueService : IAsyncDisposable
             if (!markUploaded.Success)
             {
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                _logger.LogError(
-                    "Failed to mark {FileId} on {ProviderId} as uploaded: {Code}",
-                    row.FileId, row.ProviderId, markUploaded.Error!.Code);
-                return;
+                return await OnTerminalBrainFailureAsync(
+                    row, file, provider, markUploaded.Error!,
+                    "mark uploaded").ConfigureAwait(false);
             }
 
             var deleteSession = await _uploadQueueRepository
@@ -626,10 +617,9 @@ public sealed class UploadQueueService : IAsyncDisposable
             if (!deleteSession.Success)
             {
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                _logger.LogError(
-                    "Failed to delete session row for {FileId} on {ProviderId}: {Code}",
-                    row.FileId, row.ProviderId, deleteSession.Error!.Code);
-                return;
+                return await OnTerminalBrainFailureAsync(
+                    row, file, provider, deleteSession.Error!,
+                    "delete session").ConfigureAwait(false);
             }
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
@@ -654,9 +644,10 @@ public sealed class UploadQueueService : IAsyncDisposable
         _logger.LogInformation(
             "Upload completed for {FileId} on {ProviderId} ({BytesUploaded} bytes).",
             row.FileId, row.ProviderId, outcome.BytesUploaded);
+        return Result.Ok();
     }
 
-    private async Task ApplyRetryableAsync(
+    private async Task<Result> ApplyRetryableAsync(
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
         UploadOutcome outcome, CancellationToken ct)
     {
@@ -672,10 +663,9 @@ public sealed class UploadQueueService : IAsyncDisposable
             .ConfigureAwait(false);
         if (!markFailed.Success)
         {
-            _logger.LogError(
-                "Failed to mark {FileId} on {ProviderId} as failed: {Code}",
-                row.FileId, row.ProviderId, markFailed.Error!.Code);
-            return;
+            return await OnTerminalBrainFailureAsync(
+                row, file, provider, markFailed.Error!,
+                "mark failed (retryable)").ConfigureAwait(false);
         }
 
         int cycleNumber = row.AttemptCount + 1;
@@ -684,9 +674,8 @@ public sealed class UploadQueueService : IAsyncDisposable
         if (decision.Outcome == RetryOutcome.MarkFailed)
         {
             ErrorCode code = outcome.FailureCode ?? ErrorCode.UploadFailed;
-            await PromoteToPermanentAsync(row, file, provider, code, failureMessage)
+            return await PromoteToPermanentAsync(row, file, provider, code, failureMessage)
                 .ConfigureAwait(false);
-            return;
         }
 
         _logger.LogInformation(
@@ -702,9 +691,11 @@ public sealed class UploadQueueService : IAsyncDisposable
             // Shutdown during cycle wait — preserve state; the row stays FAILED and will be
             // re-dequeued by the worker filter when the service resumes.
         }
+
+        return Result.Ok();
     }
 
-    private async Task ApplyPermanentAsync(
+    private async Task<Result> ApplyPermanentAsync(
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
         UploadOutcome outcome, CancellationToken ct)
     {
@@ -723,10 +714,9 @@ public sealed class UploadQueueService : IAsyncDisposable
             if (!markFailed.Success)
             {
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                _logger.LogError(
-                    "Failed to mark {FileId} on {ProviderId} as terminally failed: {Code}",
-                    row.FileId, row.ProviderId, markFailed.Error!.Code);
-                return;
+                return await OnTerminalBrainFailureAsync(
+                    row, file, provider, markFailed.Error!,
+                    "mark terminally failed").ConfigureAwait(false);
             }
 
             var deleteSession = await _uploadQueueRepository
@@ -735,10 +725,9 @@ public sealed class UploadQueueService : IAsyncDisposable
             if (!deleteSession.Success)
             {
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                _logger.LogError(
-                    "Failed to delete session row for {FileId} on {ProviderId}: {Code}",
-                    row.FileId, row.ProviderId, deleteSession.Error!.Code);
-                return;
+                return await OnTerminalBrainFailureAsync(
+                    row, file, provider, deleteSession.Error!,
+                    "delete session (permanent)").ConfigureAwait(false);
             }
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
@@ -764,13 +753,31 @@ public sealed class UploadQueueService : IAsyncDisposable
         _logger.LogError(
             "Permanent upload failure for {FileId} on {ProviderId}: {Code} {Message}",
             row.FileId, row.ProviderId, code, failureMessage);
+        return Result.Ok();
     }
 
-    private async Task PromoteToPermanentAsync(
+    private async Task<Result> PromoteToPermanentAsync(
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
         ErrorCode code, string failureMessage)
     {
-        // The row is already FAILED from the MarkFailedAsync in ApplyRetryableAsync.
+        // Defensively clamp AttemptCount to the §21.1 cycle cap so the DequeueNextBatchAsync
+        // filter excludes this row. Today MarkUploadingAsync has already bumped AttemptCount to
+        // at least 5 on the 5th cycle, but doing it explicitly here makes the method
+        // self-contained — robust against any future change to where MarkFailed is called from
+        // (e.g., if RetryPolicy.NextCycleAttempt is ever extended to return MarkFailed at lower
+        // cycles for specific failure classes).
+        string lastError = $"{code}: {failureMessage}";
+        var markTerminal = await _uploadQueueRepository
+            .MarkTerminallyFailedAsync(row.FileId, row.ProviderId, lastError,
+                transaction: null, CancellationToken.None)
+            .ConfigureAwait(false);
+        if (!markTerminal.Success)
+        {
+            _logger.LogWarning(
+                "Failed to clamp AttemptCount to terminal cap for {FileId} on {ProviderId}: {Code}",
+                row.FileId, row.ProviderId, markTerminal.Error!.Code);
+        }
+
         // Best-effort session delete (Principle 17 — bookkeeping not cancellable).
         var deleteSession = await _uploadQueueRepository
             .DeleteSessionAsync(row.FileId, row.ProviderId, CancellationToken.None)
@@ -802,6 +809,34 @@ public sealed class UploadQueueService : IAsyncDisposable
         _logger.LogError(
             "Cycle ladder exhausted for {FileId} on {ProviderId}: {Code} {Message}",
             row.FileId, row.ProviderId, code, failureMessage);
+
+        return Result.Ok();
+    }
+
+    /// <summary>
+    /// Common terminal-brain-write-failure path. The row's <c>TailUploads.Status</c> is stuck at
+    /// <c>UPLOADING</c> (set by <see cref="UploadQueueRepository.MarkUploadingAsync"/> earlier in
+    /// the flow); since <see cref="UploadQueueRepository.DequeueNextBatchAsync"/> excludes
+    /// <c>UPLOADING</c>, the row will not be picked up again until Phase 5's WAL recovery sweep
+    /// resets orphaned <c>UPLOADING</c> rows on next volume open. To make the stuck state
+    /// observable to the user in the interim, publish a <see cref="NotificationSeverity.Critical"/>
+    /// notification (which the existing <c>PersistenceNotificationHandler</c> records to
+    /// <c>BackgroundFailures</c>) so the next launch surfaces it.
+    /// </summary>
+    private async Task<Result> OnTerminalBrainFailureAsync(
+        TailUploadRow row, VolumeFile file, IStorageProvider provider,
+        ErrorContext error, string operationDescription)
+    {
+        _logger.LogError(
+            "Brain write failed for {FileId} on {ProviderId} during {Operation}: {Code} {Message}",
+            row.FileId, row.ProviderId, operationDescription, error.Code, error.Message);
+
+        await PublishFailureAsync(file, provider,
+            error.Code,
+            $"Could not record the outcome of an upload for '{file.VirtualPath}'. Reopen the volume to retry.",
+            NotificationSeverity.Critical).ConfigureAwait(false);
+
+        return Result.Fail(error);
     }
 
     private async Task PublishFailureAsync(
@@ -846,14 +881,24 @@ public sealed class UploadQueueService : IAsyncDisposable
 
     private async Task IdleAsync(TimeSpan pollInterval, CancellationToken ct)
     {
-        // Wake on Pulse OR on the poll-interval cap. Both inner tasks observe ct; cancellation
-        // propagates through Task.WhenAny.
-        Task wakeup = _wakeupSignal.WaitAsync(ct).AsTask();
-        Task poll = _clock.Delay(pollInterval, ct).AsTask();
-        await Task.WhenAny(wakeup, poll).ConfigureAwait(false);
+        // Wake on Pulse OR on the poll-interval cap. The losing Task.WhenAny branch must be
+        // cancelled so we don't leak a pending channel reader continuation on every idle round
+        // (capacity-1 channels still accumulate registered readers when no token is buffered).
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Task wakeup = _wakeupSignal.WaitAsync(idleCts.Token).AsTask();
+        Task poll = _clock.Delay(pollInterval, idleCts.Token).AsTask();
+        try
+        {
+            await Task.WhenAny(wakeup, poll).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Cancel the losing branch (and the winning branch's no-op completion path). Both
+            // observe idleCts; this releases the channel-reader registration created by
+            // _wakeupSignal.WaitAsync if poll won, and cancels the timer if wakeup won.
+            idleCts.Cancel();
+        }
 
-        // Observe cancellation if either inner task completed by cancellation rather than
-        // signal/poll.
         ct.ThrowIfCancellationRequested();
     }
 
