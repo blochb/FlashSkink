@@ -495,4 +495,75 @@ public sealed class FileSystemProviderTests : IDisposable
         ulong expected = System.IO.Hashing.XxHash64.HashToUInt64(data);
         Assert.Equal(expected, hashResult.Value);
     }
+
+    // ── _brain/ namespace routing ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task BeginUploadAsync_BrainPrefix_FinalisesAtBrainSubdir()
+    {
+        var data = MakeBytes(512);
+        var remote = "_brain/20260101T000000Z.bin";
+
+        var begin = await _sut.BeginUploadAsync(remote, data.Length, CancellationToken.None);
+        Assert.True(begin.Success);
+        var session = begin.Value!;
+        await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
+        var finalise = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
+        Assert.True(finalise.Success);
+
+        Assert.Equal("_brain/20260101T000000Z.bin", finalise.Value);
+        var destPath = Path.Combine(_root, "_brain", "20260101T000000Z.bin");
+        Assert.True(File.Exists(destPath), $"Expected brain mirror at {destPath}");
+    }
+
+    [Fact]
+    public async Task ListAsync_BrainPrefix_ReturnsBrainEntries()
+    {
+        var data = MakeBytes(128);
+        foreach (var name in new[]
+        {
+            "_brain/20260101T000000Z.bin",
+            "_brain/20260102T000000Z.bin",
+        })
+        {
+            var begin = (await _sut.BeginUploadAsync(name, data.Length, CancellationToken.None)).Value!;
+            await _sut.UploadRangeAsync(begin, 0, data, CancellationToken.None);
+            await _sut.FinaliseUploadAsync(begin, CancellationToken.None);
+        }
+
+        var listResult = await _sut.ListAsync("_brain", CancellationToken.None);
+
+        Assert.True(listResult.Success);
+        var entries = listResult.Value!;
+        Assert.Equal(2, entries.Count);
+        Assert.Contains("_brain/20260101T000000Z.bin", entries);
+        Assert.Contains("_brain/20260102T000000Z.bin", entries);
+    }
+
+    [Fact]
+    public async Task RoundTrip_BrainObject_DownloadMatchesUpload()
+    {
+        var data = MakeBytes(2048);
+        var remote = "_brain/20260101T000000Z.bin";
+
+        var session = (await _sut.BeginUploadAsync(remote, data.Length, CancellationToken.None)).Value!;
+        await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
+        var finalise = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
+        var remoteId = finalise.Value!;
+
+        var download = await _sut.DownloadAsync(remoteId, CancellationToken.None);
+        Assert.True(download.Success);
+        var buffer = new byte[data.Length];
+        await using (var stream = download.Value!)
+        {
+            await stream.ReadExactlyAsync(buffer, CancellationToken.None);
+        }
+        Assert.Equal(data, buffer);
+
+        // ExistsAsync + DeleteAsync round-trip. Stream is disposed above so the file handle is
+        // released — Windows cannot delete a file with an open handle.
+        Assert.True((await _sut.ExistsAsync(remoteId, CancellationToken.None)).Value);
+        Assert.True((await _sut.DeleteAsync(remoteId, CancellationToken.None)).Success);
+        Assert.False((await _sut.ExistsAsync(remoteId, CancellationToken.None)).Value);
+    }
 }

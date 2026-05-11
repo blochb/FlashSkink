@@ -632,11 +632,21 @@ public sealed class FileSystemProvider : IStorageProvider, ISupportsRemoteHashCh
 
     /// <summary>
     /// Returns the full absolute destination path for a finalised object.
-    /// Layout: <c>{rootPath}/blobs/{remoteName[0..2]}/{remoteName[2..4]}/{remoteName}</c>.
-    /// Mirrors the skink's <c>.flashskink/blobs/{xx}/{yy}/{blobId}.bin</c> sharding.
+    /// Layout for data blobs: <c>{rootPath}/blobs/{remoteName[0..2]}/{remoteName[2..4]}/{remoteName}</c>
+    /// — mirrors the skink's <c>.flashskink/blobs/{xx}/{yy}/{blobId}.bin</c> sharding.
+    /// Layout for brain-mirror objects (sanitised name starting with <c>"_brain_"</c>, i.e. the
+    /// caller passed <c>"_brain/..."</c>): <c>{rootPath}/_brain/{nameAfterPrefix}</c> — unsharded,
+    /// co-existing with <c>blobs/</c> and <c>_health/</c> at the tail root (dev plan §3.1).
     /// </summary>
     private string ComputeRemotePath(string sanitisedRemote)
     {
+        const string BrainPrefix = "_brain_";
+        if (sanitisedRemote.StartsWith(BrainPrefix, StringComparison.Ordinal))
+        {
+            var rest = sanitisedRemote[BrainPrefix.Length..];
+            return Path.Combine(_rootPath, "_brain", rest);
+        }
+
         Debug.Assert(sanitisedRemote.Length >= 4, "remote name must be >= 4 chars to shard");
         return Path.Combine(_rootPath, "blobs", sanitisedRemote[..2], sanitisedRemote[2..4], sanitisedRemote);
     }
