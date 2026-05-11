@@ -179,7 +179,11 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         TimeSpan? budget = null,
         TimeSpan? advanceChunk = null)
     {
-        TimeSpan wallBudget = budget ?? TimeSpan.FromSeconds(10);
+        // Default budget is generous (30 s) because CI runners are slower than dev hardware
+        // and cross-tail scenarios run multiple workers in parallel on a shared SQLite
+        // connection. Locally these tests typically complete in < 500 ms; the wall-clock cap
+        // is there to fail loudly on a real regression rather than to bound steady-state runtime.
+        TimeSpan wallBudget = budget ?? TimeSpan.FromSeconds(30);
         TimeSpan chunk = advanceChunk ?? TimeSpan.FromHours(13);
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
