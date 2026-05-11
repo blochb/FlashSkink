@@ -1,14 +1,14 @@
-# FlashSkink
+# FlashSkink-Core
 
-**Portable, nomadic backup on a USB stick, with encrypted cloud replicas that catch up in the background.**
+**Portable, nomadic CLI backup on a USB stick, with encrypted cloud replicas that catch up in the background.**
 
-> ⚠️ **FlashSkink is under active development. V1 has not shipped. This repository is public for transparency; do not use FlashSkink with data you cannot afford to lose.**
+> ⚠️ **FlashSkink-Core is under active development. V1 has not shipped. This repository is public for transparency; do not use FlashSkink with data you cannot afford to lose.**
 
 ---
 
 ## What is it?
 
-FlashSkink distributes complete encrypted replicas of your data across a local USB flash drive (*the skink*) and one or more cloud storage providers (*the tails*). The skink is the body you carry; each tail is a full, independently recoverable copy that grows behind it.
+FlashSkink-Core distributes complete encrypted replicas of your data across a local USB flash drive (*the skink*) and one or more cloud storage providers (*the tails*). The skink is the body you carry; each tail is a full, independently recoverable copy that grows behind it.
 
 The product's single guarantee:
 
@@ -18,6 +18,8 @@ Lose the USB? Any tail regenerates the volume. Cloud account suspended? The skin
 
 The whole application runs directly from the USB — nothing is installed on the host machine, no host state is written, no traces remain after unplugging.
 
+**FlashSkink-Core ships as a CLI** (`flashskink-cli`). It is free, MIT-licensed, and the entirety of this repository. A separately-licensed paid layer adding a desktop GUI and BYOC setup automation lives in a private repository and is **not part of this project**.
+
 For the architecture and design rationale, see [`BLUEPRINT.md`](BLUEPRINT.md).
 
 ---
@@ -26,13 +28,13 @@ For the architecture and design rationale, see [`BLUEPRINT.md`](BLUEPRINT.md).
 
 | Phase | Status |
 |---|---|
-| Phase 0 — Foundation (scaffolding, CI, docs) | 🚧 In progress |
-| Phase 1 — Crypto and brain | Not started |
-| Phase 2 — Write pipeline and Phase 1 commit | Not started |
-| Phase 3 — Upload queue and resumable uploads | Not started |
+| Phase 0 — Foundation (scaffolding, CI, docs) | ✅ Complete |
+| Phase 1 — Crypto and brain | ✅ Complete |
+| Phase 2 — Write pipeline and Phase 1 commit | ✅ Complete |
+| Phase 3 — Upload queue and resumable uploads | 🚧 In progress |
 | Phase 4 — Providers (FileSystem, Google Drive, Dropbox, OneDrive) | Not started |
 | Phase 5 — Recovery, healing, verification | Not started |
-| Phase 6 — GUI, CLI, setup automation | Not started |
+| Phase 6 — CLI surface (file ops, daemon, status, logs) | Not started |
 | V1 release | Not started |
 
 This table is updated as phases land.
@@ -43,7 +45,7 @@ This table is updated as phases land.
 
 Not installable yet. There are no releases.
 
-When V1 ships, portable self-contained binaries will be published for Windows, macOS (Intel and Apple Silicon), and Linux on the [Releases page](../../releases). No installer. Copy the executable to a USB drive and run.
+When V1 ships, portable self-contained CLI binaries will be published for Windows, macOS (Intel and Apple Silicon), and Linux on the [Releases page](../../releases). No installer. Copy `flashskink-cli` to a USB drive and run.
 
 ---
 
@@ -64,27 +66,27 @@ If you're reading the code anyway:
 
 ```
 FlashSkink/
-├── src/                        # production code
+├── src/                            # production code
 │   ├── FlashSkink.Core.Abstractions/
 │   ├── FlashSkink.Core/
-│   ├── FlashSkink.Presentation/
-│   ├── FlashSkink.UI.Avalonia/
 │   └── FlashSkink.CLI/
-├── tests/                      # all tests
-├── dev-plan/                   # phase-by-phase work breakdown
-├── docs/                       # supplemental docs
-├── .claude/plans/              # per-PR task plans
-├── .github/workflows/          # CI and automation
-├── BLUEPRINT.md                # architecture source of truth
-├── CLAUDE.md                   # development protocol
-├── ONBOARDING.md               # repo + CI setup
-└── README.md                   # this file
+├── tests/                          # all tests
+├── dev-plan/                       # phase-by-phase work breakdown
+├── docs/                           # supplemental docs
+├── .claude/plans/                  # per-PR task plans
+├── .github/workflows/              # CI and automation
+├── BLUEPRINT.md                    # architecture source of truth
+├── CLAUDE.md                       # development protocol
+├── ONBOARDING.md                   # repo + CI setup
+└── README.md                       # this file
 ```
 
-Top-level structure is explained in [`BLUEPRINT.md` §4.1](BLUEPRINT.md) and the file-layout section of [`CLAUDE.md`](CLAUDE.md).
+Three production projects, one test project, no UI framework references anywhere in the tree. Top-level structure is explained in [`BLUEPRINT.md` §4.1](BLUEPRINT.md) and the file-layout section of [`CLAUDE.md`](CLAUDE.md).
 
 ---
 
 ## License
 
 [MIT](LICENSE) — © the FlashSkink authors.
+
+FlashSkink-Core (this repository) is MIT-licensed and CLI-only. A separately-licensed paid layer adding a desktop GUI and BYOC setup automation lives in a private repository under different terms; it is not part of this project, and you do not need it to use FlashSkink — the CLI is fully functional on its own.

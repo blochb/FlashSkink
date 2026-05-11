@@ -1,7 +1,7 @@
 using FlashSkink.Core.Abstractions.Notifications;
 using Microsoft.Extensions.Logging;
 
-namespace FlashSkink.Presentation.Notifications;
+namespace FlashSkink.Core.Notifications;
 
 /// <summary>
 /// Per-notification fan-out with <c>(Source, ErrorCode)</c> deduplication within a configurable window.

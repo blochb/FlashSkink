@@ -1,11 +1,11 @@
 using FlashSkink.Core.Abstractions.Notifications;
 using FlashSkink.Core.Abstractions.Results;
-using FlashSkink.Presentation.Notifications;
+using FlashSkink.Core.Notifications;
 using FlashSkink.Tests._TestSupport;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
-namespace FlashSkink.Tests.Presentation.Notifications;
+namespace FlashSkink.Tests.Notifications;
 
 public sealed class NotificationDispatcherTests : IAsyncLifetime
 {

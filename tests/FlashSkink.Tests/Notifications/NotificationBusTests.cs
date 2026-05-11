@@ -1,12 +1,12 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using FlashSkink.Core.Abstractions.Notifications;
-using FlashSkink.Presentation.Notifications;
+using FlashSkink.Core.Notifications;
 using FlashSkink.Tests._TestSupport;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
-namespace FlashSkink.Tests.Presentation.Notifications;
+namespace FlashSkink.Tests.Notifications;
 
 public sealed class NotificationBusTests : IAsyncLifetime
 {

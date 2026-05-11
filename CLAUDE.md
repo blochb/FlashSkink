@@ -1,4 +1,4 @@
-# CLAUDE.md — FlashSkink project standing orders
+# CLAUDE.md — FlashSkink-Core project standing orders
 
 **Purpose of this file:** You are Claude Code. This document defines who you are on this project, what you do, and where to find things. Read it fully at session start. It is the only document you must read before the user's first message.
 
@@ -8,13 +8,15 @@
 
 ## Project summary
 
-**FlashSkink** is a portable, nomadic backup system that distributes complete encrypted replicas of a user's data across a local USB flash drive ("the skink") and one or more cloud storage providers ("the tails"). The skink is the body the user carries; each tail is a full, independently recoverable copy. The application runs directly from the USB — nothing is installed on the host, no host state is written, no traces remain after unplugging.
+**FlashSkink-Core** is a portable, nomadic backup system that distributes complete encrypted replicas of a user's data across a local USB flash drive ("the skink") and one or more cloud storage providers ("the tails"). The skink is the body the user carries; each tail is a full, independently recoverable copy. The application runs directly from the USB — nothing is installed on the host, no host state is written, no traces remain after unplugging.
 
 **The product promise:** any single surviving part — the skink, or any one tail — plus the 24-word BIP-39 recovery phrase, regenerates everything. Lose the USB? Any tail regenerates the volume. Cloud account suspended? The skink or another tail regenerates it. You need exactly one surviving part. Nothing more.
 
 **Architectural shape:** mirror model (not RAID-5; not striping). Every tail is a complete replica. Writes commit to the skink synchronously (Phase 1); uploads to tails happen asynchronously and resumably (Phase 2), surviving disconnect and host change.
 
-**Tech shape:** C# 14 on .NET 10. Five projects in `src/` (`Core.Abstractions`, `Core`, `Presentation`, `UI.Avalonia`, `CLI`) and a single `tests/FlashSkink.Tests` project with subfolders per area. GUI is Avalonia via MVVM; CLI is `System.CommandLine`. Brain is SQLCipher-encrypted SQLite. V1 providers: Google Drive, Dropbox, OneDrive, and a local FileSystem adapter that doubles as the cloud-provider test double.
+**Layer scope.** FlashSkink ships in two layers. This repository is the **OSS Core layer**: free, MIT-licensed, **CLI only**. A separately-licensed **paid layer** adding a GUI and BYOC setup automation lives in a private repository and is **not part of this project**. Standing orders in this file, the blueprint, and the dev-plan apply to OSS Core only. Do not write code or docs that anticipate or depend on the paid layer.
+
+**Tech shape:** C# 14 on .NET 10. Three production projects in `src/` (`Core.Abstractions`, `Core`, `CLI`) and a single `tests/FlashSkink.Tests` project with subfolders per area. CLI is `System.CommandLine`. Brain is SQLCipher-encrypted SQLite. V1 providers: Google Drive, Dropbox, OneDrive, and a local FileSystem adapter that doubles as the cloud-provider test double. There is no UI framework dependency anywhere in the tree.
 
 **Solo developer.** One person, with Claude Code as the implementation assistant. Visual Studio is used for review/compile/test, not authoring.
 
@@ -242,11 +244,10 @@ Then stop. Do not start another PR in the same session.
 │   ├── pull_request_template.md
 │   └── workflows/             ← CI + publish workflows
 ├── src/
-│   ├── FlashSkink.Core.Abstractions/   ← Result, ErrorCode, IStorageProvider, models
-│   ├── FlashSkink.Core/                ← Engine, Crypto, Metadata, Providers, Upload, Healing, Usb, Orchestration
-│   ├── FlashSkink.Presentation/        ← ViewModels, NotificationBus, UI-agnostic services
-│   ├── FlashSkink.UI.Avalonia/         ← Views, Avalonia-specific services, Program.cs
-│   └── FlashSkink.CLI/                 ← Commands, Program.cs
+│   ├── FlashSkink.Core.Abstractions/   ← Result, ErrorCode, IStorageProvider, INotificationBus, models
+│   ├── FlashSkink.Core/                ← Engine, Crypto, Metadata, Notifications (Bus + Dispatcher),
+│   │                                     Providers, Upload, Healing, Usb, Orchestration
+│   └── FlashSkink.CLI/                 ← Commands, Program.cs (composition root)
 └── tests/
     └── FlashSkink.Tests/
         ├── Engine/
@@ -255,11 +256,11 @@ Then stop. Do not start another PR in the same session.
         ├── Providers/
         ├── Upload/
         ├── Healing/
-        ├── CrashConsistency/   ← property-based invariant tests
-        └── Presentation/
+        ├── Notifications/
+        └── CrashConsistency/   ← property-based invariant tests
 ```
 
-**Never** create files outside this layout without explicit user approval. The `src/` + `tests/` split is the prevailing convention in modern .NET OSS and is load-bearing for CI scripting (`dotnet test tests/**/*.csproj` vs `dotnet publish src/FlashSkink.UI.Avalonia/...`). See blueprint §4.1.
+**Never** create files outside this layout without explicit user approval. The `src/` + `tests/` split is the prevailing convention in modern .NET OSS and is load-bearing for CI scripting (`dotnet test tests/**/*.csproj` vs `dotnet publish src/FlashSkink.CLI/...`). See blueprint §4.1.
 
 ---
 
@@ -292,13 +293,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 
 7. **Zero trust in the host.** No installation. No host state. `Path.GetTempPath()` is not used in the normal write or upload paths. Staging lives on the skink at `.flashskink/staging/`. (Blueprint §3, §13.3, §26.4)
 
-8. **Core holds no UI framework reference, and no reference to `FlashSkink.Presentation`.** `FlashSkink.Core` and `FlashSkink.Core.Abstractions` compile and pass tests with zero reference to Avalonia, any UI toolkit, or `FlashSkink.Presentation`. The dependency arrow points one way: `Presentation → Core`. Any contract that a Core service must call (e.g., `INotificationBus.PublishAsync` from `WritePipeline`) lives in `FlashSkink.Core.Abstractions`; implementations may live in `Presentation`. This is the same split that puts `Result`, `ErrorContext`, `IStorageProvider`, `INotificationBus`, and `INotificationHandler` in `Abstractions` while concrete `NotificationBus` and `NotificationDispatcher` live in `Presentation`. Verified at the assembly level in CI. (Blueprint §4.2)
-
-9. **Presentation holds no UI framework reference.** `FlashSkink.Presentation` is UI-agnostic; ViewModel tests run without a GUI. Adding an Avalonia or WPF reference to Presentation is a Gate 2 rejection. (Blueprint §3, §4.2)
-
-10. **UI project has no direct Core reference** except `Program.cs` for DI wiring. `FlashSkink.UI.Avalonia` consumes Core through `FlashSkink.Presentation`. (Blueprint §4.2)
-
-11. **CLI has no Presentation reference.** `FlashSkink.CLI` consumes `FlashSkink.Core` directly. (Blueprint §4.2)
+8-11. **OSS Core is `Abstractions + Core + CLI` only — no UI framework or Presentation layer in the tree.** `FlashSkink.Core.Abstractions`, `FlashSkink.Core`, and `FlashSkink.CLI` are the only production assemblies. No assembly anywhere in OSS Core references any UI framework: no `Avalonia.*`, no `System.Windows.*`, no `Microsoft.Maui.*`, no `Microsoft.UI.*`, no `CommunityToolkit.Mvvm`, no `FlashSkink.Presentation`, no `FlashSkink.UI.*`. `CLI` consumes `Core` directly; `Core` consumes only `Core.Abstractions`; `Core.Abstractions` has no project references at all. Notification contracts (`INotificationBus`, `INotificationHandler`, `Notification`, `NotificationSeverity`) live in `Core.Abstractions.Notifications`; the concrete `NotificationBus` and `NotificationDispatcher` live in `Core.Notifications`. Verified at the assembly level in CI by `ArchitectureTests.cs`. *(Numbered `8-11` because the pre-revision blueprint had four separate principles covering the `Presentation → Core`, `UI → Presentation → Core`, and `CLI ⊥ Presentation` arrangement; with the GUI and Presentation layer moved out of OSS, the four collapse to one. The numbering range is preserved so existing `.claude/plans/pr-*.md` cross-references to principles 12 and beyond remain resolvable without sweep edits.)* (Blueprint §4.2)
 
 12. **OS-agnostic by default.** No platform-specific APIs, paths, or assumptions. Behaviour identical on Windows, macOS (Intel and Apple Silicon), and Linux. Platform-branching code requires explicit justification in the plan. (Blueprint §3)
 
@@ -326,13 +321,13 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 
 24. **No background failure is silent.** Every failure in `UploadQueueService`, `AuditService`, `SelfHealingService`, `UsbMonitorService`, `HealthMonitorService`, or the brain mirror task is (a) logged through `ILogger<T>`, (b) published to `INotificationBus`, and (c) if `Error` or `Critical`, persisted to `BackgroundFailures` so the next launch surfaces it to the user. (Blueprint §8.5, §8.6)
 
-25. **Appliance vocabulary discipline.** Internal vocabulary — stripe, blob, WAL, OAuth, AAD, KEK, DEK, Argon2, SQLCipher, nonce — does not appear in any user-visible string (CLI output, GUI label, error message, notification title). The user's vocabulary is: skink, tail, recovery phrase, file, folder. (Blueprint §3, §25.4)
+25. **Appliance vocabulary discipline.** Internal vocabulary — stripe, blob, WAL, OAuth, AAD, KEK, DEK, Argon2, SQLCipher, nonce — does not appear in any user-visible string (CLI output, error message, notification title). The user's vocabulary is: skink, tail, recovery phrase, file, folder. (Blueprint §3, §25)
 
 26. **Logging never contains secrets.** DEK, KEK, OAuth tokens, passwords, mnemonics, recovery phrases, encrypted blob bytes, and file content are never logged. `ErrorContext.Metadata` never contains keys matching `*Token`, `*Key`, `*Password`, `*Secret`, `*Mnemonic`, or `*Phrase`. CI lint enforces. (Blueprint §7.6)
 
-27. **Core logs internally; callers log the Result.** The site that constructs `Result.Fail` logs once through `ILogger<T>`. Callers (ViewModels, CLI handlers) log the returned `ErrorContext` when handling it. The same event is never logged twice. (Blueprint §7.2)
+27. **Core logs internally; callers log the Result.** The site that constructs `Result.Fail` logs once through `ILogger<T>`. Callers (CLI handlers) log the returned `ErrorContext` when handling it. The same event is never logged twice. (Blueprint §7.2)
 
-28. **Core depends only on Microsoft.Extensions.Logging abstractions.** `FlashSkink.Core` and `FlashSkink.Presentation` reference `Microsoft.Extensions.Logging.Abstractions` only. Serilog is wired exclusively in the host projects (`FlashSkink.UI.Avalonia` and `FlashSkink.CLI`) in their `Program.cs`. Tests use the MEL in-memory or xUnit sink. (Blueprint §7.1)
+28. **Core depends only on Microsoft.Extensions.Logging abstractions.** `FlashSkink.Core` and `FlashSkink.Core.Abstractions` reference `Microsoft.Extensions.Logging.Abstractions` only. Serilog is wired exclusively in `FlashSkink.CLI` in its `Program.cs`. Tests use the MEL in-memory or xUnit sink. (Blueprint §7.1)
 
 29. **Atomic file-level writes on the skink.** Phase 1 commit writes to `.flashskink/staging/{BlobID}.tmp`, `fsync`s, atomically renames to the sharded destination path, `fsync`s the destination directory, then commits the brain transaction. Deviating from this sequence breaks the crash-consistency invariant. (Blueprint §13.4, §21.3)
 
@@ -377,7 +372,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 
 ### Testing
 
-- xUnit for unit tests. Project: `tests/FlashSkink.Tests`, with subfolders per area (`Engine/`, `Crypto/`, `Metadata/`, `Providers/`, `Upload/`, `Healing/`, `CrashConsistency/`, `Presentation/`).
+- xUnit for unit tests. Project: `tests/FlashSkink.Tests`, with subfolders per area (`Engine/`, `Crypto/`, `Metadata/`, `Providers/`, `Upload/`, `Healing/`, `Notifications/`, `CrashConsistency/`).
 - Moq for mocking.
 - FsCheck for property-based tests (crash-consistency invariant verification).
 - The `FileSystemProvider` implementation is the cloud-provider test double — deterministic, fast, no network.
