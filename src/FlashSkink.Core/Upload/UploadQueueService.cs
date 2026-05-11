@@ -125,7 +125,7 @@ public sealed class UploadQueueService : IAsyncDisposable
     /// <summary>
     /// Starts the orchestrator background task linked to <paramref name="volumeToken"/>. Idempotent:
     /// a second call returns <see cref="Result.Ok"/> without effect. Returns
-    /// <see cref="ErrorCode.VolumeAlreadyOpen"/> if the service has been disposed.
+    /// <see cref="ErrorCode.ObjectDisposed"/> if the service has been disposed.
     /// </summary>
     public Result Start(CancellationToken volumeToken)
     {
@@ -134,7 +134,7 @@ public sealed class UploadQueueService : IAsyncDisposable
             if (Volatile.Read(ref _disposed) != 0)
             {
                 _logger.LogWarning("Start called on a disposed UploadQueueService.");
-                return Result.Fail(ErrorCode.VolumeAlreadyOpen,
+                return Result.Fail(ErrorCode.ObjectDisposed,
                     "Upload queue service has been disposed.");
             }
 

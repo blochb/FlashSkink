@@ -21,6 +21,9 @@ public enum ErrorCode
     /// <summary>The operation exceeded its allowed time budget.</summary>
     Timeout,
 
+    /// <summary>The operation was attempted on an instance that has already been disposed.</summary>
+    ObjectDisposed,
+
     // ── Volume ────────────────────────────────────────────────────────────────
 
     /// <summary>No volume was found at the expected path on the skink.</summary>

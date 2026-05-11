@@ -242,7 +242,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
 
         var result = sut.Start(CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeAlreadyOpen, result.Error!.Code);
+        Assert.Equal(ErrorCode.ObjectDisposed, result.Error!.Code);
     }
 
     [Fact]
