@@ -24,6 +24,12 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     private const string FileId = "file-001";
     private const string ProviderId = "provider-001";
 
+    // Default ciphertext size for tests where the upload's *content* is what matters, not its
+    // size. Small (well under one 4 MiB range) so the wall-clock cost of the actual filesystem
+    // I/O stays in the millisecond range on any reasonable runner. Tests that exercise
+    // multi-range or resume behaviour pass an explicit larger size.
+    private const int DefaultBlobSizeBytes = 1024;
+
     private readonly string _skinkRoot;
     private readonly string _tailRoot;
     private readonly SqliteConnection _connection;
@@ -179,11 +185,14 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         TimeSpan? budget = null,
         TimeSpan? advanceChunk = null)
     {
-        // Default budget is generous (30 s) because CI runners are slower than dev hardware
-        // and cross-tail scenarios run multiple workers in parallel on a shared SQLite
-        // connection. Locally these tests typically complete in < 500 ms; the wall-clock cap
-        // is there to fail loudly on a real regression rather than to bound steady-state runtime.
-        TimeSpan wallBudget = budget ?? TimeSpan.FromSeconds(30);
+        // 10 s reflects the business expectation: when the network is up and providers are
+        // healthy, an enqueued row should reach its terminal state promptly — sub-second is
+        // typical. Tests that exercise blob upload use small ciphertexts (a few KB) so the
+        // wall-clock cost stays well under this cap on any reasonable runner, including
+        // 2-core CI. If a test legitimately requires more wall-clock budget (multi-MiB
+        // upload, multi-cycle escalation), it should pass an explicit larger value rather
+        // than relying on a lax default.
+        TimeSpan wallBudget = budget ?? TimeSpan.FromSeconds(10);
         TimeSpan chunk = advanceChunk ?? TimeSpan.FromHours(13);
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -269,7 +278,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task Worker_PicksUpPendingRow_UploadsAndMarksUploaded()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         _registry.Register(ProviderId, _fsProvider);
         await EnqueueAsync();
 
@@ -317,7 +326,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task Worker_TransientFailureOnce_RetriesAndCompletes()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         var faulty = new FaultInjectingStorageProvider(_fsProvider);
         faulty.FailNextRange();
         _registry.Register(ProviderId, faulty);
@@ -338,7 +347,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task Worker_FiveCyclesAllFail_PromotesToFailedAndNotifies()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         var faulty = new FaultInjectingStorageProvider(_fsProvider);
         // Schedule enough failures to exhaust 5 cycles × 4 in-range attempts = 20 range failures.
         for (int i = 0; i < 50; i++)
@@ -379,7 +388,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task Worker_PermanentFailure_MarksFailedImmediately()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         var faulty = new FaultInjectingStorageProvider(_fsProvider);
         faulty.FailNextRangeWith(ErrorCode.ProviderAuthFailed);
         _registry.Register(ProviderId, faulty);
@@ -407,7 +416,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task NetworkOffline_NewRow_DoesNotUpload()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         _registry.Register(ProviderId, _fsProvider);
         await EnqueueAsync();
 
@@ -435,7 +444,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task NetworkRestored_UploadProceeds()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         _registry.Register(ProviderId, _fsProvider);
         await EnqueueAsync();
 
@@ -466,7 +475,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         {
             BrainTestHelper.InsertTestProvider(_connection, ProviderIdB);
 
-            await CreateLocalBlobAsync(1024 * 1024);
+            await CreateLocalBlobAsync(DefaultBlobSizeBytes);
 
             // A is a fault-injecting provider that fails permanently.
             var faultyA = new FaultInjectingStorageProvider(_fsProvider);
@@ -554,7 +563,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task Invariant_AfterCompletedUpload_UploadSessionsIsEmpty()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         _registry.Register(ProviderId, _fsProvider);
         await EnqueueAsync();
 
@@ -570,7 +579,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task Invariant_AfterPermanentFailure_UploadSessionsIsEmpty()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         var faulty = new FaultInjectingStorageProvider(_fsProvider);
         faulty.FailNextRangeWith(ErrorCode.ProviderAuthFailed);
         _registry.Register(ProviderId, faulty);
@@ -590,7 +599,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task PublishedNotifications_ContainNoApplianceVocabulary()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         var faulty = new FaultInjectingStorageProvider(_fsProvider);
         faulty.FailNextRangeWith(ErrorCode.ProviderAuthFailed);
         _registry.Register(ProviderId, faulty);
@@ -628,7 +637,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task Orchestrator_ProviderRegisteredAfterStart_WorkerSpawns()
     {
-        await CreateLocalBlobAsync(1024 * 1024);
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
         await EnqueueAsync();
 
         await using var sut = CreateService();
