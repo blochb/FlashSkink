@@ -10,8 +10,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\FlashSkink.Core.Abstractions\FlashSkink.Core.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\FlashSkink.Core\FlashSkink.Core.csproj" />
-    <ProjectReference Include="..\..\src\FlashSkink.Presentation\FlashSkink.Presentation.csproj" />
-    <ProjectReference Include="..\..\src\FlashSkink.UI.Avalonia\FlashSkink.UI.Avalonia.csproj" />
     <ProjectReference Include="..\..\src\FlashSkink.CLI\FlashSkink.CLI.csproj" />
   </ItemGroup>
 

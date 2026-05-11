@@ -2,7 +2,7 @@ using System.Threading.Channels;
 using FlashSkink.Core.Abstractions.Notifications;
 using Microsoft.Extensions.Logging;
 
-namespace FlashSkink.Presentation.Notifications;
+namespace FlashSkink.Core.Notifications;
 
 /// <summary>
 /// In-process notification bus owning a bounded channel and a single dispatch loop.

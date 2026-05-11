@@ -1,10 +1,11 @@
-# FlashSkink — Technical Blueprint v1.0
+# FlashSkink-Core — Technical Blueprint v1.0
 
 > **The tail regenerates your data.**
 >
 > **Status:** V1 design baseline. Mirror architecture, resumable per-tail uploads, transactional USB commit with asynchronous cross-host upload queue.
 >
-> **Document role:** Architectural and product reference. Describes *what* FlashSkink is and *why* its design is what it is. Implementation sequencing lives in `DEV_PLAN.md`. Workflow rules live in `CLAUDE.md`.
+> **Document role:** Architectural and product reference for the **open-source FlashSkink-Core layer** (CLI-only). Describes *what* FlashSkink-Core is and *why* its design is what it is. Implementation sequencing lives in `dev-plan/phase-N.md`. Workflow rules live in `CLAUDE.md`.
+>
 >
 > **Supersedes:** FlashRaid Blueprint v2.7 (RAID-5 design, superseded by mirror model).
 
@@ -23,7 +24,7 @@
 9. Memory Management
 10. Provider Interfaces
 11. Core Public API
-12. Presentation Layer Contracts
+12. *(Intentionally empty)*
 13. Storage Architecture
 14. Data Processing Pipeline
 15. Resumable Upload Sessions
@@ -35,8 +36,8 @@
 21. Error Handling and Crash Recovery
 22. Provider Health Monitoring
 23. CLI Reference
-24. Setup CLI (Provider Automation)
-25. GUI Surface
+24. Provider Setup (Manual Guides)
+25. *(Intentionally empty)*
 26. Portable Execution Model
 27. Built-in Providers
 28. Tech Stack
@@ -48,9 +49,9 @@
 
 ## 1. Project Overview
 
-FlashSkink is a portable, nomadic backup system that distributes complete encrypted replicas of a user's data across a local USB flash drive ("the skink") and one or more cloud storage providers ("the tails"). The skink is the body the user carries; each tail is a full, independently recoverable copy that grows behind it.
+FlashSkink-Core is a portable, nomadic backup system that distributes complete encrypted replicas of a user's data across a local USB flash drive ("the skink") and one or more cloud storage providers ("the tails"). The skink is the body the user carries; each tail is a full, independently recoverable copy that grows behind it.
 
-The entire application runs directly from the USB. Nothing is installed on the host machine, no host state is written, no traces remain after unplugging. Users interact through a small GUI or a CLI. Cloud providers are a configuration detail they touch only at setup time.
+The entire application runs directly from the USB. Nothing is installed on the host machine, no host state is written, no traces remain after unplugging. Users interact through the CLI (`flashskink-cli`); cloud providers are a configuration detail they touch only at setup time.
 
 The product's single, unambiguous guarantee:
 
@@ -93,13 +94,11 @@ Lose the USB? Any tail regenerates the volume. Cloud account suspended? The skin
 | **Zero trust in the application** | No servers, no accounts, no telemetry. All keys derived locally. The user holds the only durable secret (the recovery phrase). |
 | **Explicit recovery path** | Every failure scenario has a documented, tested recovery procedure. |
 | **OS-agnostic** | No platform-specific APIs, paths, or assumptions. Identical behaviour on Windows, macOS (Intel and Apple Silicon), and Linux. |
-| **Core / UI separation** | All storage, crypto, and engine logic in `FlashSkink.Core`. No business logic in any UI layer. |
-| **UI-agnostic ViewModels** | `FlashSkink.Presentation` has zero dependency on any UI framework. ViewModel tests run without a GUI. |
 | **Explicit error handling** | Core never leaks exceptions across its public API boundary. All public APIs return `Result` or `Result<T>`. |
 | **No silent background failures** | Every background failure is logged, persisted, and surfaced to the user on next launch if not yet seen. |
 | **Allocation-conscious hot paths** | Pipeline and upload loops use pooled buffers, `Span<T>`, `stackalloc`, and value types to minimise GC pressure. |
 | **Stable provider contract** | `IStorageProvider`, `IProviderSetup`, `UploadSession`, and Result types are frozen before V1 ships. Implementations may be added; signatures may not change. |
-| **Appliance positioning** | All product surfaces — CLI, GUI, copy, error messages — are written for users who think of FlashSkink as "a USB stick that backs itself up." Internal vocabulary (stripe, blob, WAL, OAuth) does not appear in user-visible surfaces. |
+| **Appliance positioning** | All product surfaces — CLI output, copy, error messages — are written for users who think of FlashSkink as "a USB stick that backs itself up." Internal vocabulary (stripe, blob, WAL, OAuth) does not appear in user-visible surfaces. |
 
 ---
 
@@ -109,7 +108,7 @@ Lose the USB? Any tail regenerates the volume. Cloud account suspended? The skin
 
 ```
 FlashSkink/
-├── FlashSkink.sln
+├── FlashSkink.slnx
 ├── Directory.Build.props                ← shared MSBuild settings (TFM, nullable, analyzers)
 ├── Directory.Packages.props             ← Central Package Management (all PackageVersion here)
 ├── .editorconfig
@@ -151,12 +150,12 @@ FlashSkink/
 │   │   │   ├── Migrations/           ← Schema migration scripts
 │   │   │   ├── Queries/              ← Dapper queries (general)
 │   │   │   └── HotPath/              ← Raw SqliteDataReader readers (hot paths)
+│   │   ├── Notifications/            ← NotificationBus, NotificationDispatcher
 │   │   ├── Providers/
 │   │   │   ├── FileSystemProvider.cs
 │   │   │   ├── GoogleDriveProvider.cs
 │   │   │   ├── DropboxProvider.cs
 │   │   │   └── OneDriveProvider.cs
-│   │   ├── Setup/                    ← Provider setup automation (Google, Dropbox)
 │   │   ├── Upload/                   ← UploadQueueService, UploadSessionManager,
 │   │   │                                RangeUploader, RetryPolicy
 │   │   ├── Healing/                  ← AuditService, SelfHealingService,
@@ -165,35 +164,12 @@ FlashSkink/
 │   │   │                                SingleInstanceLock
 │   │   └── Orchestration/            ← FlashSkinkVolume (the public API surface)
 │   │
-│   ├── FlashSkink.Presentation/
-│   │   ├── FlashSkink.Presentation.csproj
-│   │   ├── ViewModels/
-│   │   ├── Interfaces/               ← INavigationService, IDialogService,
-│   │   │                                IFilePickerService, IBrowserService,
-│   │   │                                IClipboardService
-│   │   ├── Notifications/            ← NotificationBus, NotificationDispatcher,
-│   │   │                                UiNotificationHandler
-│   │   └── Services/
-│   │
-│   ├── FlashSkink.UI.Avalonia/
-│   │   ├── FlashSkink.UI.Avalonia.csproj
-│   │   ├── Views/
-│   │   ├── Services/
-│   │   └── Program.cs
-│   │
 │   └── FlashSkink.CLI/
 │       ├── FlashSkink.CLI.csproj
-│       ├── Commands/
-│       │   ├── SetupCommand.cs       ← Provider automation
-│       │   ├── UnlockCommand.cs
-│       │   ├── InfoCommand.cs
-│       │   ├── VerifyCommand.cs
-│       │   ├── RestoreCommand.cs
-│       │   ├── ExportCommand.cs
-│       │   ├── RecoverCommand.cs
-│       │   ├── ActivityCommand.cs
-│       │   └── SupportBundleCommand.cs
-│       └── Program.cs
+│       ├── Commands/                 ← One handler per CLI verb (§23)
+│       └── Program.cs                ← Composition root: constructs Core services,
+│                                       registers NotificationBus + handlers,
+│                                       dispatches commands.
 │
 └── tests/
     └── FlashSkink.Tests/
@@ -204,18 +180,18 @@ FlashSkink/
         ├── Providers/
         ├── Upload/
         ├── Healing/
-        ├── CrashConsistency/         ← Property-based invariant tests
-        └── Presentation/
+        ├── Notifications/
+        └── CrashConsistency/         ← Property-based invariant tests
 ```
 
 **Rationale for the `src/` + `tests/` split.** This is the prevailing convention across modern .NET open-source repositories (`dotnet/runtime`, `dotnet/aspnetcore`, `JamesNK/Newtonsoft.Json`, most Microsoft-authored libraries). Practical effects:
 
 - Top-level clutter stays minimal — `Directory.Build.props`, `Directory.Packages.props`, `global.json`, `README.md`, `LICENSE`, `.editorconfig`, `.github/`, and the two source folders.
 - MSBuild property files (`Directory.Build.props`, `Directory.Packages.props`) at the repo root apply to every project automatically, then can be scoped (a different `Directory.Build.props` inside `tests/` can relax warnings-as-errors or add test-only references without duplicating configuration across projects).
-- Scripts and CI steps can target `src/**/*.csproj` vs `tests/**/*.csproj` cleanly — `dotnet test tests/**/*.csproj` for the test pass, `dotnet publish src/FlashSkink.UI.Avalonia/...` for release builds.
+- Scripts and CI steps can target `src/**/*.csproj` vs `tests/**/*.csproj` cleanly — `dotnet test tests/**/*.csproj` for the test pass, `dotnet publish src/FlashSkink.CLI/...` for release builds.
 - New contributors find what they expect without being told where to look.
 
-**Note on FlashSkink.Tests as a single project.** V1 keeps all tests in one project (`tests/FlashSkink.Tests/`) with subfolders per area. This minimises project-file overhead while tests are still growing. If any test area becomes large enough to justify its own assembly (separate test runner invocation, different TFM, different dependencies), splitting into `tests/FlashSkink.Core.Tests/`, `tests/FlashSkink.Presentation.Tests/`, etc. is a trivial restructure — no source changes, just project-file moves. PR 0.2 will revisit if needed.
+**Note on FlashSkink.Tests as a single project.** V1 keeps all tests in one project (`tests/FlashSkink.Tests/`) with subfolders per area. This minimises project-file overhead while tests are still growing. If any test area becomes large enough to justify its own assembly (separate test runner invocation, different TFM, different dependencies), splitting into `tests/FlashSkink.Core.Tests/`, `tests/FlashSkink.CLI.Tests/`, etc. is a trivial restructure — no source changes, just project-file moves.
 
 ### 4.2 Dependency Graph
 
@@ -224,24 +200,20 @@ FlashSkink.Core.Abstractions
         ▲
         │
 FlashSkink.Core
-        ▲                   ▲
-        │                   │
-FlashSkink.Presentation    FlashSkink.CLI
         ▲
         │
-FlashSkink.UI.Avalonia
+FlashSkink.CLI
 
-FlashSkink.Tests → Core.Abstractions, Core, Presentation
+FlashSkink.Tests → Core.Abstractions, Core, CLI
 ```
 
-Rules enforced at the assembly level (verified in CI):
+Rules enforced at the assembly level (verified in CI by `tests/.../ArchitectureTests.cs`):
 
-- **`FlashSkink.Presentation`** has no reference to Avalonia or any UI framework.
-- **`FlashSkink.UI.Avalonia`** has no direct reference to `FlashSkink.Core` (except `Program.cs` for DI wiring).
-- **`FlashSkink.CLI`** has no reference to `FlashSkink.Presentation`.
 - **`FlashSkink.Core.Abstractions`** has no project references at all (foundation).
 - **`FlashSkink.Core`** depends only on `FlashSkink.Core.Abstractions`.
-- **`FlashSkink.Core` does not reference `FlashSkink.Presentation`.** The dependency arrow points the other way: `Presentation → Core`. Any contract that a Core service needs to call (e.g., `INotificationBus.PublishAsync` from `WritePipeline`) lives in `FlashSkink.Core.Abstractions`. Implementations of those contracts may still live in `Presentation` — the contract/implementation split is what keeps the layering clean. This rule is the reason `Result`, `ErrorContext`, `IStorageProvider`, `INotificationBus`, and `INotificationHandler` all live in `Abstractions`.
+- **`FlashSkink.CLI`** depends only on `FlashSkink.Core` (and transitively on `Core.Abstractions`).
+- **No assembly anywhere in OSS Core references any UI framework** — no `Avalonia.*`, no `System.Windows.*`, no `Microsoft.Maui.*`, no `Microsoft.UI.*`, no `CommunityToolkit.Mvvm`, no `FlashSkink.Presentation`, no `FlashSkink.UI.*`. Verified by `Core_DoesNotReference_AnyUiOrPresentationAssembly`, `CoreAbstractions_DoesNotReference_AnyUiOrPresentationAssembly`, and `CLI_DoesNotReference_AnyUiOrPresentationAssembly`.
+- **Notification contracts live in `Core.Abstractions.Notifications`; the concrete `NotificationBus` and `NotificationDispatcher` live in `Core.Notifications`.** Both contract and implementation live in OSS Core. This is the same contract/implementation discipline that puts `Result`, `ErrorContext`, and `IStorageProvider` in `Abstractions` while their consumers live in `Core`.
 
 ### 4.3 Naming Conventions
 
@@ -638,20 +610,20 @@ public async Task<Result<SqliteConnection>> CreateAsync(
 
 ```
 FlashSkink.Core, Presentation  → Microsoft.Extensions.Logging.Abstractions (ILogger<T> only)
-FlashSkink.UI.Avalonia, CLI    → Serilog + Serilog.Extensions.Logging (wired in Program.cs)
+FlashSkink.CLI                 → Serilog + Serilog.Extensions.Logging (wired in Program.cs)
 FlashSkink.Tests               → MEL InMemory or Xunit sink
 ```
 
-`FlashSkink.Core` and `FlashSkink.Presentation` depend only on the MEL abstractions. The host (UI or CLI) wires Serilog. This allows tests to substitute a no-op or in-memory logger without dragging Serilog into the test process.
+`FlashSkink.Core` and `FlashSkink.Core.Abstractions` depend only on the MEL abstractions. The host (CLI) wires Serilog. This allows tests to substitute a no-op or in-memory logger without dragging Serilog into the test process.
 
 ### 7.2 Result Context vs. Log Context
 
 | | `ErrorContext` in Result | Logging |
 |---|---|---|
 | **Purpose** | Tell the caller what went wrong | Record what happened during execution |
-| **Audience** | ViewModels, CLI handlers, tests | Log files, debugging, support bundles |
+| **Audience** | CLI handlers, tests | Log files, debugging, support bundles |
 | **When written** | At the point of failure | Throughout execution |
-| **Who writes** | Core internals | Core internals + Presentation on Result handling |
+| **Who writes** | Core internals | Core internals + the CLI host on Result handling |
 
 Core logs internally and returns a failure Result. The caller logs the `ErrorContext` when handling it. The same event is never logged twice.
 
@@ -722,7 +694,7 @@ DEK, KEK, OAuth tokens, passwords, mnemonics, recovery phrases, encrypted blob b
 
 ### 8.1 Problem
 
-Background services (`UploadQueueService`, `AuditService`, `SelfHealingService`, `UsbMonitorService`, `HealthMonitorService`, brain mirror task) run without a user-initiated call stack. When they fail, there is no awaiting ViewModel to receive a `Result`. Without an explicit mechanism, failures disappear silently.
+Background services (`UploadQueueService`, `AuditService`, `SelfHealingService`, `UsbMonitorService`, `HealthMonitorService`, brain mirror task) run without a user-initiated call stack. When they fail, there is no awaiting caller (no `flashskink-cli put` invocation, no daemon command-line handler tied to that specific operation) to receive a `Result`. Without an explicit mechanism, failures disappear silently.
 
 ### 8.2 Design
 
@@ -730,13 +702,13 @@ Background services (`UploadQueueService`, `AuditService`, `SelfHealingService`,
 
 `BoundedChannel` with `DropOldest` ensures a runaway service cannot queue unbounded notifications. Capacity of 100 is sufficient; a flood from a single source indicates a systemic issue better described by one notification with a count, not 100 individual ones.
 
-A single `ChannelReader<Notification>` is consumed by a `NotificationDispatcher` that fans out to registered `INotificationHandler` implementations. The GUI registers one handler. The persistence layer registers another. The CLI registers a stderr writer.
+A single `ChannelReader<Notification>` is consumed by a `NotificationDispatcher` that fans out to registered `INotificationHandler` implementations. In OSS Core, the CLI host registers two handlers: a `PersistenceNotificationHandler` (in Core; writes Error and Critical events to `BackgroundFailures`) and a `CliNotificationHandler` (in CLI; writes to stderr).
 
 `IObservable<T>` is explicitly not used. Broadcast semantics are achieved via the fan-out dispatcher without a reactive dependency.
 
 ### 8.3 Interfaces and Implementation
 
-**Where the types live.** The contracts (`INotificationBus`, `INotificationHandler`, `Notification`, `NotificationSeverity`) live in `FlashSkink.Core.Abstractions.Notifications`. The implementations (`NotificationBus`, `NotificationDispatcher`) live in `FlashSkink.Presentation.Notifications`. The persistence handler (`PersistenceNotificationHandler`) lives in `FlashSkink.Core/Engine/`. Rationale: every background service that needs to publish — `WritePipeline`, `ReadPipeline`, `UploadQueueService`, `AuditService`, `SelfHealingService`, `UsbMonitorService`, `HealthMonitorService`, the brain mirror task — lives in `FlashSkink.Core`. Per §4.2, `FlashSkink.Core` references only `FlashSkink.Core.Abstractions`. Putting the contracts in `Abstractions` is the only way Core publishers can call `INotificationBus.PublishAsync` and Core handlers (the persistence one) can implement `INotificationHandler` without violating the dependency graph. The same logic applies that puts `Result`, `ErrorContext`, and the model records in `Abstractions` — these are cross-layer contracts, not Presentation concerns. Implementations stay in Presentation because the dispatcher's fan-out is consumer-facing infrastructure: GUI handlers, CLI handlers, dedup-and-summary policy.
+**Where the types live.** The contracts (`INotificationBus`, `INotificationHandler`, `Notification`, `NotificationSeverity`) live in `FlashSkink.Core.Abstractions.Notifications`. The implementations (`NotificationBus`, `NotificationDispatcher`) live in `FlashSkink.Core.Notifications`. The persistence handler (`PersistenceNotificationHandler`) lives in `FlashSkink.Core/Engine/`. Rationale: every background service that needs to publish — `WritePipeline`, `ReadPipeline`, `UploadQueueService`, `AuditService`, `SelfHealingService`, `UsbMonitorService`, `HealthMonitorService`, the brain mirror task — lives in `FlashSkink.Core`. Per §4.2, `FlashSkink.Core` references only `FlashSkink.Core.Abstractions`. Putting the contracts in `Abstractions` is the only way Core publishers can call `INotificationBus.PublishAsync` and Core handlers (the persistence one) can implement `INotificationHandler` without violating the dependency graph. The same logic applies that puts `Result`, `ErrorContext`, and the model records in `Abstractions` — these are cross-layer contracts. The concrete bus and dispatcher live in `Core.Notifications` rather than in `Core.Abstractions` because they are infrastructure (`Channel<T>`, fan-out, dedup-and-summary policy), not contract — and because the OSS host (the CLI's `Program.cs`) needs to construct them at startup to register handlers before dispatch begins.
 
 ```csharp
 // In FlashSkink.Core.Abstractions
@@ -767,8 +739,8 @@ public enum NotificationSeverity { Info, Warning, Error, Critical }
 ```
 
 ```csharp
-// In FlashSkink.Presentation
-namespace FlashSkink.Presentation.Notifications;
+// In FlashSkink.Core
+namespace FlashSkink.Core.Notifications;
 
 public sealed class NotificationBus : INotificationBus, IAsyncDisposable
 {
@@ -809,7 +781,7 @@ public sealed class NotificationBus : INotificationBus, IAsyncDisposable
 }
 ```
 
-`NotificationDispatcher` (also in `FlashSkink.Presentation.Notifications`) owns the registered handler list, the `(Source, ErrorCode)` deduplication state, and the periodic flush of suppressed-count summaries (§8.4). Handler exceptions inside `DispatchAsync` are caught and logged at `Warning` — a misbehaving handler must not interrupt fan-out.
+`NotificationDispatcher` (also in `FlashSkink.Core.Notifications`) owns the registered handler list, the `(Source, ErrorCode)` deduplication state, and the periodic flush of suppressed-count summaries (§8.4). Handler exceptions inside `DispatchAsync` are caught and logged at `Warning` — a misbehaving handler must not interrupt fan-out.
 
 **Visibility — `public sealed` for both classes.** `NotificationBus` and `NotificationDispatcher` are `public sealed`, not `internal`. They are the concrete types host projects construct in `Program.cs` for DI registration, and they are the types tests need to instantiate directly. `internal` would force either `[InternalsVisibleTo]` (which the test convention in CLAUDE.md discourages) or a public factory façade with no encapsulation benefit — these are behavior containers, not data carriers, so there is nothing to hide. The interfaces in `Core.Abstractions.Notifications` remain the registration target; the concrete classes are just normal public infrastructure.
 
@@ -821,7 +793,7 @@ A flapping provider can generate many `ProviderUnreachable` notifications in qui
 
 Background failures must survive until the user sees them — including cases where they occur while the UI is not focused, the CLI has already exited, or the app is restarted. A `BackgroundFailures` table in the brain provides this persistence.
 
-**Write path:** A `PersistenceNotificationHandler` — implemented in `FlashSkink.Core/Engine/`, registered on the bus alongside the UI handler — writes every `Error` and `Critical` notification to `BackgroundFailures` immediately via `BackgroundFailureRepository`. `Info` and `Warning` are not persisted — they are transient. The handler lives in Core (not Presentation) because it implements `INotificationHandler` (an `Abstractions` contract per §8.3) and consumes `BackgroundFailureRepository` (a Core type); both are reachable from Core directly.
+**Write path:** A `PersistenceNotificationHandler` — implemented in `FlashSkink.Core/Engine/`, registered on the bus alongside the CLI handler — writes every `Error` and `Critical` notification to `BackgroundFailures` immediately via `BackgroundFailureRepository`. `Info` and `Warning` are not persisted — they are transient. The handler lives in Core because it implements `INotificationHandler` (an `Abstractions` contract per §8.3) and consumes `BackgroundFailureRepository` (a Core type); both are reachable from Core directly.
 
 **Read path on launch:** Before any user operations, query for unacknowledged rows ordered by `OccurredUtc DESC`. Surface as a notification summary: *"3 background failures since your last session."* Each is dismissible; dismissal sets `Acknowledged = 1`.
 
@@ -838,8 +810,7 @@ Background service encounters failure
     │         │
     │         └──► NotificationDispatcher (fan-out):
     │                   ├── PersistenceHandler  → BackgroundFailures (Error/Critical only)
-    │                   ├── UiHandler           → GUI status indicator
-    │                   └── CliHandler          → stderr
+    │                   └── CliHandler          → stderr (when the CLI is foreground)
     │
 On next launch (if not yet acknowledged):
     └──► BackgroundFailures query → unacknowledged rows → surfaced on startup
@@ -1288,7 +1259,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 ### 11.1 Behavioural Notes
 
 - **`WriteFileAsync` returns at Phase 1 commit.** The file is on the skink, encrypted and integrity-checked. The `WriteReceipt` includes a `FileID` and a notification token the caller can subscribe to for upload-completion events. Tail uploads happen asynchronously.
-- **`DeleteFolderAsync(confirmed: false)` on a non-empty folder** returns `Result.Fail(ErrorCode.ConfirmationRequired)` with `ErrorContext.Metadata["ChildCount"]` populated. The ViewModel uses this to build the confirmation dialog before retrying with `confirmed: true`.
+- **`DeleteFolderAsync(confirmed: false)` on a non-empty folder** returns `Result.Fail(ErrorCode.ConfirmationRequired)` with `ErrorContext.Metadata["ChildCount"]` populated. The caller (e.g. the CLI `rm` handler) uses this to prompt for confirmation before retrying with `confirmed: true`.
 - **`MoveAsync` accepts `newParentId = null`** to move an item to root.
 - **`ListChildrenAsync(parentId: null)`** returns all root-level items.
 - **`AddTailAsync`** queues every existing file for upload to the new tail. Returns immediately with the tail info; uploads proceed in the background.
@@ -1299,47 +1270,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
 ---
 
-## 12. Presentation Layer Contracts
+## 12. *Intentionally empty*
 
-The Presentation layer holds ViewModels and platform-agnostic interfaces. UI projects implement these interfaces; Core never references them directly.
-
-```csharp
-namespace FlashSkink.Presentation.Interfaces;
-
-public interface INavigationService
-{
-    Task NavigateToAsync<TViewModel>() where TViewModel : BaseViewModel;
-    Task NavigateBackAsync();
-}
-
-public interface IDialogService
-{
-    Task ShowErrorAsync(string title, string message);
-    Task ShowInfoAsync(string title, string message);
-    Task<bool> ShowConfirmAsync(string title, string message);
-    Task<string?> ShowInputAsync(string title, string prompt, bool masked = false);
-}
-
-public interface IFilePickerService
-{
-    Task<string?> PickFileAsync(string title, IEnumerable<string> allowedExtensions);
-    Task<string?> PickFolderAsync(string title);
-    Task<string?> PickSaveLocationAsync(string title, string defaultFileName);
-    Task<IReadOnlyList<string>> PickFilesAsync(string title);
-}
-
-public interface IBrowserService
-{
-    Task OpenAsync(Uri uri);
-}
-
-public interface IClipboardService
-{
-    Task CopyToClipboardAsync(string text);
-}
-```
-
-These interfaces are deliberately small. Adding methods is a deliberate decision; each new method is a new dependency every UI implementation must satisfy.
+The section number `§12` is preserved so external cross-references continue to resolve.
 
 ---
 
@@ -1642,7 +1575,7 @@ Range size is not user-configurable. If V2+ identifies a need for adaptive sizin
 
 Within a single tail, ranges of the same blob upload sequentially. Different blobs may upload concurrently to the same tail (provider permitting). Different tails always upload concurrently.
 
-V1 default: 2 concurrent uploads per tail, configurable per tail in advanced config but not exposed in UI. Total upload concurrency is capped at `2 × tailCount` to avoid saturating the user's upload bandwidth with too many parallel streams.
+V1 default: 2 concurrent uploads per tail, configurable per tail via `flashskink-cli config set` but not promoted as an everyday setting. Total upload concurrency is capped at `2 × tailCount` to avoid saturating the user's upload bandwidth with too many parallel streams.
 
 ### 15.7 Verification After Finalisation
 
@@ -1935,7 +1868,7 @@ WHERE FileID IN (SELECT FileID FROM descendants);
 
 | Rule | Decision |
 |---|---|
-| **Delete non-empty folder** | Requires `confirmed = true`. `DeleteFolderAsync(confirmed: false)` returns `ConfirmationRequired` with child count in metadata. The ViewModel calls `IDialogService.ShowConfirmAsync` then retries. |
+| **Delete non-empty folder** | Requires `confirmed = true`. `DeleteFolderAsync(confirmed: false)` returns `ConfirmationRequired` with child count in metadata. The CLI `rm` handler prompts the user for confirmation, then retries with `confirmed: true`. |
 | **Upload to non-existent parent** | Auto-creates all missing intermediate folder rows via `FileRepository.EnsureFolderPathAsync`. Idempotent and transactional. If a path segment exists as a file (not a folder), returns `PathConflict`. |
 | **Root contents** | `ParentID = NULL` is valid for both files and folders. Root items are freely mixed. |
 | **Name uniqueness** | Unique per parent enforced by `IX_Files_Parent_Name`. Constraint violation mapped to `PathConflict`. |
@@ -2212,7 +2145,7 @@ Everything that crosses a boundary outside the skink (cloud provider, log file, 
 - Brain mirroring to tails after every commit (provides recovery path)
 - Documentation recommending quality-brand drives
 
-**Setup-time recommendation in the GUI and README:** Samsung, SanDisk, Kingston, Crucial. USB 3.x preferred. Avoid unbranded or unusually cheap drives.
+**Setup-time recommendation (printed by `flashskink-cli setup guide` and documented in the README):** Samsung, SanDisk, Kingston, Crucial. USB 3.x preferred. Avoid unbranded or unusually cheap drives.
 
 ### 19.2 USB Removal Detection
 
@@ -2397,7 +2330,7 @@ OAuth device flow: URL printed to stdout, user pastes callback code. The CLI the
 6. Sets up the new USB as a fully-functional skink with the recovered tail already configured.
 7. Other tails (if any): the user can add them through the normal `flashskink-cli setup` flow; their blobs are already present remotely and will be re-linked on first contact (compared by hash).
 
-GUI recovery follows the same flow with a wizard-style UI (Decision B11-b).
+The CLI `recover` command exposes this flow. In OSS Core, recovery is CLI-only.
 
 ---
 
@@ -2450,7 +2383,7 @@ Both follow the dispatcher's standard 60-second `Source + ErrorCode` deduplicati
 
 When ≥ 2 tails transition to `Unreachable` within a 30-second window **and** `NetworkAvailabilityMonitor.CurrentState == Online`, the dispatcher publishes a single `ProbableConnectivityIssue` notification rather than letting N independent per-tail notifications surface in parallel. This catches the captive-portal and DNS-failure cases that §22.2 cannot detect — using only signals already produced by §22.1, with no new outbound traffic.
 
-Thresholds (`N` and `W`) live in `config.json` and are not exposed in the GUI.
+Thresholds (`N` and `W`) live in `config.json` and are tunable via `flashskink-cli config set` but not promoted as an everyday setting.
 
 ### 22.4 Behaviour during offline windows
 
@@ -2470,161 +2403,215 @@ When the state transitions back to `Online`:
 
 ## 23. CLI Reference
 
-### 23.1 Top-Level Commands
+The CLI is the **only** user surface in OSS Core. It exposes the full Core public API — every operation a user can perform on a volume is reachable from `flashskink-cli`. Output is human-readable by default; every command accepts `--json` for machine-readable output. Long-running readers accept `--watch` for live refresh.
+
+### 23.1 Conventions
+
+- **Binary name:** `flashskink-cli` (per §26.2).
+- **Virtual paths:** forward-slash separator regardless of host OS. Leading `/` means root. Path segments are NFC-normalised (matches Decision A22). Quoting follows standard shell rules (`'foo bar/baz.txt'` or `"foo bar/baz.txt"`).
+- **`--skink <path>`:** mandatory on every command that reads or modifies a volume. May be a USB mount path or a directory containing `.flashskink/`. Auto-detection of the active skink is not implemented in V1 (deliberate — explicit is safer when multiple skinks are plugged in).
+- **`--json`:** every command supports it; output is a single JSON document per invocation. Errors emit `{ "error": { "code": "...", "message": "..." } }` with non-zero exit codes.
+- **`--watch`:** supported by `status`, `queue list`, `tail health`, `activity`, `log`. Refresh interval defaults to 2 s; `--interval <seconds>` overrides.
+- **Secrets:** any command that requires a password or recovery phrase prompts interactively by default. Recovery phrases never appear as CLI arguments (would leak via shell history and process listings); `--mnemonic-stdin` is the scripted-recovery escape hatch.
+- **Cancellation:** every long-running command observes `Ctrl-C` cleanly. In-flight Core operations either complete the current atomic step or roll back via WAL; the CLI itself exits with status code `130` (POSIX cancellation) on user-initiated cancel.
+
+### 23.2 Command tree
 
 ```
-flashskink-cli unlock      --skink <path> [--password <pwd>]
-flashskink-cli info        --skink <path>
-flashskink-cli setup       --skink <path> --provider <type> [...]
-flashskink-cli verify      --skink <path>
-flashskink-cli restore     --skink <path> --file <virtualPath> --output <path>
-                           [--since <timestamp>]   # restore from grace period
-flashskink-cli export      --skink <path> --output <directory>
-flashskink-cli activity    --skink <path> [--since <timestamp>] [--category <cat>]
-flashskink-cli recover     --mnemonic <words> --provider <type> --client-id <id>
-                           --client-secret <secret> --output <newSkinkPath>
-flashskink-cli reveal-phrase --skink <path>     # password-required, 60s wait
+# Volume lifecycle
+flashskink-cli unlock      --skink <path>                          # Open volume; prompts for password.
+                                                                   # On an empty/uninitialised skink, prompts to initialise
+                                                                   # (generates mnemonic, runs recovery-phrase ceremony).
+flashskink-cli lock        --skink <path>                          # Explicit close: flushes brain, zeroes keys.
+flashskink-cli info        --skink <path>                          # Volume identifier, schema version, tail count, KDF parameters.
+flashskink-cli status      --skink <path> [--watch]                # Aggregate sync state per tail; --watch refreshes live.
+
+# Provider setup (manual)
+flashskink-cli setup guide        --provider <google|dropbox|onedrive|filesystem>
+                                                                   # Prints the step-by-step manual setup guide for the given provider.
+flashskink-cli setup add          --skink <path> --provider <type> --client-id <id> [--client-secret <secret>] [--root <path>]
+                                                                   # Registers a provider after the user has completed the manual setup.
+                                                                   # For OAuth providers, opens the system browser for consent and
+                                                                   # captures the resulting tokens via local-loopback redirect.
+flashskink-cli setup test         --skink <path> --tail <providerId>
+                                                                   # Dry-run a small upload + verify to confirm credentials work end-to-end.
+
+# Tail management
+flashskink-cli tail list          --skink <path>
+flashskink-cli tail add           --skink <path> --provider <type> [...]   # Alias of `setup add`.
+flashskink-cli tail remove        --skink <path> --tail <providerId>
+                                                                   # Removes the tail locally: deletes OAuth tokens, queue rows, session rows.
+                                                                   # Data on the provider is NOT deleted automatically (§5.3) — user
+                                                                   # cleans up manually if desired; the data is encrypted and useless
+                                                                   # without the volume's keys.
+flashskink-cli tail health        --skink <path> [--tail <providerId>] [--watch]
+flashskink-cli tail rebuild       --skink <path> --tail <providerId>
+                                                                   # Force complete re-upload of all blobs to this tail. Used when a tail
+                                                                   # has drifted severely or recovery from a known-corrupted remote state.
+flashskink-cli tail pause         --skink <path> --tail <providerId>
+flashskink-cli tail resume        --skink <path> --tail <providerId>
+
+# File operations
+flashskink-cli ls          --skink <path> [<virtualPath>] [--recursive] [--long]
+flashskink-cli stat        --skink <path> <virtualPath>
+flashskink-cli find        --skink <path> --name <glob> [--type file|folder] [<rootVirtualPath>]
+flashskink-cli put         --skink <path> <hostPath> [--to <virtualPath>] [--recursive]
+                                                                   # Write file/folder from host into the skink (Phase 1 commit).
+flashskink-cli get         --skink <path> <virtualPath> --output <hostPath>
+                                                                   # Read a file from the skink to the host.
+flashskink-cli mv          --skink <path> <fromVirtualPath> <toVirtualPath>
+flashskink-cli rm          --skink <path> <virtualPath> [--recursive] [--purge]
+                                                                   # Default: soft-delete (grace period). --purge: bypass grace; --recursive: folders.
+                                                                   # Soft-delete on a non-empty folder requires --recursive.
+flashskink-cli mkdir       --skink <path> <virtualPath> [--parents]
+flashskink-cli restore     --skink <path> --file <virtualPath> --output <hostPath> [--since <timestamp>]
+                                                                   # Copy out one file (current contents or, with --since, the grace-period version).
+flashskink-cli prune       --skink <path>                           # Force grace-period purge sweep (normally automatic on a timer).
+
+# Daemon / queue
+flashskink-cli daemon      --skink <path> [--detach]               # Run the background upload + audit + healing services.
+                                                                   # Default foreground (Ctrl-C exits cleanly).
+                                                                   # --detach runs in the background; PID written to .flashskink/daemon.pid.
+                                                                   # Resumes from session state on next launch regardless.
+flashskink-cli queue list  --skink <path> [--tail <providerId>] [--status <pending|inflight|failed>]
+flashskink-cli queue retry --skink <path> --file <fileId> [--tail <providerId>]
+                                                                   # Force a stuck queue row to retry now.
+
+# Integrity / healing
+flashskink-cli verify      --skink <path> [--tail <providerId>] [--scope local|remote|both]
+                                                                   # Walk blobs and (optionally) tails, confirming hashes. Long-running.
+flashskink-cli heal        --skink <path> [--tail <providerId>]    # Force a self-healing pass (normally automatic).
+flashskink-cli scrub       --skink <path>                          # Walk the brain for orphans (Files without Blobs, Blobs without files)
+                                                                   # and reconcile (normally automatic on a slow timer).
+
+# Activity / logs / failures
+flashskink-cli activity    --skink <path> [--since <timestamp>] [--category <cat>] [--tail-n <N>]
+flashskink-cli log         --skink <path> [--lines <N>] [--follow]
+                                                                   # Read the on-skink Serilog file at .flashskink/logs/. --follow tails.
+flashskink-cli failures list   --skink <path> [--unacked-only]     # List rows from BackgroundFailures (§8.5).
+flashskink-cli failures ack    --skink <path> --id <failureId>
+flashskink-cli failures ack-all --skink <path>
+
+# Recovery / secrets
+flashskink-cli reveal-phrase   --skink <path>                       # Password-required, enforces 60 s countdown (Decision A16-d).
 flashskink-cli change-password --skink <path>
-flashskink-cli reset-password --skink <path> --mnemonic <words>
-flashskink-cli config get|set <key> [<value>]
+flashskink-cli reset-password  --skink <path>                       # Prompts for mnemonic interactively (never accepts it as a CLI arg).
+flashskink-cli recover     --provider <type> --client-id <id> --client-secret <secret> --output <newSkinkPath>
+                                                                   # Reconstruct a new skink from any one tail + the recovery phrase.
+                                                                   # Prompts for mnemonic interactively; --mnemonic-stdin for scripted recovery.
+flashskink-cli export      --skink <path> --output <directory>     # Walk every file, write to the host in original tree shape.
+
+# Configuration
+flashskink-cli config get  --skink <path> <key>
+flashskink-cli config set  --skink <path> <key> <value>
+flashskink-cli config list --skink <path>
+
+# Diagnostics
 flashskink-cli support-bundle --skink <path> --output <bundleFile>
-flashskink-cli pause       --skink <path> [--tail <providerId>]
-flashskink-cli resume      --skink <path> [--tail <providerId>]
+flashskink-cli wal-recover    --skink <path>                        # Explicit WAL replay (normally automatic at unlock).
+flashskink-cli version
+flashskink-cli completion <bash|zsh|fish|powershell>                # Emit a shell-completion script.
+flashskink-cli --help
 ```
 
-### 23.2 V1 Scope
+### 23.3 V1 scope
 
-All commands above are V1. CLI write operations (uploading new files via CLI) are V2 — V1 CLI is read, audit, restore, recovery, configuration, and setup automation only. The GUI is the primary write surface for V1.
+All commands above are V1 in OSS Core. The CLI is the sole user surface.
 
-### 23.3 Output Format
+### 23.4 Output and exit codes
 
-All commands support `--json` for machine-readable output. Default is human-readable. Errors return non-zero exit codes and write `ErrorContext.Code` and `Message` to stderr.
+| Exit code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Generic failure (a `Result.Fail` returned an `ErrorCode` not specifically mapped below). |
+| `2` | Usage error (bad argument, missing required option, unknown subcommand). System.CommandLine default. |
+| `3` | Volume unavailable (skink not found, brain locked by another instance, USB ejected mid-operation). Maps from `ErrorCode.VolumeUnavailable` family. |
+| `4` | Authentication failure (wrong password, mnemonic rejection). Maps from `ErrorCode.AuthenticationFailed`. |
+| `5` | Confirmation required (non-interactive mode and the command needs a yes/no). Maps from `ErrorCode.ConfirmationRequired`. |
+| `130` | User-initiated cancellation (`Ctrl-C`). POSIX convention. |
+
+`--json` output for an error returns `{ "error": { "code": "VolumeUnavailable", "message": "..." } }` and the same exit code.
+
+### 23.5 What the CLI deliberately does not do
+
+- **No interactive TUI / curses-style file browser.** `--watch` is the live-update mechanism; a full TUI is out of V1 scope.
+- **No `serve` mode / REST API.** A network-facing surface would invite plugin and remote-access concerns inconsistent with the zero-trust posture.
+- **No `sync now` command separate from the daemon.** The daemon is the upload engine; a parallel sync command would be confusing.
+- **No telemetry, update-check, or "send error report" commands.** Decisions B12-a and B13-a.
 
 ---
 
-## 24. Setup CLI (Provider Automation)
+## 24. Provider Setup (Manual Guides)
 
 ### 24.1 Purpose
 
-Automate the BYOC setup flow that would otherwise require 15-25 manual steps in each provider's developer console. Reduces setup to a guided 5-minute flow with two browser interactions per provider.
+OSS Core ships **printed step-by-step guides** for each provider's BYOC setup. The user follows the steps manually in the provider's developer console, then hands the resulting credentials to `flashskink-cli setup add`. There is no automation in OSS Core — automating these flows requires per-provider SDK breadth (Google Cloud Resource Manager, Dropbox App Console, Azure AD admin endpoints) and ongoing maintenance as provider consoles evolve, which is outside the OSS surface's scope.
 
-### 24.2 V1 Coverage
+### 24.2 Coverage
 
-Per Decision B10-b (refined): Google Drive and Dropbox are automated in V1. OneDrive is manual with a detailed step-by-step guide (automation deferred to V1.1 or V2).
+| Provider | Setup style | OSS Core support |
+|---|---|---|
+| **FileSystem** | Trivial — path only | Fully supported. No browser, no developer console. |
+| **Google Drive** | Manual guide → CLI accepts credentials | Guide printed by `flashskink-cli setup guide --provider google-drive`. |
+| **Dropbox** | Manual guide → CLI accepts credentials | Guide printed by `flashskink-cli setup guide --provider dropbox`. |
+| **OneDrive** | Manual guide → CLI accepts credentials | Guide printed by `flashskink-cli setup guide --provider onedrive`. |
 
-### 24.3 Google Drive Setup Flow
+### 24.3 The two-stage CLI flow
 
 ```
-flashskink-cli setup --skink <path> --provider google-drive
+# Stage 1: print the guide (no skink required; the user can run this on any host)
+flashskink-cli setup guide --provider google-drive
 
-Steps performed automatically by the CLI:
-  1. Open browser to Google authentication (gcloud-style device-code flow)
-  2. Authenticate user to Google with the necessary admin scopes
-  3. Create Google Cloud project "FlashSkink-Backup-{user}-{shortid}"
-  4. Enable Google Drive API on the project
-  5. Configure OAuth consent screen (Production mode, single-user app)
-  6. Create OAuth 2.0 desktop application credentials
-  7. Open browser for Drive scope consent
-  8. Exchange consent code for refresh token
-  9. Encrypt and store credentials + token in brain
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │ Google Drive — manual setup                                              │
+  │                                                                          │
+  │  1. Open https://console.cloud.google.com/                               │
+  │  2. Create a new project named "FlashSkink-Backup" (or any name)         │
+  │  3. Enable the Google Drive API on that project                          │
+  │  4. Configure the OAuth consent screen (External, single-user app, your  │
+  │     own Gmail as test user)                                              │
+  │  5. Create OAuth 2.0 client credentials (type: Desktop app)              │
+  │  6. Note the Client ID and Client Secret                                 │
+  │                                                                          │
+  │ Then run:                                                                │
+  │   flashskink-cli setup add --skink <path> --provider google-drive \      │
+  │       --client-id <ID> --client-secret <SECRET>                          │
+  │                                                                          │
+  │ The CLI will open your browser for Drive-scope consent and capture       │
+  │ the resulting refresh token via local-loopback redirect.                 │
+  └──────────────────────────────────────────────────────────────────────────┘
 
-Output to user:
+# Stage 2: register the tail using the credentials from stage 1
+flashskink-cli setup add --skink /mnt/usb --provider google-drive \
+    --client-id 1234567890.apps.googleusercontent.com \
+    --client-secret GOCSPX-aaa...
+
   ✓ Google Drive tail configured.
-  Your encrypted backups will begin uploading next time the skink is connected.
+    Your encrypted backups will begin uploading next time the daemon is running.
 ```
 
-### 24.4 Dropbox Setup Flow
+The Dropbox and OneDrive guides have analogous shapes — different developer consoles, same two-stage pattern. The FileSystem provider needs no guide: `flashskink-cli setup add --provider filesystem --root /mnt/nas/backups` validates the path and registers it. FileSystem rejects paths that are subdirectories of the skink (would create a backup loop).
 
-Similar shape: authenticate to Dropbox, create app via App Console API, configure permissions, generate OAuth credentials, exchange consent code, store encrypted credentials.
+### 24.4 Where the guides live
 
-### 24.5 OneDrive Setup (V1: Manual with Guide)
+The guide text is embedded as resources in `FlashSkink.CLI` (`Resources/setup-guides/{provider}.txt`). The README links to the same text rendered as HTML on the project's static documentation site (no live service — content is pre-rendered at publish time per Decision C7-b). Users who prefer offline-only never need to visit the web.
 
-The CLI presents a step-by-step guide:
+### 24.5 Local-loopback OAuth capture
 
-```
-flashskink-cli setup --skink <path> --provider onedrive
+Even though setup is "manual" in OSS Core, the CLI still handles the OAuth consent dance once the user has obtained `client-id` and `client-secret` from the provider console:
 
-Setting up OneDrive requires creating an app registration in Azure AD.
-Follow these steps (or visit https://docs.flashskink.app/onedrive for screenshots):
+1. CLI binds a local HTTPS listener on `http://127.0.0.1:<random-port>/oauth-callback`.
+2. CLI launches the system browser to the provider's consent URL with `redirect_uri=http://127.0.0.1:<port>/oauth-callback`.
+3. User authorises in the browser; provider redirects back to the loopback with `?code=...`.
+4. CLI exchanges the code for a refresh token, encrypts it via the volume's DEK, persists to the brain.
 
-  1. Go to https://portal.azure.com/...
-  2. Sign in with your Microsoft account
-  3. Click "App registrations" → "New registration"
-  4. Name: "FlashSkink-Backup"
-  5. Supported account types: "Personal Microsoft accounts only"
-  6. Redirect URI: select "Public client/native (mobile & desktop)"
-  7. Click "Register"
-  8. Copy the "Application (client) ID" and paste here:
-
-    > [user pastes]
-
-  9. Go to "API permissions" → "Add a permission"
-  ...
-
-When complete, the CLI exchanges credentials and stores them encrypted on the skink.
-```
-
-Once the user pastes the client ID, the CLI handles OAuth consent flow programmatically (the manual part is only the app registration in Azure).
-
-### 24.6 FileSystem Setup
-
-Trivial: the user provides a path. The CLI verifies the path exists, is writable, and isn't a subdirectory of the skink (which would create a backup loop). No browser interaction.
-
-```
-flashskink-cli setup --skink <path> --provider filesystem --path /mnt/nas/backups
-```
-
-### 24.7 Setup CLI Programmatic Surface
-
-The setup logic lives in `FlashSkink.Core.Setup` so the GUI setup wizard calls the same code paths. The GUI wraps the CLI commands in a wizard UI; the underlying logic is identical.
+This is the standard public-client OAuth flow (RFC 8252). No external server is involved; the loopback is the only network traffic during setup.
 
 ---
 
-## 25. GUI Surface
+## 25. *intentionally blank*
 
-### 25.1 V1 Scope (Decision B11-b)
-
-The GUI is built with Avalonia (cross-platform). V1 includes:
-
-- **Setup wizard**: password, recovery phrase display + confirmation, add tails (calling setup CLI logic), done.
-- **File manager**: browse skink contents (folders + files), drag-and-drop to write, right-click delete/rename/move.
-- **Status indicator**: single visible element showing tail sync state (all current / catching up / needs attention). Click to expand into per-tail detail panel (Decision A12-c).
-- **Recovery wizard**: full recovery flow (mnemonic + tail credentials → new skink).
-- **Minimal restore UI** (Decision A13-b): select files/folders, choose destination, restore. Used for normal restores when the skink is intact.
-
-### 25.2 Out of V1 GUI
-
-- Verify button (CLI only in V1)
-- Export UI (CLI only in V1)
-- Activity log view (CLI only in V1)
-- Settings UI beyond essential (most settings via CLI)
-- Per-file upload progress (status indicator only shows aggregate)
-
-### 25.3 ViewModel Layer
-
-All GUI logic lives in `FlashSkink.Presentation.ViewModels`. Avalonia views bind to ViewModels via `CommunityToolkit.Mvvm`. ViewModels never reference Avalonia.
-
-ViewModels handle every `Result` explicitly: success and failure paths each have their own behaviour. A `Result` returning `Failure` is never silently ignored.
-
-### 25.4 Appliance UX Discipline
-
-- Internal vocabulary (stripe, blob, WAL, OAuth) does not appear in any user-visible string.
-- The user's vocabulary is: skink, tail, recovery phrase, file, folder.
-- Error messages are sentences in plain language with one suggested action.
-- The status indicator is the only persistent UI element when the file manager is not in focus.
-- No progress bars for individual operations unless they exceed 5 seconds.
-- No notifications for routine successes (uploads completing, etc.) — only for things requiring attention.
-
-### 25.5 Recovery Phrase Display
-
-When the recovery phrase is shown (at setup or via reveal command):
-
-- Full-screen, modal, all other UI obscured.
-- Phrase displayed in a 6×4 grid, each word numbered.
-- "Write this down. Without it, your data cannot be recovered." in a prominent position.
-- "Continue" button disabled until the user completes a confirmation step (type 4 randomly-selected words back).
-- No "copy to clipboard" affordance (deliberately — clipboard is a bad place for the recovery phrase).
-- After confirmation, the phrase is cleared from memory and never displayed again until explicitly requested via reveal command.
+The section number `§25` is preserved so external cross-references continue to resolve.
 
 ---
 
@@ -2645,8 +2632,7 @@ Trimming is disabled for V1 because several dependencies (SQLCipher, reflection-
 
 ```
 [USB_ROOT]/
-├── FlashSkink.exe / FlashSkink                    ← GUI executable
-├── flashskink-cli.exe / flashskink-cli            ← CLI executable
+├── flashskink-cli.exe / flashskink-cli            ← CLI executable (sole binary in OSS Core)
 ├── launch.sh / launch.command                     ← macOS/Linux launchers
 ├── README.txt                                      ← Quick-start for first-time users
 └── .flashskink/
@@ -2743,12 +2729,10 @@ Any native dependency that fails this validation is a PR 0.1 blocker.
 | Concern | Package | Project |
 |---|---|---|
 | Language | C# 14 / .NET 10 | All |
-| GUI | `Avalonia` | `UI.Avalonia` |
-| MVVM | `CommunityToolkit.Mvvm` | `Presentation` |
 | CLI | `System.CommandLine` | `CLI` |
-| Notification channel | `System.Threading.Channels` | `Presentation` (built-in) |
-| Logging abstractions | `Microsoft.Extensions.Logging.Abstractions` | `Core`, `Presentation` |
-| Logging implementation | `Serilog` + `Serilog.Extensions.Logging` + `Serilog.Sinks.File` + `Serilog.Formatting.Compact` | `UI.Avalonia`, `CLI` |
+| Notification channel | `System.Threading.Channels` | `Core` (built-in) |
+| Logging abstractions | `Microsoft.Extensions.Logging.Abstractions` | `Core` |
+| Logging implementation | `Serilog` + `Serilog.Extensions.Logging` + `Serilog.Sinks.File` + `Serilog.Formatting.Compact` | `CLI` |
 | Database (general) | `Microsoft.Data.Sqlite` + `Dapper` | `Core` |
 | Database (hot paths) | `Microsoft.Data.Sqlite` raw `SqliteDataReader` | `Core` |
 | Database encryption | `SQLCipher` (via `Microsoft.Data.Sqlite` with native SQLCipher build) | `Core` |
@@ -2764,7 +2748,7 @@ Any native dependency that fails this validation is a PR 0.1 blocker.
 | BIP-39 | Focused BIP-39 library (e.g. `dotnetstandard-bip39`) | `Core` |
 | Memory zeroing | `CryptographicOperations.ZeroMemory` | `Core` |
 | Testing | `xUnit` + `Moq` + `FsCheck` (property-based for crash consistency) | `Tests` |
-| Publish | `dotnet publish --self-contained -r <RID> -p:PublishSingleFile=true` | GUI + CLI per RID |
+| Publish | `dotnet publish --self-contained -r <RID> -p:PublishSingleFile=true` | CLI per RID |
 | Code signing | `signtool` (Windows Authenticode) + `codesign` (macOS Developer ID) | Build pipeline |
 
 **Native dependency notes:**
@@ -2851,8 +2835,8 @@ This section preserves every architectural and product decision with options, se
 | A9 — Provider quota exceeded | (a) Halt that tail; others continue | Mirror-model redundancy intact |
 | A10 — Network failure retry | (b) Exponential backoff | No log spam, prompt recovery |
 | A11 — USB reinsertion | (b) Integrity check then resume | Already-decided from §19 |
-| A12 — Progress visibility | (c) Status indicator + expandable detail panel | Appliance with escape hatch |
-| A13 — V1 Restore UX | (b) Minimal restore GUI | Paired with core GUI surface |
+| A12 — Progress visibility | CLI `status` command with optional `--watch` live refresh | OSS surface is CLI-only |
+| A13 — V1 Restore UX | CLI `restore` command (single file) and `export` (whole-tree) | OSS surface is CLI-only |
 | A14 — Integrity verification | (b) Automatic + `verify` CLI | High-trust low-cost |
 | A15 — Export | (a) `flashskink-cli export` | No lock-in; trust feature |
 | A16 — Mnemonic re-display | (d) Password + 60s countdown | Stronger friction, deliberate |
@@ -2873,8 +2857,8 @@ This section preserves every architectural and product decision with options, se
 | B7 — Compression algorithm | (c) LZ4 small, Zstd larger | Balanced |
 | B8 — Argon2id parameters | (b) OWASP 2024 baseline (m=19456, t=2, p=1) | Current best practice |
 | B9 — Brain encryption | (a) SQLCipher | Standard answer |
-| B10 — Setup CLI scope | Google Drive + Dropbox automated; OneDrive manual guide | Realistic V1 scope |
-| B11 — GUI/CLI scope | (b) Core GUI; advanced via CLI | Appliance with power-user escape |
+| B10 — Setup CLI scope | OSS Core prints manual guides for every provider | Setup automation requires per-provider SDK breadth + maintenance unsuited to OSS scope |
+| B11 — GUI/CLI scope | OSS Core is CLI-only | The scope split makes the OSS surface explicit and small |
 | B12 — Update check | (a) No automatic checks | Zero-network discipline |
 | B13 — Telemetry | (a) None ever | Matches positioning |
 | B14 — Support bundle | (b) Logs + config + schema + recent activity | Useful, safe to share |
@@ -2910,17 +2894,16 @@ This section preserves every architectural and product decision with options, se
 
 The following are deliberately excluded from V1. Some are planned for V2+ (with direction recorded in §29.3); others are deliberately never planned.
 
-**Deferred to V2+:**
+**Deferred to V2+ (within OSS Core):**
 - Registered OAuth app (Google / Dropbox / Microsoft-owned)
 - Runtime plugin architecture for custom providers
 - Dynamic tail addition with restriping (mirror model makes this trivial; not a problem to solve)
 - Dedup across files (schema preserves the option)
 - Multi-device concurrent access
-- CLI write operations (add/overwrite files via CLI)
-- GUI surface for verify / export / activity / full settings
 - Mobile clients (defined: viewer/restorer only, through the skink, never direct to cloud)
 - Automatic update checks
 - Hardware product (pre-loaded skink USB)
+- Interactive TUI (curses-style file browser in the CLI)
 
 **Never planned (out of product scope):**
 - File versioning with user-selectable restore points (that's the snapshot product)
@@ -2938,9 +2921,8 @@ The following are deliberately excluded from V1. Some are planned for V2+ (with 
 ### 31.1 V1.1 (first patch release after V1)
 
 Candidate contents, to be decided based on V1 feedback:
-- OneDrive setup automation
 - Additional provider adapters (Backblaze B2, AWS S3) if users request
-- Minor GUI polish (activity view, verify button)
+- CLI ergonomics polish (shell completion improvements, better `--watch` rendering)
 - Performance tuning based on real-world usage data
 
 ### 31.2 V2 (major)
@@ -2949,8 +2931,8 @@ Candidate contents:
 - Registered OAuth app option (alongside BYOC)
 - Plugin architecture for custom providers
 - Dedup within a volume
-- Full GUI surface (remove CLI-only restrictions from V1)
-- Configurable advanced settings UI
+- Interactive TUI (curses-style file browser in the CLI)
+- Configurable advanced settings made more discoverable in `config list`
 
 ### 31.3 Snapshot Product (separate)
 
@@ -2958,7 +2940,7 @@ If built, shares:
 - Provider adapters
 - Crypto pipeline
 - Brain infrastructure (with different schema)
-- Setup CLI
+- Setup-guide content
 
 Differs in:
 - Content-addressed storage with dedup
@@ -2992,6 +2974,4 @@ Specific transport and feature scope to be decided based on V1+ feedback and whe
 
 ## End of Blueprint
 
-*This blueprint is authoritative for V1. Changes require a new blueprint version and review of downstream documents (DEV_PLAN.md, CLAUDE.md).*
-
-*Last updated: April 2026 — added DR-9 (CI-enforced session protocol). Additive amendment; V1 design baseline unchanged.*
+*This blueprint is authoritative for V1 of FlashSkink-Core (OSS, CLI-only). Changes require a new blueprint version and review of downstream documents (`dev-plan/phase-N.md`, `CLAUDE.md`, `README.md`).*
