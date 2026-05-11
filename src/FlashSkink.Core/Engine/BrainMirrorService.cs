@@ -603,6 +603,10 @@ public sealed class BrainMirrorService : IAsyncDisposable
     private async Task<Result<byte[]>> ReadAndEncryptAsync(
         string stagingPath, DateTime headerTimestamp, CancellationToken ct)
     {
+        // Declared outside the try so the finally can wipe it regardless of which exit path
+        // is taken (happy path, EOF, CryptographicException, or any of the outer catches).
+        // Defence in depth — the plaintext contains encrypted-OAuth-tokens and metadata.
+        byte[]? plaintext = null;
         try
         {
             long size = new FileInfo(stagingPath).Length;
@@ -614,8 +618,11 @@ public sealed class BrainMirrorService : IAsyncDisposable
                     ErrorCode.FileTooLong, "Brain snapshot exceeds in-memory cap.");
             }
 
-            int plaintextLen = (int)size;
-            byte[] plaintext = new byte[plaintextLen];
+            // Checked cast guards a future maintainer who raises _maxInMemoryMirrorBytes
+            // above int.MaxValue — silent overflow would produce a negative length and a
+            // confusing OverflowException at `new byte[]` allocation.
+            int plaintextLen = checked((int)size);
+            plaintext = new byte[plaintextLen];
 
             await using (var fs = new FileStream(
                 stagingPath,
@@ -635,7 +642,6 @@ public sealed class BrainMirrorService : IAsyncDisposable
                         plaintext.AsMemory(read, plaintextLen - read), ct).ConfigureAwait(false);
                     if (n == 0)
                     {
-                        CryptographicOperations.ZeroMemory(plaintext);
                         return Result<byte[]>.Fail(
                             ErrorCode.Unknown,
                             "Unexpected EOF while reading brain snapshot.");
@@ -672,14 +678,9 @@ public sealed class BrainMirrorService : IAsyncDisposable
             }
             catch (CryptographicException ex)
             {
-                CryptographicOperations.ZeroMemory(plaintext);
                 return Result<byte[]>.Fail(
                     ErrorCode.EncryptionFailed, "Brain mirror AES-GCM failed.", ex);
             }
-
-            // Wipe plaintext copy of the brain — defence in depth (Principle 31 strict scope
-            // is keys, but the snapshot includes encrypted-OAuth-tokens and metadata).
-            CryptographicOperations.ZeroMemory(plaintext);
 
             return Result<byte[]>.Ok(payload);
         }
@@ -698,6 +699,16 @@ public sealed class BrainMirrorService : IAsyncDisposable
             _logger.LogError(ex, "Unexpected error during brain mirror encryption.");
             return Result<byte[]>.Fail(
                 ErrorCode.Unknown, "Unexpected error during brain mirror encryption.", ex);
+        }
+        finally
+        {
+            // Wipe plaintext copy of the brain on every exit path (defence in depth —
+            // Principle 31's strict scope is keys, but the snapshot includes
+            // encrypted-OAuth-tokens and metadata).
+            if (plaintext is not null)
+            {
+                CryptographicOperations.ZeroMemory(plaintext);
+            }
         }
     }
 
@@ -728,8 +739,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
                 .UploadRangeAsync(session, offset, rangeMem, ct).ConfigureAwait(false);
             if (!rangeResult.Success)
             {
-                await provider
-                    .AbortUploadAsync(session, CancellationToken.None).ConfigureAwait(false);
+                await AbortQuietlyAsync(provider, session).ConfigureAwait(false);
                 return Result<string>.Fail(rangeResult.Error!);
             }
             offset += chunkLen;
@@ -738,11 +748,25 @@ public sealed class BrainMirrorService : IAsyncDisposable
         var finResult = await provider.FinaliseUploadAsync(session, ct).ConfigureAwait(false);
         if (!finResult.Success)
         {
-            await provider.AbortUploadAsync(session, CancellationToken.None).ConfigureAwait(false);
+            await AbortQuietlyAsync(provider, session).ConfigureAwait(false);
             return Result<string>.Fail(finResult.Error!);
         }
 
         return Result<string>.Ok(finResult.Value!);
+    }
+
+    private async Task AbortQuietlyAsync(IStorageProvider provider, UploadSession session)
+    {
+        // Fire-and-forget abort of a provider-side staging session whose upload just failed.
+        // Principle 17 — compensation uses CancellationToken.None.
+        var abort = await provider
+            .AbortUploadAsync(session, CancellationToken.None).ConfigureAwait(false);
+        if (!abort.Success)
+        {
+            _logger.LogDebug(
+                "AbortUploadAsync returned non-success while cleaning up failed mirror upload to {Tail}: {Code} {Message}",
+                provider.DisplayName, abort.Error!.Code, abort.Error.Message);
+        }
     }
 
     private async Task<Result> PruneOneTailAsync(IStorageProvider provider, CancellationToken ct)

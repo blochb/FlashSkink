@@ -495,6 +495,34 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         Assert.Empty(TailBrainEntries());
     }
 
+    // ── Cancellation ─────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task TriggerMirrorAsync_PreCancelledToken_ReturnsCancelledAndCleansStaging()
+    {
+        _registry.Register(ProviderId, _fsProvider);
+        await using var sut = CreateService();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var result = await sut.TriggerMirrorAsync(cts.Token);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+
+        // No staging snapshot left behind.
+        var stagingDir = Path.Combine(_skinkRoot, ".flashskink", "staging");
+        if (Directory.Exists(stagingDir))
+        {
+            var leftover = Directory.GetFiles(stagingDir, "brain-mirror-*.db");
+            Assert.Empty(leftover);
+        }
+
+        // No mirror on the tail.
+        Assert.Empty(TailBrainEntries());
+    }
+
     // ── Staging cleanup ──────────────────────────────────────────────────────────────────────
 
     [Fact]
