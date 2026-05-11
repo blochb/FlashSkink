@@ -218,4 +218,63 @@ public class UploadQueueRepositoryTests : IAsyncLifetime
             new { FileId, ProviderId });
         Assert.Equal(0, count);
     }
+
+    // ── LookupSessionAsync ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task LookupSessionAsync_NoRow_ReturnsNull()
+    {
+        var result = await _sut.LookupSessionAsync(FileId, ProviderId, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task LookupSessionAsync_ExistingRow_ReturnsSnapshot()
+    {
+        var expires = DateTime.UtcNow.AddHours(2);
+        await _sut.GetOrCreateSessionAsync(
+            FileId, ProviderId, "https://session-uri/x", expires, 2048, CancellationToken.None);
+        await _sut.UpdateSessionProgressAsync(FileId, ProviderId, 1024, CancellationToken.None);
+
+        var result = await _sut.LookupSessionAsync(FileId, ProviderId, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Value);
+        Assert.Equal(FileId, result.Value!.FileId);
+        Assert.Equal(ProviderId, result.Value.ProviderId);
+        Assert.Equal("https://session-uri/x", result.Value.SessionUri);
+        Assert.Equal(1024, result.Value.BytesUploaded);
+        Assert.Equal(2048, result.Value.TotalBytes);
+    }
+
+    [Fact]
+    public async Task LookupSessionAsync_DoesNotMutate()
+    {
+        var expires = DateTime.UtcNow.AddHours(1);
+        await _sut.GetOrCreateSessionAsync(
+            FileId, ProviderId, "https://session-uri/y", expires, 4096, CancellationToken.None);
+        await _sut.UpdateSessionProgressAsync(FileId, ProviderId, 2048, CancellationToken.None);
+
+        var first = await _sut.LookupSessionAsync(FileId, ProviderId, CancellationToken.None);
+        var second = await _sut.LookupSessionAsync(FileId, ProviderId, CancellationToken.None);
+        var third = await _sut.LookupSessionAsync(FileId, ProviderId, CancellationToken.None);
+
+        Assert.Equal(first.Value!.BytesUploaded, third.Value!.BytesUploaded);
+        Assert.Equal(first.Value.LastActivityUtc, second.Value!.LastActivityUtc);
+        Assert.Equal(first.Value.LastActivityUtc, third.Value.LastActivityUtc);
+    }
+
+    [Fact]
+    public async Task LookupSessionAsync_Cancellation_ReturnsCancelled()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var result = await _sut.LookupSessionAsync(FileId, ProviderId, cts.Token);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+    }
 }

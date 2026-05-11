@@ -85,11 +85,19 @@ public sealed class UploadQueueRepository
         [EnumeratorCancellation] CancellationToken ct)
     {
         await using var cmd = _connection.CreateCommand();
+        // Filter intent (dev plan §3.4):
+        //   PENDING rows are always eligible.
+        //   FAILED rows with AttemptCount < 5 are eligible for the §21.1 cycle ladder.
+        //   FAILED rows with AttemptCount >= 5 are terminally failed and excluded:
+        //     - either cycle 5 was exhausted (MarkUploading bumped AttemptCount to 5), or
+        //     - a permanent failure used MarkTerminallyFailedAsync to bump to 5.
         cmd.CommandText =
             """
             SELECT FileID, ProviderID, Status, RemoteId, QueuedUtc, AttemptCount
             FROM TailUploads
-            WHERE ProviderID = @providerId AND Status IN ('PENDING', 'FAILED')
+            WHERE ProviderID = @providerId
+              AND (Status = 'PENDING'
+                   OR (Status = 'FAILED' AND AttemptCount < 5))
             ORDER BY QueuedUtc ASC
             LIMIT @batchSize
             """;
@@ -145,8 +153,18 @@ public sealed class UploadQueueRepository
     }
 
     /// <summary>Sets a row to <c>UPLOADED</c> and records <c>RemoteId</c> and <c>UploadedUtc</c>.</summary>
+    public Task<Result> MarkUploadedAsync(
+        string fileId, string providerId, string remoteId, CancellationToken ct) =>
+        MarkUploadedAsync(fileId, providerId, remoteId, transaction: null, ct);
+
+    /// <summary>
+    /// Sets a row to <c>UPLOADED</c> and records <c>RemoteId</c> and <c>UploadedUtc</c>, enrolled
+    /// in <paramref name="transaction"/>. Used by §3.4 <c>UploadQueueService.ApplyOutcomeAsync</c>
+    /// to wrap the status flip and the matching <see cref="DeleteSessionAsync(string,string,SqliteTransaction?,CancellationToken)"/>
+    /// in one transaction per blueprint §15.3 step 7c.
+    /// </summary>
     public async Task<Result> MarkUploadedAsync(
-        string fileId, string providerId, string remoteId, CancellationToken ct)
+        string fileId, string providerId, string remoteId, SqliteTransaction? transaction, CancellationToken ct)
     {
         try
         {
@@ -158,6 +176,7 @@ public sealed class UploadQueueRepository
                 WHERE FileID = @FileId AND ProviderID = @ProviderId
                 """,
                 new { RemoteId = remoteId, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId },
+                transaction: transaction,
                 cancellationToken: ct)).ConfigureAwait(false);
             return Result.Ok();
         }
@@ -179,8 +198,17 @@ public sealed class UploadQueueRepository
     }
 
     /// <summary>Sets a row to <c>FAILED</c> and records <c>LastError</c> and <c>LastAttemptUtc</c>.</summary>
+    public Task<Result> MarkFailedAsync(
+        string fileId, string providerId, string lastError, CancellationToken ct) =>
+        MarkFailedAsync(fileId, providerId, lastError, transaction: null, ct);
+
+    /// <summary>
+    /// Sets a row to <c>FAILED</c> and records <c>LastError</c> and <c>LastAttemptUtc</c>,
+    /// enrolled in <paramref name="transaction"/>. Used by §3.4 <c>UploadQueueService</c> to
+    /// wrap the status flip and the matching session delete in one transaction.
+    /// </summary>
     public async Task<Result> MarkFailedAsync(
-        string fileId, string providerId, string lastError, CancellationToken ct)
+        string fileId, string providerId, string lastError, SqliteTransaction? transaction, CancellationToken ct)
     {
         try
         {
@@ -192,6 +220,7 @@ public sealed class UploadQueueRepository
                 WHERE FileID = @FileId AND ProviderID = @ProviderId
                 """,
                 new { LastError = lastError, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId },
+                transaction: transaction,
                 cancellationToken: ct)).ConfigureAwait(false);
             return Result.Ok();
         }
@@ -326,8 +355,63 @@ public sealed class UploadQueueRepository
         }
     }
 
+    /// <summary>
+    /// Sets a row to <c>FAILED</c> with <c>AttemptCount = MAX(AttemptCount, 5)</c>, the sentinel
+    /// value that the <see cref="DequeueNextBatchAsync"/> filter treats as terminally failed
+    /// (no further cycle retries). Used by §3.4 <c>UploadQueueService.ApplyPermanentAsync</c>
+    /// for failures that should not re-enter the §21.1 cycle ladder
+    /// (<see cref="ErrorCode.ProviderAuthFailed"/>, <see cref="ErrorCode.ProviderQuotaExceeded"/>,
+    /// <see cref="ErrorCode.TokenRevoked"/>, <see cref="ErrorCode.ChecksumMismatch"/>,
+    /// or any post-5-cycle promotion).
+    /// </summary>
+    public async Task<Result> MarkTerminallyFailedAsync(
+        string fileId, string providerId, string lastError, SqliteTransaction? transaction, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            await _connection.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE TailUploads
+                SET Status = 'FAILED',
+                    LastError = @LastError,
+                    LastAttemptUtc = @Now,
+                    AttemptCount = MAX(AttemptCount, 5)
+                WHERE FileID = @FileId AND ProviderID = @ProviderId
+                """,
+                new { LastError = lastError, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId },
+                transaction: transaction,
+                cancellationToken: ct)).ConfigureAwait(false);
+            return Result.Ok();
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogInformation("MarkTerminallyFailedAsync cancelled for file {FileId}", fileId);
+            return Result.Fail(ErrorCode.Cancelled, "Mark terminally failed was cancelled.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            _logger.LogError(ex, "Database error marking file {FileId} as terminally failed", fileId);
+            return Result.Fail(ErrorCode.DatabaseWriteFailed, "Failed to mark upload as terminally failed.", ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error marking file {FileId} as terminally failed", fileId);
+            return Result.Fail(ErrorCode.Unknown, "Unexpected error marking upload as terminally failed.", ex);
+        }
+    }
+
     /// <summary>Deletes the <c>UploadSessions</c> row after finalisation or abort.</summary>
-    public async Task<Result> DeleteSessionAsync(string fileId, string providerId, CancellationToken ct)
+    public Task<Result> DeleteSessionAsync(string fileId, string providerId, CancellationToken ct) =>
+        DeleteSessionAsync(fileId, providerId, transaction: null, ct);
+
+    /// <summary>
+    /// Deletes the <c>UploadSessions</c> row, enrolled in <paramref name="transaction"/>. Used by
+    /// §3.4 <c>UploadQueueService</c> to wrap the session delete with the matching status flip
+    /// in one transaction per blueprint §15.3 step 7c.
+    /// </summary>
+    public async Task<Result> DeleteSessionAsync(
+        string fileId, string providerId, SqliteTransaction? transaction, CancellationToken ct)
     {
         try
         {
@@ -335,6 +419,7 @@ public sealed class UploadQueueRepository
             await _connection.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM UploadSessions WHERE FileID = @FileId AND ProviderID = @ProviderId",
                 new { FileId = fileId, ProviderId = providerId },
+                transaction: transaction,
                 cancellationToken: ct)).ConfigureAwait(false);
             return Result.Ok();
         }
@@ -352,6 +437,65 @@ public sealed class UploadQueueRepository
         {
             _logger.LogError(ex, "Unexpected error deleting session for file {FileId}", fileId);
             return Result.Fail(ErrorCode.Unknown, "Unexpected error deleting upload session.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Reads the persisted <see cref="UploadSessionRow"/> for the given <paramref name="fileId"/>
+    /// and <paramref name="providerId"/>, returning a successful result with
+    /// <see langword="null"/> value when no in-flight session exists. Read-only — does not
+    /// insert, update, or delete. Used by §3.4 <c>UploadQueueService</c> on the resume path to
+    /// seed <see cref="Upload.RangeUploader.UploadAsync"/>'s <c>existingSession</c> parameter
+    /// without the upsert semantics of <see cref="GetOrCreateSessionAsync"/>.
+    /// </summary>
+    public async Task<Result<UploadSessionRow?>> LookupSessionAsync(
+        string fileId, string providerId, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            var row = await _connection.QuerySingleOrDefaultAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT FileID, ProviderID, SessionUri, SessionExpiresUtc,
+                       BytesUploaded, TotalBytes, LastActivityUtc
+                FROM UploadSessions
+                WHERE FileID = @FileId AND ProviderID = @ProviderId
+                """,
+                new { FileId = fileId, ProviderId = providerId },
+                cancellationToken: ct)).ConfigureAwait(false);
+
+            if (row is null)
+            {
+                return Result<UploadSessionRow?>.Ok(null);
+            }
+
+            var session = new UploadSessionRow(
+                FileId: (string)row.FileID,
+                ProviderId: (string)row.ProviderID,
+                SessionUri: (string)row.SessionUri,
+                SessionExpiresUtc: DateTime.Parse((string)row.SessionExpiresUtc, null,
+                    System.Globalization.DateTimeStyles.RoundtripKind),
+                BytesUploaded: (long)row.BytesUploaded,
+                TotalBytes: (long)row.TotalBytes,
+                LastActivityUtc: DateTime.Parse((string)row.LastActivityUtc, null,
+                    System.Globalization.DateTimeStyles.RoundtripKind));
+
+            return Result<UploadSessionRow?>.Ok(session);
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogInformation("LookupSessionAsync cancelled for file {FileId}", fileId);
+            return Result<UploadSessionRow?>.Fail(ErrorCode.Cancelled, "Session lookup was cancelled.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            _logger.LogError(ex, "Database error looking up session for file {FileId}", fileId);
+            return Result<UploadSessionRow?>.Fail(ErrorCode.DatabaseReadFailed, "Failed to look up upload session.", ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error looking up session for file {FileId}", fileId);
+            return Result<UploadSessionRow?>.Fail(ErrorCode.Unknown, "Unexpected error looking up upload session.", ex);
         }
     }
 }
