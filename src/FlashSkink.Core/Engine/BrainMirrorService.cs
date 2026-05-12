@@ -4,6 +4,7 @@ using FlashSkink.Core.Abstractions.Notifications;
 using FlashSkink.Core.Abstractions.Providers;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Abstractions.Time;
+using FlashSkink.Core.Crypto;
 using FlashSkink.Core.Storage;
 using FlashSkink.Core.Upload;
 using Microsoft.Data.Sqlite;
@@ -515,6 +516,20 @@ public sealed class BrainMirrorService : IAsyncDisposable
         }
     }
 
+    private static Result<string> DeriveBrainPragma(ReadOnlySpan<byte> dek)
+    {
+        Span<byte> brainKeySpan = stackalloc byte[32];
+        var deriveResult = new KeyDerivationService().DeriveBrainKey(dek, brainKeySpan);
+        if (!deriveResult.Success)
+        {
+            CryptographicOperations.ZeroMemory(brainKeySpan);
+            return Result<string>.Fail(deriveResult.Error!);
+        }
+        string pragma = $"PRAGMA key = \"x'{Convert.ToHexString(brainKeySpan)}'\"";
+        CryptographicOperations.ZeroMemory(brainKeySpan);
+        return Result<string>.Ok(pragma);
+    }
+
     private async Task<Result<string>> SnapshotAsync(DateTime nowUtc, CancellationToken ct)
     {
         string stagingDir = Path.Combine(_skinkRoot, ".flashskink", "staging");
@@ -529,6 +544,19 @@ public sealed class BrainMirrorService : IAsyncDisposable
             Directory.CreateDirectory(stagingDir);
             AtomicWriteHelper.FsyncDirectory(stagingDir);
 
+            // Derive the brain key on the calling thread (mirrors BrainConnectionFactory's
+            // pattern). SQLCipher's BackupDatabase requires the destination connection to be
+            // opened with the SAME key as the source; without this the backup faults with a
+            // SqliteException surfaced via the catch below as ErrorCode.DatabaseReadFailed.
+            // The brain key span is confined to a static local that zeroes before returning,
+            // so it never crosses the await boundary below (Principle 20).
+            var keyResult = DeriveBrainPragma(_dek.Span);
+            if (!keyResult.Success)
+            {
+                return Result<string>.Fail(keyResult.Error!);
+            }
+            string pragmaKey = keyResult.Value!;
+
             // SqliteConnection.BackupDatabase is synchronous; offload so we don't block the
             // calling sync-context.
             await Task.Run(() =>
@@ -540,6 +568,11 @@ public sealed class BrainMirrorService : IAsyncDisposable
                 };
                 using var dest = new SqliteConnection(csb.ConnectionString);
                 dest.Open();
+                using (var keyCmd = dest.CreateCommand())
+                {
+                    keyCmd.CommandText = pragmaKey;
+                    keyCmd.ExecuteNonQuery();
+                }
                 _brain.BackupDatabase(dest);
                 dest.Close();
             }, ct).ConfigureAwait(false);

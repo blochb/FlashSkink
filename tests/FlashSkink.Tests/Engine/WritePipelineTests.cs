@@ -2,6 +2,7 @@ using System.Buffers;
 using System.IO.Hashing;
 using System.Security.Cryptography;
 using Dapper;
+using FlashSkink.Core.Abstractions.Models;
 using FlashSkink.Core.Abstractions.Notifications;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Crypto;

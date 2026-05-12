@@ -1,7 +1,7 @@
-namespace FlashSkink.Core.Engine;
+namespace FlashSkink.Core.Abstractions.Models;
 
 /// <summary>
-/// Indicates whether a <see cref="WritePipeline.ExecuteAsync"/> call wrote new content to the
+/// Indicates whether a <c>WritePipeline.ExecuteAsync</c> call wrote new content to the
 /// skink or detected that the file was already present and unchanged (change-detection
 /// short-circuit — §14.1 stage 2).
 /// </summary>

@@ -3,11 +3,15 @@ using System.Text;
 using Dapper;
 using FlashSkink.Core.Abstractions.Models;
 using FlashSkink.Core.Abstractions.Notifications;
+using FlashSkink.Core.Abstractions.Providers;
 using FlashSkink.Core.Abstractions.Results;
+using FlashSkink.Core.Abstractions.Time;
 using FlashSkink.Core.Crypto;
 using FlashSkink.Core.Engine;
 using FlashSkink.Core.Metadata;
+using FlashSkink.Core.Providers;
 using FlashSkink.Core.Storage;
+using FlashSkink.Core.Upload;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.IO;
@@ -30,6 +34,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     private readonly VolumeLifecycle _lifecycle;
     private readonly KeyVault _keyVault;
     private readonly string _vaultPath;
+    private readonly IProviderRegistry _providerRegistry;
+    private readonly INetworkAvailabilityMonitor _networkMonitor;
+    private readonly IClock _clock;
+    private readonly UploadWakeupSignal _wakeupSignal;
+    private readonly UploadQueueService _uploadQueueService;
+    private readonly BrainMirrorService _brainMirrorService;
+    private readonly CancellationTokenSource _volumeCts;
     private int _disposed;
 
     // ── Events (declared; raisers arrive in later phases) ────────────────────
@@ -67,7 +78,14 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ReadPipeline readPipeline,
         VolumeLifecycle lifecycle,
         KeyVault keyVault,
-        string vaultPath)
+        string vaultPath,
+        IProviderRegistry providerRegistry,
+        INetworkAvailabilityMonitor networkMonitor,
+        IClock clock,
+        UploadWakeupSignal wakeupSignal,
+        UploadQueueService uploadQueueService,
+        BrainMirrorService brainMirrorService,
+        CancellationTokenSource volumeCts)
     {
         _session = session;
         _context = context;
@@ -76,6 +94,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         _lifecycle = lifecycle;
         _keyVault = keyVault;
         _vaultPath = vaultPath;
+        _providerRegistry = providerRegistry;
+        _networkMonitor = networkMonitor;
+        _clock = clock;
+        _wakeupSignal = wakeupSignal;
+        _uploadQueueService = uploadQueueService;
+        _brainMirrorService = brainMirrorService;
+        _volumeCts = volumeCts;
     }
 
     // ── Static factory methods ───────────────────────────────────────────────
@@ -96,7 +121,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         var stagingPath = Path.Combine(skinkRoot, ".flashskink", "staging");
 
         var services = BuildServices(options);
-        var (loggerFactory, streamManager, kdf, mnemonicService, keyVault, brainFactory, migrationRunner, lifecycle) = services;
+        var (_, streamManager, _, mnemonicService, keyVault, brainFactory, migrationRunner, lifecycle) = services;
 
         byte[]? passwordBytes = null;
         byte[]? dek = null;
@@ -159,8 +184,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             brainCreated = false;
 
             var session = new VolumeSession(ownedDek, ownedConnection);
-            var volume = BuildVolumeFromSession(session, skinkRoot, streamManager,
-                options.NotificationBus, loggerFactory, lifecycle, keyVault, vaultPath);
+            var volume = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
+                streamManager, lifecycle, keyVault, vaultPath).ConfigureAwait(false);
             return Result<FlashSkinkVolume>.Ok(volume);
         }
         catch (OperationCanceledException ex)
@@ -208,7 +233,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         var stagingPath = Path.Combine(skinkRoot, ".flashskink", "staging");
 
         var services = BuildServices(options);
-        var (loggerFactory, streamManager, _, _, keyVault, _, _, lifecycle) = services;
+        var (_, streamManager, _, _, keyVault, _, _, lifecycle) = services;
 
         byte[]? passwordBytes = null;
         VolumeSession? session = null;
@@ -233,8 +258,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var ownedSession = session;
             session = null;
 
-            var volume = BuildVolumeFromSession(ownedSession, skinkRoot, streamManager,
-                options.NotificationBus, loggerFactory, lifecycle, keyVault, vaultPath);
+            var volume = await BuildVolumeFromSessionAsync(ownedSession, skinkRoot, options,
+                streamManager, lifecycle, keyVault, vaultPath).ConfigureAwait(false);
             return Result<FlashSkinkVolume>.Ok(volume);
         }
         catch (OperationCanceledException ex)
@@ -274,7 +299,99 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         catch (OperationCanceledException ex) { return Result<WriteReceipt>.Fail(ErrorCode.Cancelled, "Write cancelled.", ex); }
         try
         {
-            return await _writePipeline.ExecuteAsync(source, virtualPath, _context, ct).ConfigureAwait(false);
+            var result = await _writePipeline.ExecuteAsync(source, virtualPath, _context, ct).ConfigureAwait(false);
+            if (result.Success)
+            {
+                _wakeupSignal.Pulse();
+                _brainMirrorService.NotifyWriteCommitted();
+            }
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Writes a batch of items sequentially under the volume gate (cross-cutting decision 1 of
+    /// Phase 2 — single-writer serialisation). Per §11.1, the bulk operation is not transactional
+    /// across items; each item is an independent Phase-1 commit and per-item failures live inside
+    /// the returned <see cref="BulkWriteReceipt"/>. The outer <see cref="Result{T}"/> only fails
+    /// on pre-condition errors (null argument list, disposed volume, or cancellation observed
+    /// while acquiring the gate).
+    /// </summary>
+    /// <remarks>
+    /// When a <see cref="BulkWriteItem.OwnedSource"/> is provided, it is disposed in a
+    /// <c>finally</c> block after each item's pipeline call — both on success and on failure.
+    /// Cancellation observed mid-bulk records the in-flight item with
+    /// <see cref="ErrorCode.Cancelled"/>, stops iterating, and returns the partial receipt;
+    /// already-committed items remain committed. A single wakeup pulse is sent at the end of
+    /// the bulk when at least one item succeeded — the upload-queue channel coalesces to
+    /// capacity 1 and the brain-mirror debounce window absorbs multiple commits, so per-item
+    /// pulses are not needed.
+    /// </remarks>
+    public async Task<Result<BulkWriteReceipt>> WriteBulkAsync(
+        IReadOnlyList<BulkWriteItem> items,
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        if (items is null)
+        {
+            return Result<BulkWriteReceipt>.Fail(
+                ErrorCode.InvalidArgument, "Bulk write items list must not be null.");
+        }
+
+        try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException ex)
+        {
+            return Result<BulkWriteReceipt>.Fail(ErrorCode.Cancelled, "Bulk write cancelled.", ex);
+        }
+
+        var results = new List<BulkItemResult>(items.Count);
+        bool sawSuccess = false;
+        try
+        {
+            foreach (var item in items)
+            {
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var outcome = await _writePipeline.ExecuteAsync(
+                        item.Source, item.VirtualPath, _context, ct).ConfigureAwait(false);
+                    results.Add(new BulkItemResult
+                    {
+                        VirtualPath = item.VirtualPath,
+                        Outcome = outcome,
+                    });
+                    if (outcome.Success)
+                    {
+                        sawSuccess = true;
+                    }
+                }
+                catch (OperationCanceledException ocex)
+                {
+                    results.Add(new BulkItemResult
+                    {
+                        VirtualPath = item.VirtualPath,
+                        Outcome = Result<WriteReceipt>.Fail(
+                            ErrorCode.Cancelled, "Bulk write cancelled.", ocex),
+                    });
+                    break;
+                }
+                finally
+                {
+                    item.OwnedSource?.Dispose();
+                }
+            }
+
+            if (sawSuccess)
+            {
+                _wakeupSignal.Pulse();
+                _brainMirrorService.NotifyWriteCommitted();
+            }
+
+            return Result<BulkWriteReceipt>.Ok(new BulkWriteReceipt { Items = results });
         }
         finally
         {
@@ -582,6 +699,110 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         }
     }
 
+    // ── Tail registration (Phase 3 internal admin entry; Phase 4 replaces) ──
+
+    /// <summary>
+    /// Inserts a <c>Providers</c> row with no OAuth credentials (token / secret / client-id
+    /// columns stay <see langword="null"/>; Phase 4 wires those in), registers
+    /// <paramref name="provider"/> in the volume's <see cref="IProviderRegistry"/>, and pulses
+    /// the upload wakeup signal so the orchestrator picks the new tail up on its next tick.
+    /// </summary>
+    /// <remarks>
+    /// Idempotent on the brain row: when a <c>Providers</c> row with the same
+    /// <paramref name="providerId"/> already exists, the insert is skipped and
+    /// <see cref="Result.Ok"/> is returned. The <see cref="IStorageProvider"/> instance is
+    /// registered in the in-memory registry regardless — the in-memory registry is rebuilt on
+    /// every volume open. Pre-existing <c>TailUploads</c> rows are not mutated; Phase 4's
+    /// public <c>AddTailAsync</c> will add the §11.1 "queue every existing file" backfill.
+    /// </remarks>
+    internal async Task<Result> RegisterTailAsync(
+        string providerId,
+        string providerType,
+        string displayName,
+        string? providerConfigJson,
+        IStorageProvider provider,
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        if (string.IsNullOrWhiteSpace(providerId)
+            || string.IsNullOrWhiteSpace(providerType)
+            || string.IsNullOrWhiteSpace(displayName)
+            || provider is null)
+        {
+            return Result.Fail(ErrorCode.InvalidArgument,
+                "providerId, providerType, displayName, and provider must all be non-empty.");
+        }
+
+        if (_providerRegistry is not InMemoryProviderRegistry inMem)
+        {
+            return Result.Fail(ErrorCode.InvalidArgument,
+                "RegisterTailAsync requires an InMemoryProviderRegistry-backed volume.");
+        }
+
+        try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException ex)
+        {
+            return Result.Fail(ErrorCode.Cancelled, "Register tail cancelled.", ex);
+        }
+
+        try
+        {
+            var connection = _context.BrainConnection;
+            var existing = await connection.QuerySingleOrDefaultAsync<string?>(
+                new CommandDefinition(
+                    "SELECT ProviderID FROM Providers WHERE ProviderID = @ProviderId",
+                    new { ProviderId = providerId },
+                    cancellationToken: ct))
+                .ConfigureAwait(false);
+
+            if (existing is null)
+            {
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "INSERT INTO Providers " +
+                    "(ProviderID, ProviderType, DisplayName, ProviderConfig, HealthStatus, AddedUtc, IsActive) " +
+                    "VALUES (@ProviderId, @ProviderType, @DisplayName, @ProviderConfig, 'Healthy', @AddedUtc, 1)",
+                    new
+                    {
+                        ProviderId = providerId,
+                        ProviderType = providerType,
+                        DisplayName = displayName,
+                        ProviderConfig = providerConfigJson,
+                        AddedUtc = DateTime.UtcNow.ToString("O"),
+                    },
+                    cancellationToken: ct)).ConfigureAwait(false);
+            }
+
+            // Always register the in-process instance — the in-memory registry is rebuilt
+            // every volume open, so even an idempotent re-registration must put the adapter back.
+            inMem.Register(providerId, provider);
+            _wakeupSignal.Pulse();
+            return Result.Ok();
+        }
+        catch (OperationCanceledException ex)
+        {
+            return Result.Fail(ErrorCode.Cancelled, "Register tail cancelled.", ex);
+        }
+        catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
+        {
+            return Result.Fail(ErrorCode.PathConflict,
+                $"A provider with ID '{providerId}' already exists.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            return Result.Fail(ErrorCode.DatabaseWriteFailed,
+                "Failed to register tail.", ex);
+        }
+        catch (Exception ex)
+        {
+            return Result.Fail(ErrorCode.Unknown,
+                "Unexpected error registering tail.", ex);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     // ── Disposal ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -600,8 +821,33 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
+            // Step 1 — cancel the volume CTS. Workers and timers observe this at the next ct
+            // check and exit their loops.
+            _volumeCts.Cancel();
+
+            // Step 2 — drain the upload queue. Workers may be mid-brain-transaction
+            // (MarkUploading / MarkUploaded / DeleteSession) on the shared SqliteConnection;
+            // wait for them to exit before any other code touches the connection. Microsoft's
+            // SqliteConnection is not thread-safe, so this ordering is load-bearing.
+            // Note: the dev plan §3.6 originally specified "mirror first, queue second" with
+            // a rationale about per-provider HTTP contention (cloud-provider concern in
+            // Phase 4). The shared brain connection is the practical race in Phase 3, so
+            // queue-first is the correct ordering today. See pr-3.6.md drift note 5.
+            await _uploadQueueService.DisposeAsync().ConfigureAwait(false);
+
+            // Step 3 — brain mirror. With the queue drained, the brain connection has no
+            // concurrent writers; the final-mirror call's BackupDatabase snapshot is safe.
+            // DisposeAsync runs the final mirror under CancellationToken.None through every
+            // active tail (Principle 17 — compensation must complete), then awaits the
+            // timer and debounce tasks (5 s budget each).
+            await _brainMirrorService.DisposeAsync().ConfigureAwait(false);
+
+            // Step 4 — existing teardown: dispose VolumeContext (IncrementalHash,
+            // CompressionService), then VolumeSession (zero DEK, dispose brain connection).
             _context.Dispose();
             await _session.DisposeAsync().ConfigureAwait(false);
+
+            _volumeCts.Dispose();
         }
         finally
         {
@@ -638,16 +884,17 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         return (lf, sm, kdf, mnemonic, vault, brainFactory, migrations, lifecycle);
     }
 
-    private static FlashSkinkVolume BuildVolumeFromSession(
+    private static async Task<FlashSkinkVolume> BuildVolumeFromSessionAsync(
         VolumeSession session,
         string skinkRoot,
+        VolumeCreationOptions options,
         RecyclableMemoryStreamManager streamManager,
-        INotificationBus notificationBus,
-        ILoggerFactory loggerFactory,
         VolumeLifecycle lifecycle,
         KeyVault keyVault,
         string vaultPath)
     {
+        var loggerFactory = options.LoggerFactory;
+        var notificationBus = options.NotificationBus;
         var connection = session.BrainConnection!;
         var dek = new ReadOnlyMemory<byte>(session.Dek);
 
@@ -669,8 +916,63 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             new FileTypeService(), new EntropyDetector(), loggerFactory);
         var readPipeline = new ReadPipeline(loggerFactory);
 
+        // ── Phase 3 background services ─────────────────────────────────────
+        var registry = options.ProviderRegistry
+            ?? new InMemoryProviderRegistry(loggerFactory.CreateLogger<InMemoryProviderRegistry>());
+        var netMonitor = options.NetworkMonitor ?? new AlwaysOnlineNetworkMonitor();
+        var clock = options.Clock ?? SystemClock.Instance;
+
+        var uploadQueueRepo = new UploadQueueRepository(
+            connection, loggerFactory.CreateLogger<UploadQueueRepository>());
+        var retryPolicy = new RetryPolicy();
+        var rangeUploader = new RangeUploader(
+            uploadQueueRepo, clock, retryPolicy,
+            loggerFactory.CreateLogger<RangeUploader>());
+
+        var wakeupSignal = new UploadWakeupSignal();
+
+        var uploadQueueService = new UploadQueueService(
+            uploadQueueRepo, blobs, files, activityLog,
+            registry, netMonitor, notificationBus,
+            rangeUploader, retryPolicy, clock, wakeupSignal,
+            connection, skinkRoot,
+            loggerFactory.CreateLogger<UploadQueueService>());
+
+        var brainMirrorService = new BrainMirrorService(
+            connection, dek, skinkRoot, registry,
+            notificationBus, clock,
+            loggerFactory.CreateLogger<BrainMirrorService>());
+
+        var volumeCts = new CancellationTokenSource();
+
+        var queueStartResult = uploadQueueService.Start(volumeCts.Token);
+        if (!queueStartResult.Success)
+        {
+            await uploadQueueService.DisposeAsync().ConfigureAwait(false);
+            await brainMirrorService.DisposeAsync().ConfigureAwait(false);
+            volumeCts.Dispose();
+            context.Dispose();
+            await session.DisposeAsync().ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Upload queue service failed to start: {queueStartResult.Error!.Code}");
+        }
+
+        var mirrorStartResult = brainMirrorService.Start(volumeCts.Token);
+        if (!mirrorStartResult.Success)
+        {
+            await uploadQueueService.DisposeAsync().ConfigureAwait(false);
+            await brainMirrorService.DisposeAsync().ConfigureAwait(false);
+            volumeCts.Dispose();
+            context.Dispose();
+            await session.DisposeAsync().ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Brain mirror service failed to start: {mirrorStartResult.Error!.Code}");
+        }
+
         return new FlashSkinkVolume(
-            session, context, writePipeline, readPipeline, lifecycle, keyVault, vaultPath);
+            session, context, writePipeline, readPipeline, lifecycle, keyVault, vaultPath,
+            registry, netMonitor, clock, wakeupSignal, uploadQueueService, brainMirrorService,
+            volumeCts);
     }
 
     private static async Task<Result> SeedInitialSettingsAsync(

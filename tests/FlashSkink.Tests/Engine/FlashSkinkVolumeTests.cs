@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Dapper;
+using FlashSkink.Core.Abstractions.Models;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Crypto;
 using FlashSkink.Core.Metadata;
@@ -167,7 +168,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
         var second = await volume.WriteFileAsync(new MemoryStream(payload), "f.txt");
 
         Assert.True(second.Success);
-        Assert.Equal(Core.Engine.WriteStatus.Unchanged, second.Value!.Status);
+        Assert.Equal(WriteStatus.Unchanged, second.Value!.Status);
     }
 
     [Fact]
