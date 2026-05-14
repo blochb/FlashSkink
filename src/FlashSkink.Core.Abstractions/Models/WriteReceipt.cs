@@ -1,9 +1,9 @@
-namespace FlashSkink.Core.Engine;
+namespace FlashSkink.Core.Abstractions.Models;
 
 /// <summary>
-/// The result returned by a successful <see cref="WritePipeline.ExecuteAsync"/> call.
-/// Carries the identifiers and size metrics for the committed file and blob, plus the detected
-/// MIME type and extension. On the <see cref="WriteStatus.Unchanged"/> path, <see cref="BlobId"/>
+/// The result returned by a successful <c>WritePipeline.ExecuteAsync</c> call. Carries the
+/// identifiers and size metrics for the committed file and blob, plus the detected MIME type
+/// and extension. On the <see cref="WriteStatus.Unchanged"/> path, <see cref="BlobId"/>
 /// identifies the pre-existing blob and <see cref="EncryptedSize"/> is the pre-existing blob's
 /// encrypted size.
 /// </summary>
@@ -27,7 +27,7 @@ public sealed record WriteReceipt
     /// <summary>Number of bytes in the on-disk encrypted blob (header + ciphertext + tag).</summary>
     public required long EncryptedSize { get; init; }
 
-    /// <summary>MIME type detected by <see cref="FileTypeService"/>; <see langword="null"/> when unrecognised.</summary>
+    /// <summary>MIME type detected by file-type detection; <see langword="null"/> when unrecognised.</summary>
     public string? MimeType { get; init; }
 
     /// <summary>

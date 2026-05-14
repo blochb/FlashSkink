@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using Dapper;
 using FlashSkink.Core.Abstractions.Results;
+using FlashSkink.Core.Crypto;
 using FlashSkink.Core.Engine;
 using FlashSkink.Core.Providers;
 using FlashSkink.Core.Upload;
@@ -37,8 +38,13 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         Directory.CreateDirectory(_skinkRoot);
         Directory.CreateDirectory(_tailRoot);
 
-        _connection = BrainTestHelper.CreateInMemoryConnection();
         _dek = RandomNumberGenerator.GetBytes(32);
+        // Production opens the brain with SQLCipher keyed off the DEK; the mirror's
+        // snapshot path now requires source-and-dest keys to match (see BrainMirrorService
+        // SnapshotAsync). The in-memory connection must therefore be keyed the same way
+        // as production. Plain-SQLite was insufficient and masked the SQLCipher mismatch
+        // until §3.6 surfaced it.
+        _connection = CreateKeyedInMemoryConnection(_dek);
         _registry = new InMemoryProviderRegistry(NullLogger<InMemoryProviderRegistry>.Instance);
         _bus = new RecordingNotificationBus();
         _clock = new FakeClock(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
@@ -68,6 +74,26 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────────
+
+    private static SqliteConnection CreateKeyedInMemoryConnection(byte[] dek)
+    {
+        var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+
+        Span<byte> brainKey = stackalloc byte[32];
+        new KeyDerivationService().DeriveBrainKey(dek, brainKey);
+        using (var keyCmd = connection.CreateCommand())
+        {
+            keyCmd.CommandText = $"PRAGMA key = \"x'{Convert.ToHexString(brainKey)}'\"";
+            keyCmd.ExecuteNonQuery();
+        }
+        CryptographicOperations.ZeroMemory(brainKey);
+
+        using var fk = connection.CreateCommand();
+        fk.CommandText = "PRAGMA foreign_keys = ON";
+        fk.ExecuteNonQuery();
+        return connection;
+    }
 
     private BrainMirrorService CreateService(long? maxBytes = null)
     {
@@ -262,6 +288,18 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         var csb = new SqliteConnectionStringBuilder { DataSource = recoveredPath, Pooling = false };
         using var recovered = new SqliteConnection(csb.ConnectionString);
         recovered.Open();
+        // The recovered DB is SQLCipher-encrypted with the brain key (the source brain was
+        // keyed by the test fixture; SnapshotAsync requires source/dest keys to match).
+        // Set the same brain key here so the SELECT can read the encrypted page.
+        Span<byte> recoveredBrainKey = stackalloc byte[32];
+        new KeyDerivationService().DeriveBrainKey(_dek, recoveredBrainKey);
+        using (var keyCmd = recovered.CreateCommand())
+        {
+            keyCmd.CommandText = $"PRAGMA key = \"x'{Convert.ToHexString(recoveredBrainKey)}'\"";
+            keyCmd.ExecuteNonQuery();
+        }
+        CryptographicOperations.ZeroMemory(recoveredBrainKey);
+
         var name = await recovered.QuerySingleOrDefaultAsync<string>(
             "SELECT Name FROM Files WHERE FileID = 'round-trip-file'");
         Assert.Equal("round-trip-marker", name);
