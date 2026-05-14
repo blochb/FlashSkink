@@ -337,8 +337,11 @@ public sealed class RangeUploader
             ? DateTime.MaxValue
             : session.ExpiresAt.UtcDateTime;
 
+        // BeginUploadAsync has committed a session at the provider; the row write must complete
+        // even if ct is already signalled — losing the session URI makes the upload non-resumable.
+        // CancellationToken.None per §6.7 / Principle 17.
         var persist = await _uploadQueueRepository
-            .GetOrCreateSessionAsync(fileId, providerId, session.SessionUri, expiresUtc, session.TotalBytes, ct)
+            .GetOrCreateSessionAsync(fileId, providerId, session.SessionUri, expiresUtc, session.TotalBytes, CancellationToken.None)
             .ConfigureAwait(false);
         if (!persist.Success)
         {
