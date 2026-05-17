@@ -36,15 +36,6 @@ jobs:
       - name: Test
         run: dotnet test --no-build -c Release
 
-      - name: Publish UI
-        run: >
-          dotnet publish src/FlashSkink.UI.Avalonia
-          -c Release
-          --self-contained
-          -r ${{ matrix.rid }}
-          -p:PublishSingleFile=true
-          -o publish/ui/${{ matrix.rid }}
-
       - name: Publish CLI
         run: >
           dotnet publish src/FlashSkink.CLI

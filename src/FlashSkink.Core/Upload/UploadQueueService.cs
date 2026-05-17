@@ -602,11 +602,15 @@ public sealed class UploadQueueService : IAsyncDisposable
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
         UploadOutcome outcome, CancellationToken ct)
     {
-        await using (var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(ct)
+        // The upload has completed — the brain transaction is non-cancellable (Principle 17).
+        // Observe cancellation before the critical section; every await inside uses
+        // CancellationToken.None so a concurrent DisposeAsync cannot race the commit.
+        ct.ThrowIfCancellationRequested();
+        await using (var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(CancellationToken.None)
             .ConfigureAwait(false))
         {
             var markUploaded = await _uploadQueueRepository
-                .MarkUploadedAsync(row.FileId, row.ProviderId, outcome.RemoteId!, tx, ct)
+                .MarkUploadedAsync(row.FileId, row.ProviderId, outcome.RemoteId!, tx, CancellationToken.None)
                 .ConfigureAwait(false);
             if (!markUploaded.Success)
             {
@@ -617,7 +621,7 @@ public sealed class UploadQueueService : IAsyncDisposable
             }
 
             var deleteSession = await _uploadQueueRepository
-                .DeleteSessionAsync(row.FileId, row.ProviderId, tx, ct)
+                .DeleteSessionAsync(row.FileId, row.ProviderId, tx, CancellationToken.None)
                 .ConfigureAwait(false);
             if (!deleteSession.Success)
             {
@@ -627,7 +631,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                     "delete session").ConfigureAwait(false);
             }
 
-            await tx.CommitAsync(ct).ConfigureAwait(false);
+            await tx.CommitAsync(CancellationToken.None).ConfigureAwait(false);
         }
 
         // Activity log append uses CancellationToken.None — post-commit bookkeeping must not
