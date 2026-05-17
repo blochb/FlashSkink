@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using FlashSkink.Core.Abstractions.Crypto;
 using FlashSkink.Core.Abstractions.Results;
 
 namespace FlashSkink.Core.Crypto;
@@ -128,8 +129,14 @@ public sealed class KeyVault
     /// <see cref="ErrorCode.InvalidPassword"/> when the mnemonic produces the wrong KEK.
     /// Returns the DEK — caller must zero it.
     /// </summary>
+    /// <param name="phrase">
+    /// The recovery phrase. This method does <b>not</b> dispose <paramref name="phrase"/>;
+    /// the caller (typically a CLI handler that constructed it via
+    /// <see cref="RecoveryPhrase.FromUserInput"/>) retains ownership and is responsible
+    /// for disposal after this call returns.
+    /// </param>
     public async Task<Result<byte[]>> UnlockFromMnemonicAsync(
-        string vaultPath, string[] words, CancellationToken ct)
+        string vaultPath, RecoveryPhrase phrase, CancellationToken ct)
     {
         var seed = Array.Empty<byte>();
         var kek = Array.Empty<byte>();
@@ -145,7 +152,7 @@ public sealed class KeyVault
 
             var header = readResult.Value!;
 
-            var seedResult = _mnemonic.ToSeed(words);
+            var seedResult = _mnemonic.ToSeed(phrase);
             if (!seedResult.Success)
             {
                 return Result<byte[]>.Fail(seedResult.Error!);
