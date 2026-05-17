@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using Dapper;
@@ -274,8 +275,19 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 return Result<FlashSkinkVolume>.Fail(openResult.Error!);
             }
 
-            // Take ownership so the finally block does not dispose the session.
             session = openResult.Value!;
+
+            // Backfill volume identity and stamp the open-time app-version (Refactor PR A).
+            // Runs before ownership transfer so a failure leaves `session` non-null and the
+            // existing finally block disposes it cleanly.
+            var backfillResult = await BackfillAndStampOnOpenAsync(
+                session.BrainConnection!, ct).ConfigureAwait(false);
+            if (!backfillResult.Success)
+            {
+                return Result<FlashSkinkVolume>.Fail(backfillResult.Error!);
+            }
+
+            // Take ownership so the finally block does not dispose the session.
             var ownedSession = session;
             session = null;
 
@@ -996,6 +1008,16 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             volumeCts);
     }
 
+    /// <summary>
+    /// Writes the initial <c>Settings</c> rows at volume creation: grace period, audit
+    /// interval, creation timestamp, the random <c>VolumeID</c> GUID, and three app-version
+    /// rows (<c>AppVersionCreatedWith</c>, <c>AppVersionLastOpened</c>,
+    /// <c>AppVersionLastOpenedUtc</c>). <c>VolumeID</c> is generated via
+    /// <see cref="Guid.NewGuid"/> and is intentionally independent of any cryptographic key
+    /// material — two skinks initialised from the same recovery phrase are distinct volumes
+    /// (blueprint §31). App-version values come from
+    /// <see cref="AssemblyInformationalVersionAttribute"/> (MinVer-stamped at build time).
+    /// </summary>
     private static async Task<Result> SeedInitialSettingsAsync(
         SqliteConnection connection,
         CancellationToken ct)
@@ -1004,11 +1026,28 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         {
             ct.ThrowIfCancellationRequested();
             const string upsert = "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@Key, @Value)";
-            var appVersion = typeof(FlashSkinkVolume).Assembly.GetName().Version?.ToString() ?? "0.0.0.0";
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "GracePeriodDays", Value = "30" }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = DateTime.UtcNow.ToString("O") }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersion", Value = appVersion }, cancellationToken: ct)).ConfigureAwait(false);
+            var appVersion = GetAppInformationalVersion();
+            var nowUtc = DateTime.UtcNow.ToString("O");
+            var volumeId = Guid.NewGuid().ToString("D");
+
+            // Wrap all seven upserts in a single transaction so a SqliteException or
+            // cancellation mid-sequence leaves the brain unchanged. CreateAsync's failure
+            // path deletes the brain file anyway, but the transaction closes the narrow
+            // partial-seed window and matches the pattern used in BackfillAndStampOnOpenAsync.
+            using var tx = connection.BeginTransaction();
+
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "GracePeriodDays", Value = "30" }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeID", Value = volumeId }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionCreatedWith", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpened", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpenedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+
+            // If Commit throws, SqliteTransaction.Dispose() rolls back the underlying
+            // SQLite transaction during stack unwinding; the original exception is caught
+            // below and returned as Result.Fail with the brain in its pre-transaction state.
+            tx.Commit();
             // Recovery phrase is intentionally NOT persisted here — it is returned to the
             // caller exactly once via VolumeCreationReceipt.RecoveryPhrase. See blueprint
             // §18.8 ("not persisted by FlashSkink") and §29 Decision A16.
@@ -1027,6 +1066,119 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             return Result.Fail(ErrorCode.Unknown, "Unexpected error seeding settings.", ex);
         }
     }
+
+    /// <summary>
+    /// Idempotent post-open maintenance: writes the random <c>VolumeID</c> GUID if missing
+    /// from a legacy brain, migrates the legacy <c>AppVersion</c> key to
+    /// <c>AppVersionCreatedWith</c> if present, and always overwrites
+    /// <c>AppVersionLastOpened</c> and <c>AppVersionLastOpenedUtc</c> with the current
+    /// app version and wall-clock time. All operations run in a single transaction so a
+    /// failure mid-flight leaves the brain unchanged (blueprint §31, CLAUDE.md Principles
+    /// 33 / 34). Safe to call on a brand-new brain just seeded by
+    /// <see cref="SeedInitialSettingsAsync"/>: the backfills are no-ops; only the
+    /// last-opened stamps refresh (the seed and the open happen at the same moment, so
+    /// the refresh writes the same values).
+    /// </summary>
+    private static async Task<Result> BackfillAndStampOnOpenAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var nowUtc = DateTime.UtcNow.ToString("O");
+            var appVersion = GetAppInformationalVersion();
+            const string upsert = "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@Key, @Value)";
+
+            using var tx = connection.BeginTransaction();
+
+            // 1. Backfill VolumeID if a legacy brain lacks it.
+            var existingVolumeId = await connection.QuerySingleOrDefaultAsync<string?>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'VolumeID'",
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+            if (existingVolumeId is null)
+            {
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "INSERT INTO Settings (Key, Value) VALUES ('VolumeID', @Value)",
+                    new { Value = Guid.NewGuid().ToString("D") },
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+            }
+
+            // 2. Backfill AppVersionCreatedWith from the legacy AppVersion key if present.
+            //    If both are missing (hand-edited or partially-corrupt brain), seed a
+            //    distinguishable sentinel so audit logs can tell "we don't know" apart
+            //    from "we don't know specifically because MinVer wasn't wired" ("0.0.0-unknown").
+            var existingCreatedWith = await connection.QuerySingleOrDefaultAsync<string?>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'AppVersionCreatedWith'",
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+            if (existingCreatedWith is null)
+            {
+                var legacyAppVersion = await connection.QuerySingleOrDefaultAsync<string?>(
+                    new CommandDefinition(
+                        "SELECT Value FROM Settings WHERE Key = 'AppVersion'",
+                        transaction: tx,
+                        cancellationToken: ct)).ConfigureAwait(false);
+                var seedValue = legacyAppVersion ?? "unknown-legacy";
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "INSERT INTO Settings (Key, Value) VALUES ('AppVersionCreatedWith', @Value)",
+                    new { Value = seedValue },
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+                if (legacyAppVersion is not null)
+                {
+                    await connection.ExecuteAsync(new CommandDefinition(
+                        "DELETE FROM Settings WHERE Key = 'AppVersion'",
+                        transaction: tx,
+                        cancellationToken: ct)).ConfigureAwait(false);
+                }
+            }
+
+            // 3. Always overwrite the open-time stamps so they reflect the current opener.
+            await connection.ExecuteAsync(new CommandDefinition(upsert,
+                new { Key = "AppVersionLastOpened", Value = appVersion },
+                transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert,
+                new { Key = "AppVersionLastOpenedUtc", Value = nowUtc },
+                transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+
+            // If Commit throws, SqliteTransaction.Dispose() rolls back the underlying
+            // SQLite transaction during stack unwinding; the original exception is caught
+            // below and returned as Result.Fail with the brain in its pre-transaction state.
+            tx.Commit();
+            return Result.Ok();
+        }
+        catch (OperationCanceledException ex)
+        {
+            return Result.Fail(ErrorCode.Cancelled, "Backfill-and-stamp on open was cancelled.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            return Result.Fail(ErrorCode.DatabaseWriteFailed,
+                $"Failed to backfill and stamp settings on open. SqliteErrorCode={ex.SqliteErrorCode}.", ex);
+        }
+        catch (Exception ex)
+        {
+            return Result.Fail(ErrorCode.Unknown,
+                "Unexpected error during backfill-and-stamp on open.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Returns the MinVer-stamped informational version of the
+    /// <c>FlashSkink.Core</c> assembly (a SemVer string with optional commit suffix),
+    /// or the sentinel <c>"0.0.0-unknown"</c> when the attribute is missing. Never throws.
+    /// </summary>
+    private static string GetAppInformationalVersion()
+        => typeof(FlashSkinkVolume).Assembly
+               .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+               .InformationalVersion
+           ?? "0.0.0-unknown";
 
     private static Task FsyncDirectoryAsync(string path)
     {

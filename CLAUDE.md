@@ -335,7 +335,11 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 
 31. **Keys are zeroed on volume close.** DEK, KEK, brain key, password buffer, and decrypted OAuth tokens use `CryptographicOperations.ZeroMemory` on release. Session keys live only in process memory and never touch disk unencrypted. (Blueprint §18.6, §18.8)
 
-32. **No telemetry, no update checks, no network chatter.** FlashSkink never phones home. Decisions B12-a and B13-a. Violating this is a product-positioning failure, not just a bug. (Blueprint §29.2)
+32. **No telemetry, no update checks, no network chatter.** FlashSkink never phones home. Decisions B12-a and B13-a. Violating this is a product-positioning failure, not just a bug. (Blueprint §29.2, §31.5)
+
+33. **Volume identity is a random GUID, never derived from recovery-phrase material.** The skink stores it in `Settings["VolumeID"]`, written at create time by `FlashSkinkVolume.CreateAsync` and backfilled at open time on legacy brains by `BackfillAndStampOnOpenAsync`. Volume identity is independent of cryptographic key material so that two skinks initialised from the same recovery phrase are distinct *volumes* even though they share encryption keys — that separation is load-bearing for the deferred clone-detection / witness work (post-V1 Phase 3.5). `VolumeID` is not a secret; it may appear in logs, audit entries, notifications, and bug reports. (Blueprint §31.1)
+
+34. **Application version metadata is sourced from `AssemblyInformationalVersionAttribute`, populated by MinVer from git tags.** Builds use `<Deterministic>true</Deterministic>` and `<EmbedUntrackedSources>true</EmbedUntrackedSources>` so a tagged commit produces reproducible binaries on every supported RID. The brain stamps `Settings["AppVersionCreatedWith"]` at create (immutable) and `Settings["AppVersionLastOpened"]` / `Settings["AppVersionLastOpenedUtc"]` on every open (overwritten). `Assembly.GetName().Version` is not canonical — it drops the prerelease and commit suffix. (Blueprint §31.2, §31.3)
 
 ---
 
