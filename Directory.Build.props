@@ -11,4 +11,30 @@
     <!-- Only audit direct dependencies; transitive vulnerability advisories (e.g. Avalonia's Tmds.DBus.Protocol) are tracked externally. -->
     <NuGetAuditMode>direct</NuGetAuditMode>
   </PropertyGroup>
+
+  <!-- Assembly identity (Refactor PR A). Populates Product/Company/Description/Copyright
+       attributes on every produced assembly. Version stamping is driven by MinVer below. -->
+  <PropertyGroup Label="AssemblyMetadata">
+    <Product>FlashSkink-Core</Product>
+    <Company>FlashSkink authors</Company>
+    <Description>Portable, nomadic CLI backup on a USB stick, with encrypted cloud replicas that catch up in the background.</Description>
+    <Copyright>© FlashSkink authors. MIT licensed.</Copyright>
+  </PropertyGroup>
+
+  <!-- Reproducible builds: deterministic compilation + embedded untracked sources +
+       repository URL in the stamped metadata. ContinuousIntegrationBuild flips on
+       only under CI so local incremental builds stay fast. (Blueprint §31.) -->
+  <PropertyGroup Label="DeterministicBuild">
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <!-- MinVer derives SemVer from the nearest git tag (e.g. v0.1.0) and writes
+       AssemblyVersion / FileVersion / InformationalVersion at build time.
+       PrivateAssets="all" keeps it out of consumers' transitive graph. (Blueprint §31.) -->
+  <ItemGroup Label="Versioning">
+    <PackageReference Include="MinVer" PrivateAssets="all" />
+  </ItemGroup>
 </Project>

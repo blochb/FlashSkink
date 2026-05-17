@@ -43,7 +43,8 @@
 28. Tech Stack
 29. Decision Records
 30. Out of Scope (V1)
-31. Post-V1 Direction
+31. App Identity and Versioning
+32. Post-V1 Direction
 
 ---
 
@@ -271,7 +272,7 @@ The mirror model commits to specific behaviours:
 - **Multi-device sync.** A volume is single-user, single-skink. Two USBs are two volumes.
 - **Selective sync.** All files on the skink go to all tails. The user does not pick which files go where.
 
-These are not deficiencies but deliberate scope decisions. A snapshot product, if built, is a separate product (see §31 Post-V1 Direction).
+These are not deficiencies but deliberate scope decisions. A snapshot product, if built, is a separate product (see §32 Post-V1 Direction).
 
 ---
 
@@ -1785,10 +1786,15 @@ CREATE TABLE Settings (
 );
 
 -- Initial settings (set at volume creation):
---   "GracePeriodDays" = "30"
---   "AuditIntervalHours" = "24"
---   "VolumeCreatedUtc" = "..."
---   "AppVersion" = "1.0.0"
+--   "GracePeriodDays"          = "30"
+--   "AuditIntervalHours"       = "168"     -- weekly; portable USB isn't always plugged in (§31)
+--   "VolumeCreatedUtc"         = "..."
+--   "VolumeID"                 = "<random GUID>"  -- never derived from recovery phrase (§31)
+--   "AppVersionCreatedWith"    = "1.0.0+abc1234"  -- AssemblyInformationalVersionAttribute, MinVer-stamped
+--   "AppVersionLastOpened"     = "1.0.0+abc1234"  -- overwritten every Open
+--   "AppVersionLastOpenedUtc"  = "..."             -- overwritten every Open
+-- Recovery phrase is NOT persisted (§18.8, §29 A16) — returned exactly once via
+-- VolumeCreationReceipt.RecoveryPhrase from FlashSkinkVolume.CreateAsync.
 ```
 
 ### 16.3 Schema Migration
@@ -1797,7 +1803,7 @@ Migrations are versioned scripts embedded in the binary. The `MigrationRunner` r
 
 ```
 1. Open brain (with SQLCipher key).
-2. Read Settings["AppVersion"] and SchemaVersions max(Version).
+2. Read Settings["AppVersionCreatedWith"] and SchemaVersions max(Version).
 3. If schema version < expected:
      a. Mirror the brain DB to .flashskink/brain.db.pre-migration-{timestamp}
      b. For each missing version N:
@@ -2744,9 +2750,12 @@ Any native dependency that fails this validation is a PR 0.1 blocker.
 | Hashing | `System.IO.Hashing` (XxHash64) + `System.Security.Cryptography` (SHA-256) | `Core` |
 | BIP-39 | Focused BIP-39 library (e.g. `dotnetstandard-bip39`) | `Core` |
 | Memory zeroing | `CryptographicOperations.ZeroMemory` | `Core` |
+| Versioning | `MinVer` (SemVer from git tags → `AssemblyInformationalVersionAttribute`) | All (wired in `Directory.Build.props`) |
 | Testing | `xUnit` + `Moq` + `FsCheck` (property-based for crash consistency) | `Tests` |
 | Publish | `dotnet publish --self-contained -r <RID> -p:PublishSingleFile=true` | CLI per RID |
 | Code signing | `signtool` (Windows Authenticode) + `codesign` (macOS Developer ID) | Build pipeline |
+
+**Reproducibility:** all production assemblies build with `<Deterministic>true</Deterministic>` and `<EmbedUntrackedSources>true</EmbedUntrackedSources>` in `Directory.Build.props`. `<ContinuousIntegrationBuild>` flips on under CI. MinVer derives the SemVer from the nearest annotated git tag (e.g. `v0.1.0`) so a tagged commit can be rebuilt identically from source. See §31.
 
 **Native dependency notes:**
 
@@ -2913,16 +2922,56 @@ The following are deliberately excluded from V1. Some are planned for V2+ (with 
 
 ---
 
-## 31. Post-V1 Direction
+## 31. App Identity and Versioning
 
-### 31.1 V1.1 (first patch release after V1)
+This section unifies four concerns that were previously implicit: how a volume identifies itself, how the application identifies itself, how the brain remembers both over time, and the explicit prohibition on phoning home for updates. The four exist together because they share one motivation — a portable, nomadic appliance with no central server must carry its own identity story on the skink.
+
+### 31.1 Volume identity
+
+Every volume carries a random GUID at `Settings["VolumeID"]`, written at create time by `FlashSkinkVolume.CreateAsync` and backfilled at open time on legacy brains by `FlashSkinkVolume.OpenAsync`. The GUID is generated via `Guid.NewGuid()` (Version 4, cryptographically-strong random) and is **deliberately independent of any key material**: two skinks initialised from the same 24-word BIP-39 recovery phrase share encryption keys but have distinct volume identities. This separation matters for the deferred witness / clone-detection protocol (post-V1 Phase 3.5): clones are detected by identity divergence on shared tails, not by key divergence.
+
+The GUID is not a secret. It may appear in logs, audit-log entries, notifications, error messages, and bug reports without violating Principle 26 (logging never contains secrets).
+
+### 31.2 Application version
+
+Version metadata is sourced from `AssemblyInformationalVersionAttribute`, populated by [MinVer](https://github.com/adamralph/minver) at build time from the nearest annotated git tag. `MinVer` is referenced in `Directory.Build.props` with `PrivateAssets="all"` so it does not propagate to consumers. Builds are reproducible: `<Deterministic>true</Deterministic>` plus `<EmbedUntrackedSources>true</EmbedUntrackedSources>` plus `<ContinuousIntegrationBuild>` under CI ensure a tagged commit produces byte-identical binaries on every supported RID.
+
+Runtime canonical source: `typeof(FlashSkinkVolume).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()`. The CLI surfaces this via `flashskink --version` in Phase 4. `Assembly.GetName().Version` (the 4-part `AssemblyVersion`) is *not* canonical — it carries only `MAJOR.MINOR.PATCH.0` and loses the prerelease / commit suffix.
+
+### 31.3 Brain version stamping
+
+The brain remembers three version values:
+
+- `Settings["AppVersionCreatedWith"]` — written once at `CreateAsync`. Immutable after that. The version of FlashSkink that wrote the very first row in this brain.
+- `Settings["AppVersionLastOpened"]` — overwritten on every `OpenAsync`. The version that most recently opened the volume.
+- `Settings["AppVersionLastOpenedUtc"]` — overwritten on every `OpenAsync`. ISO-8601 UTC timestamp of the most recent open.
+
+Both open-time stamps are written by `BackfillAndStampOnOpenAsync` inside a single transaction immediately after migrations complete. The transaction also handles a one-time legacy migration: brains created before this section existed have an `AppVersion` key; on first open under the new code, the value is copied into `AppVersionCreatedWith` and the legacy key is deleted. Brains missing both keys (hand-edited or partially corrupt) are stamped with the sentinel `"unknown-legacy"` so audit logs can distinguish "we never knew" from "MinVer wasn't wired at create time" (which would have produced `"0.0.0-unknown"`).
+
+### 31.4 Schema forward-compat
+
+`MigrationRunner.RunAsync` reads `SchemaVersions.max(Version)` and refuses to open any brain whose schema version exceeds the running app's `MigrationRunner.CurrentSchemaVersion`. The failure returns `ErrorCode.VolumeIncompatibleVersion` with a clear user-facing message instructing them to update FlashSkink. This is the *only* hard upper-bound version check in the system. Lower-bound migrations are forward-only and automatic (see §16.3).
+
+### 31.5 No auto-update, no phone-home
+
+FlashSkink **never** checks for updates, **never** contacts an update server, and **never** transmits version information to any third party. This is a direct consequence of Principle 32 (no telemetry, no update checks) and the §3 row "Zero trust in the application" — the user holds the only durable secret, the application holds no accounts, and no part of FlashSkink phones home for any reason.
+
+Update mechanics are entirely manual: the user downloads a new release zip, replaces the binary on the USB, and runs it. The schema forward-compat check (§31.4) is what prevents an older binary from corrupting a brain written by a newer one; no version comparison ever happens against a network resource. If a future post-V1 release introduces opt-in version-check functionality, it requires a blueprint amendment and an explicit user toggle that defaults to off.
+
+The reasoning is positioning, not just preference: a backup product that phones home is one disclosed log away from leaking "this user runs FlashSkink on a USB they plug into X hosts." That's exactly the kind of metadata FlashSkink is designed to make impossible. Auto-update tooling produces it as a side effect. Therefore: never.
+
+---
+
+## 32. Post-V1 Direction
+
+### 32.1 V1.1 (first patch release after V1)
 
 Candidate contents, to be decided based on V1 feedback:
 - Additional provider adapters (Backblaze B2, AWS S3) if users request
 - CLI ergonomics polish (shell completion improvements, better `--watch` rendering)
 - Performance tuning based on real-world usage data
 
-### 31.2 V2 (major)
+### 32.2 V2 (major)
 
 Candidate contents:
 - Registered OAuth app option (alongside BYOC)
@@ -2931,7 +2980,7 @@ Candidate contents:
 - Interactive TUI (curses-style file browser in the CLI)
 - Configurable advanced settings made more discoverable in `config list`
 
-### 31.3 Snapshot Product (separate)
+### 32.3 Snapshot Product (separate)
 
 If built, shares:
 - Provider adapters
@@ -2947,7 +2996,7 @@ Differs in:
 
 Target: technical users currently using Borg / Restic / Arq who want the FlashSkink-style portable-USB twist.
 
-### 31.4 Hardware Pilot
+### 32.4 Hardware Pilot
 
 Scope: 50-100 pre-loaded USB drives sold 3-6 months after V1 ships. Decision criteria to proceed:
 - V1 software has > 1000 users
@@ -2961,7 +3010,7 @@ Pilot design:
 - Flat international shipping
 - All-sales-final policy
 
-### 31.5 Mobile Client Direction
+### 32.5 Mobile Client Direction
 
 Recorded intent (Decision C6): When mobile is introduced post-V1, it operates as a viewer/restorer that communicates with the skink through a local transport (Bluetooth, WiFi Direct, or local network). The skink is always the intermediary to cloud providers; the phone never holds OAuth tokens or decryption keys.
 

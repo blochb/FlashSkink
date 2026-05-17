@@ -103,7 +103,10 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
         Assert.NotNull(await ReadBrainSettingAsync("GracePeriodDays"));
         Assert.NotNull(await ReadBrainSettingAsync("AuditIntervalHours"));
         Assert.NotNull(await ReadBrainSettingAsync("VolumeCreatedUtc"));
-        Assert.NotNull(await ReadBrainSettingAsync("AppVersion"));
+        Assert.NotNull(await ReadBrainSettingAsync("VolumeID"));
+        Assert.NotNull(await ReadBrainSettingAsync("AppVersionCreatedWith"));
+        Assert.NotNull(await ReadBrainSettingAsync("AppVersionLastOpened"));
+        Assert.NotNull(await ReadBrainSettingAsync("AppVersionLastOpenedUtc"));
     }
 
     [Fact]
