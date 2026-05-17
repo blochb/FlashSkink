@@ -1044,6 +1044,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpened", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpenedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
 
+            // If Commit throws, SqliteTransaction.Dispose() rolls back the underlying
+            // SQLite transaction during stack unwinding; the original exception is caught
+            // below and returned as Result.Fail with the brain in its pre-transaction state.
             tx.Commit();
             // Recovery phrase is intentionally NOT persisted here — it is returned to the
             // caller exactly once via VolumeCreationReceipt.RecoveryPhrase. See blueprint
@@ -1144,6 +1147,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 new { Key = "AppVersionLastOpenedUtc", Value = nowUtc },
                 transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
 
+            // If Commit throws, SqliteTransaction.Dispose() rolls back the underlying
+            // SQLite transaction during stack unwinding; the original exception is caught
+            // below and returned as Result.Fail with the brain in its pre-transaction state.
             tx.Commit();
             return Result.Ok();
         }
