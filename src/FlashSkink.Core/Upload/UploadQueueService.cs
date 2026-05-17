@@ -415,31 +415,36 @@ public sealed class UploadQueueService : IAsyncDisposable
                 }
                 var provider = providerResult.Value!;
 
-                bool processedAny = false;
+                // Drain the reader fully before processing so the SqliteDataReader is disposed
+                // before any write operations in ProcessOneAsync. Two concurrent workers sharing
+                // one SqliteConnection conflict when one holds an open reader (shared lock) while
+                // the other attempts a write (exclusive lock). batchSize: 1, so at most one row.
+                TailUploadRow? dequeued = null;
                 await foreach (var row in _uploadQueueRepository
                     .DequeueNextBatchAsync(providerId, batchSize: 1, ct)
                     .ConfigureAwait(false))
                 {
-                    processedAny = true;
-                    var processResult = await ProcessOneAsync(row, provider, ct).ConfigureAwait(false);
-                    if (!processResult.Success)
-                    {
-                        if (processResult.Error!.Code == ErrorCode.Cancelled)
-                        {
-                            // Shutdown — preserve UploadSessions row; exit loop.
-                            return;
-                        }
-
-                        _logger.LogError(
-                            "Brain bookkeeping faulted for file {FileId} on {ProviderId}: {Code}",
-                            row.FileId, providerId, processResult.Error.Code);
-                        break;
-                    }
+                    dequeued = row;
                 }
 
-                if (!processedAny)
+                if (dequeued is null)
                 {
                     await IdleAsync(WorkerIdle, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                var processResult = await ProcessOneAsync(dequeued.Value, provider, ct).ConfigureAwait(false);
+                if (!processResult.Success)
+                {
+                    if (processResult.Error!.Code == ErrorCode.Cancelled)
+                    {
+                        // Shutdown — preserve UploadSessions row; exit worker.
+                        return;
+                    }
+
+                    _logger.LogError(
+                        "Brain bookkeeping faulted for file {FileId} on {ProviderId}: {Code}",
+                        dequeued.Value.FileId, providerId, processResult.Error.Code);
                 }
             }
             catch (OperationCanceledException)
@@ -597,11 +602,15 @@ public sealed class UploadQueueService : IAsyncDisposable
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
         UploadOutcome outcome, CancellationToken ct)
     {
-        await using (var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(ct)
+        // The upload has completed — the brain transaction is non-cancellable (Principle 17).
+        // Observe cancellation before the critical section; every await inside uses
+        // CancellationToken.None so a concurrent DisposeAsync cannot race the commit.
+        ct.ThrowIfCancellationRequested();
+        await using (var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(CancellationToken.None)
             .ConfigureAwait(false))
         {
             var markUploaded = await _uploadQueueRepository
-                .MarkUploadedAsync(row.FileId, row.ProviderId, outcome.RemoteId!, tx, ct)
+                .MarkUploadedAsync(row.FileId, row.ProviderId, outcome.RemoteId!, tx, CancellationToken.None)
                 .ConfigureAwait(false);
             if (!markUploaded.Success)
             {
@@ -612,7 +621,7 @@ public sealed class UploadQueueService : IAsyncDisposable
             }
 
             var deleteSession = await _uploadQueueRepository
-                .DeleteSessionAsync(row.FileId, row.ProviderId, tx, ct)
+                .DeleteSessionAsync(row.FileId, row.ProviderId, tx, CancellationToken.None)
                 .ConfigureAwait(false);
             if (!deleteSession.Success)
             {
@@ -622,7 +631,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                     "delete session").ConfigureAwait(false);
             }
 
-            await tx.CommitAsync(ct).ConfigureAwait(false);
+            await tx.CommitAsync(CancellationToken.None).ConfigureAwait(false);
         }
 
         // Activity log append uses CancellationToken.None — post-commit bookkeeping must not
