@@ -56,16 +56,27 @@ public sealed class MnemonicService
     /// the returned phrase and must dispose it after display so the underlying
     /// <c>char[]</c> word buffers are cleared.
     /// </summary>
+    /// <remarks>
+    /// Intermediate buffers holding the raw entropy and the concatenated
+    /// entropy+checksum bit stream are zeroed before this method returns
+    /// (success or failure). Without that, a memory dump taken between
+    /// generation and process exit would yield the full 256-bit key material
+    /// — cryptographically equivalent to recovering the phrase — defeating
+    /// the zeroization the receipt's <see cref="RecoveryPhrase"/> provides.
+    /// </remarks>
     public Result<RecoveryPhrase> Generate()
     {
+        byte[]? entropy = null;
+        byte[]? hash = null;
+        byte[]? bits = null;
         try
         {
-            var entropy = RandomNumberGenerator.GetBytes(32);
-            var hash = SHA256.HashData(entropy);
+            entropy = RandomNumberGenerator.GetBytes(32);
+            hash = SHA256.HashData(entropy);
             var checksum = hash[0];
 
             // Concatenate 256 entropy bits + 8 checksum bits = 264 bits = 24 × 11-bit indices.
-            var bits = new byte[33];
+            bits = new byte[33];
             Buffer.BlockCopy(entropy, 0, bits, 0, 32);
             bits[32] = checksum;
 
@@ -87,6 +98,17 @@ public sealed class MnemonicService
             return Result<RecoveryPhrase>.Fail(ErrorCode.EncryptionFailed,
                 "Failed to generate mnemonic due to a cryptographic error.", ex);
         }
+        finally
+        {
+            // All three buffers are cryptographically equivalent to the phrase
+            // (entropy is the seed of the words; bits is its concatenation with
+            // the checksum; hash[0] is the checksum byte, and the rest of hash
+            // is a SHA-256 of entropy that doesn't add disclosure but is cheap
+            // to clear). Zero all three.
+            if (entropy is not null) { CryptographicOperations.ZeroMemory(entropy); }
+            if (hash is not null) { CryptographicOperations.ZeroMemory(hash); }
+            if (bits is not null) { CryptographicOperations.ZeroMemory(bits); }
+        }
     }
 
     /// <summary>
@@ -94,6 +116,14 @@ public sealed class MnemonicService
     /// that the embedded checksum is correct. Returns
     /// <see cref="ErrorCode.InvalidMnemonic"/> on any validation failure.
     /// </summary>
+    /// <remarks>
+    /// Intermediate buffers reconstructed from <paramref name="phrase"/>
+    /// (<c>indices</c>, <c>bits</c>, <c>entropy</c>, <c>hash</c>) are zeroed
+    /// before return. The caller already holds the phrase, so the additional
+    /// disclosure risk is small, but consistency with the zeroization stance
+    /// elsewhere in this file (and a shared compaction window with any
+    /// memory snapshot tool) makes this worth doing uniformly.
+    /// </remarks>
     public Result Validate(RecoveryPhrase phrase)
     {
         if (phrase.Count != 24)
@@ -105,34 +135,48 @@ public sealed class MnemonicService
         // Map each word to its 11-bit index; reject unknown words. The span
         // lookup avoids allocating a string per word.
         var indices = new int[24];
-        for (var i = 0; i < 24; i++)
+        byte[]? bits = null;
+        byte[]? entropy = null;
+        byte[]? hash = null;
+        try
         {
-            if (!_wordIndexSpan.TryGetValue(phrase[i], out var idx))
+            for (var i = 0; i < 24; i++)
             {
-                return Result.Fail(ErrorCode.InvalidMnemonic,
-                    "Mnemonic contains an unrecognised word.");
+                if (!_wordIndexSpan.TryGetValue(phrase[i], out var idx))
+                {
+                    return Result.Fail(ErrorCode.InvalidMnemonic,
+                        "Mnemonic contains an unrecognised word.");
+                }
+
+                indices[i] = idx;
             }
 
-            indices[i] = idx;
-        }
+            // Reconstruct 264-bit string from 24 × 11-bit indices.
+            bits = new byte[33];
+            for (var i = 0; i < 24; i++)
+            {
+                Inject11Bits(bits, i * 11, indices[i]);
+            }
 
-        // Reconstruct 264-bit string from 24 × 11-bit indices.
-        var bits = new byte[33];
-        for (var i = 0; i < 24; i++)
+            // Verify checksum: SHA-256 of the 32-byte entropy, first byte must match bits[32].
+            entropy = bits[..32];
+            hash = SHA256.HashData(entropy);
+            var expectedChecksum = hash[0];
+            if (bits[32] != expectedChecksum)
+            {
+                return Result.Fail(ErrorCode.InvalidMnemonic,
+                    "Mnemonic checksum is invalid.");
+            }
+
+            return Result.Ok();
+        }
+        finally
         {
-            Inject11Bits(bits, i * 11, indices[i]);
+            Array.Clear(indices);
+            if (bits is not null) { CryptographicOperations.ZeroMemory(bits); }
+            if (entropy is not null) { CryptographicOperations.ZeroMemory(entropy); }
+            if (hash is not null) { CryptographicOperations.ZeroMemory(hash); }
         }
-
-        // Verify checksum: SHA-256 of the 32-byte entropy, first byte must match bits[32].
-        var entropy = bits[..32];
-        var expectedChecksum = SHA256.HashData(entropy)[0];
-        if (bits[32] != expectedChecksum)
-        {
-            return Result.Fail(ErrorCode.InvalidMnemonic,
-                "Mnemonic checksum is invalid.");
-        }
-
-        return Result.Ok();
     }
 
     /// <summary>
