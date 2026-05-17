@@ -122,6 +122,15 @@ internal sealed class RecordingLogger<T> : ILogger<T>
         {
             return await tcs.Task.WaitAsync(budget, ct).ConfigureAwait(false);
         }
+        catch (TimeoutException)
+        {
+            // Replace the framework's generic timeout message with one that names the wait
+            // helper and the budget — when CI flags a future timeout, the stack trace tells
+            // you which WaitFor*Async caller the predicate came from, and this gives you the
+            // wall budget without having to read the helper's source.
+            throw new TimeoutException(
+                $"RecordingLogger.WaitForAsync timed out after {budget}.");
+        }
         finally
         {
             // Unregister on every exit path (success, timeout, cancellation) so a long-lived

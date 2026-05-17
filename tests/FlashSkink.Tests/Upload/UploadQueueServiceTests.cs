@@ -309,6 +309,15 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
             {
                 // Expected on graceful exit.
             }
+            catch (Exception)
+            {
+                // Pump faulted — swallow so the underlying test failure (assertion,
+                // WaitForAsync timeout, etc.) propagates out of the `await using` block
+                // instead of being masked by a cleanup-path exception. The pump is test
+                // infrastructure, not the SUT; FakeClock.Advance / UploadWakeupSignal.Pulse
+                // are trivial and shouldn't fault in practice, but if they ever do, the
+                // diagnostic we want is the test's real failure.
+            }
             _cts.Dispose();
         }
     }
