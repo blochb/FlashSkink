@@ -427,9 +427,12 @@ public sealed class BrainMirrorService : IAsyncDisposable
             }
 
             // 5. Per-tail upload + prune, isolated.
+            int totalTails = 0;
+            int successfulTails = 0;
             foreach (var providerId in listResult.Value!)
             {
                 ct.ThrowIfCancellationRequested();
+                totalTails++;
 
                 var providerResult = await _registry.GetAsync(providerId, ct).ConfigureAwait(false);
                 if (!providerResult.Success)
@@ -458,6 +461,8 @@ public sealed class BrainMirrorService : IAsyncDisposable
                         continue;
                     }
 
+                    successfulTails++;
+
                     var pruneResult = await PruneOneTailAsync(provider, ct).ConfigureAwait(false);
                     if (!pruneResult.Success && pruneResult.Error!.Code != ErrorCode.Cancelled)
                     {
@@ -477,6 +482,10 @@ public sealed class BrainMirrorService : IAsyncDisposable
                         provider.DisplayName);
                 }
             }
+
+            _logger.LogInformation(
+                "Brain mirror cycle completed: {SuccessfulTails} of {TotalTails} tails.",
+                successfulTails, totalTails);
 
             return Result.Ok();
         }

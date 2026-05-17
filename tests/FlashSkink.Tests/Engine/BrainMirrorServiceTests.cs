@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using Dapper;
@@ -11,6 +10,7 @@ using FlashSkink.Tests._TestSupport;
 using FlashSkink.Tests.Metadata;
 using FlashSkink.Tests.Providers;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -26,6 +26,7 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
     private readonly RecordingNotificationBus _bus;
     private readonly FakeClock _clock;
     private readonly FileSystemProvider _fsProvider;
+    private readonly RecordingLogger<BrainMirrorService> _serviceLogger;
 
     private const string ProviderId = "tail-1";
 
@@ -50,6 +51,7 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         _clock = new FakeClock(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
         _fsProvider = new FileSystemProvider(ProviderId, "Test Tail", _tailRoot,
             NullLogger<FileSystemProvider>.Instance);
+        _serviceLogger = new RecordingLogger<BrainMirrorService>();
     }
 
     public async Task InitializeAsync()
@@ -97,14 +99,13 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
 
     private BrainMirrorService CreateService(long? maxBytes = null)
     {
-        var logger = NullLogger<BrainMirrorService>.Instance;
         if (maxBytes is null)
         {
             return new BrainMirrorService(_connection, _dek, _skinkRoot,
-                _registry, _bus, _clock, logger);
+                _registry, _bus, _clock, _serviceLogger);
         }
         return new BrainMirrorService(_connection, _dek, _skinkRoot,
-            _registry, _bus, _clock, logger, maxBytes.Value);
+            _registry, _bus, _clock, _serviceLogger, maxBytes.Value);
     }
 
     private string TailBrainDir() => Path.Combine(_tailRoot, "_brain");
@@ -121,27 +122,72 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         return files;
     }
 
-    private async Task PumpUntilAsync(
-        Func<bool> predicate,
-        TimeSpan? budget = null,
-        TimeSpan? advanceChunk = null)
+    /// <summary>
+    /// Waits for the production log entry signalling that a brain mirror cycle ran to
+    /// completion (emitted by <c>RunOneCycleAsync</c> after the per-tail loop). Returns
+    /// the instant the log fires — cadence-free, so it does not become flaky under CI
+    /// thread-pool starvation. Callers then assert on tail file-system state, which has
+    /// already been committed by the time the log line is emitted.
+    /// </summary>
+    private Task<LogEntry> WaitForCycleCompletedAsync(TimeSpan? budget = null) =>
+        _serviceLogger.WaitForAsync(
+            e => e.Level == LogLevel.Information
+              && e.Message.StartsWith("Brain mirror cycle completed", StringComparison.Ordinal),
+            budget ?? TimeSpan.FromSeconds(10));
+
+    /// <summary>
+    /// Background <c>IClock</c> pump for tests whose worker loops idle on <c>_clock.Delay</c>
+    /// (the timer cycle: 15-minute interval; the debounce cycle: 10-second sliding window).
+    /// While alive, releases any pending <see cref="FakeClock.PendingDelayCount"/>. Construct
+    /// inside an <c>await using</c> block for the duration of <see cref="WaitForCycleCompletedAsync"/>.
+    /// </summary>
+    private sealed class ClockPump : IAsyncDisposable
     {
-        TimeSpan wallBudget = budget ?? TimeSpan.FromSeconds(10);
-        TimeSpan chunk = advanceChunk ?? TimeSpan.FromMinutes(20);
-        var sw = Stopwatch.StartNew();
-        while (sw.Elapsed < wallBudget)
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task _pumpTask;
+
+        public ClockPump(FakeClock clock, TimeSpan advanceChunk)
         {
-            if (predicate())
+            CancellationToken ct = _cts.Token;
+            _pumpTask = Task.Run(async () =>
             {
-                return;
-            }
-            if (_clock.PendingDelayCount > 0)
-            {
-                _clock.Advance(chunk);
-            }
-            await Task.Delay(20);
+                while (!ct.IsCancellationRequested)
+                {
+                    if (clock.PendingDelayCount > 0)
+                    {
+                        clock.Advance(advanceChunk);
+                    }
+                    try
+                    {
+                        await Task.Delay(20, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }, ct);
         }
-        throw new TimeoutException($"Predicate did not become true within {wallBudget}.");
+
+        public async ValueTask DisposeAsync()
+        {
+            _cts.Cancel();
+            try
+            {
+                await _pumpTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on graceful exit.
+            }
+            catch (Exception)
+            {
+                // Pump faulted — swallow so the underlying test failure propagates out of
+                // the `await using` block instead of being masked by cleanup. The pump is
+                // test infrastructure, not the SUT.
+            }
+            _cts.Dispose();
+        }
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────────────────────
@@ -412,8 +458,13 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
 
         sut.NotifyWriteCommitted();
 
-        await PumpUntilAsync(() => TailBrainEntries().Length >= 1,
-            advanceChunk: TimeSpan.FromSeconds(11));
+        // The debounce loop awaits _clock.Delay(10s) for the sliding-quiet window before
+        // running the cycle; the pump releases it. Chunk is 11s so a single advance is
+        // enough to satisfy any single quiet window.
+        await using (new ClockPump(_clock, TimeSpan.FromSeconds(11)))
+        {
+            await WaitForCycleCompletedAsync();
+        }
 
         Assert.Single(TailBrainEntries());
     }
@@ -430,8 +481,10 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
             sut.NotifyWriteCommitted();
         }
 
-        await PumpUntilAsync(() => TailBrainEntries().Length >= 1,
-            advanceChunk: TimeSpan.FromSeconds(11));
+        await using (new ClockPump(_clock, TimeSpan.FromSeconds(11)))
+        {
+            await WaitForCycleCompletedAsync();
+        }
 
         // Give the loop a brief extra moment to (incorrectly) produce a second mirror.
         await Task.Delay(100);
@@ -445,8 +498,12 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         await using var sut = CreateService();
         sut.Start(CancellationToken.None);
 
-        await PumpUntilAsync(() => TailBrainEntries().Length >= 1,
-            advanceChunk: TimeSpan.FromMinutes(16));
+        // The timer loop awaits _clock.Delay(15min); the pump releases it. Chunk is 16min
+        // so a single advance fires the timer.
+        await using (new ClockPump(_clock, TimeSpan.FromMinutes(16)))
+        {
+            await WaitForCycleCompletedAsync();
+        }
 
         Assert.True(TailBrainEntries().Length >= 1);
     }
