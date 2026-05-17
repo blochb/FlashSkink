@@ -180,18 +180,19 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     /// Advances <see cref="_clock"/> by <paramref name="advanceChunk"/> whenever pending delays
     /// are observed, so worker-side <c>IClock.Delay</c> calls can release deterministically.
     /// </summary>
+    /// <remarks>
+    /// Prefer the event-driven <see cref="RecordingLogger{T}.WaitForAsync"/> for waits keyed off
+    /// a terminal state (UPLOADED / FAILED) — the production code already emits a structured
+    /// log line at the exact moment of transition, and waiting on it is cadence-free, so it
+    /// does not become flaky under CI thread-pool starvation. Only use this helper when no
+    /// production log line marks the condition being awaited (e.g. asserting that a state is
+    /// *not* reached after a bounded settling window).
+    /// </remarks>
     private async Task PumpUntilAsync(
         Func<Task<bool>> predicate,
         TimeSpan? budget = null,
         TimeSpan? advanceChunk = null)
     {
-        // 10 s reflects the business expectation: when the network is up and providers are
-        // healthy, an enqueued row should reach its terminal state promptly — sub-second is
-        // typical. Tests that exercise blob upload use small ciphertexts (a few KB) so the
-        // wall-clock cost stays well under this cap on any reasonable runner, including
-        // 2-core CI. If a test legitimately requires more wall-clock budget (multi-MiB
-        // upload, multi-cycle escalation), it should pass an explicit larger value rather
-        // than relying on a lax default.
         TimeSpan wallBudget = budget ?? TimeSpan.FromSeconds(10);
         TimeSpan chunk = advanceChunk ?? TimeSpan.FromHours(13);
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -213,6 +214,103 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
 
         throw new TimeoutException(
             $"Predicate did not become true within {wallBudget}.");
+    }
+
+    /// <summary>
+    /// Waits for the production log entry signalling that <paramref name="fileId"/>'s row for
+    /// <paramref name="providerId"/> reached the <c>UPLOADED</c> terminal state.
+    /// Cadence-free: returns the instant <c>ApplyCompletedAsync</c> emits its info-level
+    /// "Upload completed" line. The structured <c>{FileId}</c> / <c>{ProviderId}</c> property
+    /// match is the primary gate; the message prefix is a defense-in-depth disambiguator
+    /// against the unlikely case of another future log site using the same property names.
+    /// </summary>
+    private Task<LogEntry> WaitForUploadedAsync(
+        string fileId = FileId, string providerId = ProviderId, TimeSpan? budget = null) =>
+        _serviceLogger.WaitForAsync(
+            e => e.Level == LogLevel.Information
+              && e.Message.StartsWith("Upload completed", StringComparison.Ordinal)
+              && e.HasProperty("FileId", fileId)
+              && e.HasProperty("ProviderId", providerId),
+            budget ?? TimeSpan.FromSeconds(10));
+
+    /// <summary>
+    /// Waits for the production log entry signalling that <paramref name="fileId"/>'s row for
+    /// <paramref name="providerId"/> reached the <c>FAILED</c> terminal state via the
+    /// single-shot permanent-failure path (<c>ApplyPermanentAsync</c>). For cycle-ladder
+    /// exhaustion use <see cref="WaitForCycleExhaustedAsync"/>.
+    /// </summary>
+    private Task<LogEntry> WaitForPermanentFailureAsync(
+        string fileId = FileId, string providerId = ProviderId, TimeSpan? budget = null) =>
+        _serviceLogger.WaitForAsync(
+            e => e.Level == LogLevel.Error
+              && e.Message.StartsWith("Permanent upload failure", StringComparison.Ordinal)
+              && e.HasProperty("FileId", fileId)
+              && e.HasProperty("ProviderId", providerId),
+            budget ?? TimeSpan.FromSeconds(10));
+
+    /// <summary>
+    /// Waits for the production log entry signalling that the §21.1 cycle ladder was
+    /// exhausted (<c>PromoteToPermanentAsync</c>), which is the FAILED-terminal path for
+    /// retryable failures that ran out of cycles rather than permanent first-shot failures.
+    /// </summary>
+    private Task<LogEntry> WaitForCycleExhaustedAsync(
+        string fileId = FileId, string providerId = ProviderId, TimeSpan? budget = null) =>
+        _serviceLogger.WaitForAsync(
+            e => e.Level == LogLevel.Error
+              && e.Message.StartsWith("Cycle ladder exhausted", StringComparison.Ordinal)
+              && e.HasProperty("FileId", fileId)
+              && e.HasProperty("ProviderId", providerId),
+            budget ?? TimeSpan.FromSeconds(20));
+
+    /// <summary>
+    /// Background <c>IClock</c> pump for tests that exercise the retry ladder: while alive,
+    /// releases any pending <c>FakeClock.Delay</c> and pulses the wakeup signal so the worker
+    /// loop never idles indefinitely. Construct once per retry-ladder test inside an
+    /// <c>await using</c>; terminal-state tests that don't enter <c>_clock.Delay</c> on the
+    /// critical path don't need one.
+    /// </summary>
+    private sealed class ClockPump : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task _pumpTask;
+
+        public ClockPump(FakeClock clock, UploadWakeupSignal signal)
+        {
+            CancellationToken ct = _cts.Token;
+            _pumpTask = Task.Run(async () =>
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    if (clock.PendingDelayCount > 0)
+                    {
+                        clock.Advance(TimeSpan.FromHours(13));
+                    }
+                    signal.Pulse();
+                    try
+                    {
+                        await Task.Delay(20, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }, ct);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _cts.Cancel();
+            try
+            {
+                await _pumpTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on graceful exit.
+            }
+            _cts.Dispose();
+        }
     }
 
     // ── Construction & lifecycle ─────────────────────────────────────────────────────────────
@@ -286,7 +384,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         sut.Start(CancellationToken.None);
         _signal.Pulse();
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "UPLOADED");
+        await WaitForUploadedAsync();
 
         Assert.Equal("UPLOADED", await ReadStatusAsync());
         Assert.Equal(0, await ReadSessionCountAsync());
@@ -312,7 +410,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         sut.Start(CancellationToken.None);
         _signal.Pulse();
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "UPLOADED");
+        await WaitForUploadedAsync();
 
         var remoteId = await _connection.QuerySingleAsync<string>(
             "SELECT RemoteId FROM TailUploads WHERE FileID = @FileId AND ProviderID = @ProviderId",
@@ -336,7 +434,13 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         sut.Start(CancellationToken.None);
         _signal.Pulse();
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "UPLOADED");
+        // In-range retry consults RetryPolicy.NextRangeAttempt and waits via _clock.Delay; the
+        // pump releases that delay so the worker can re-attempt the range without burning
+        // wall time.
+        await using (new ClockPump(_clock, _signal))
+        {
+            await WaitForUploadedAsync();
+        }
 
         Assert.Equal("UPLOADED", await ReadStatusAsync());
         Assert.Equal(1, await ReadAttemptCountAsync());
@@ -361,9 +465,15 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         sut.Start(CancellationToken.None);
         _signal.Pulse();
 
-        await PumpUntilAsync(
-            async () => await ReadStatusAsync() == "FAILED" && _bus.Published.Count > 0,
-            budget: TimeSpan.FromSeconds(20));
+        // Cycle escalation goes through PromoteToPermanentAsync, which emits the
+        // "Cycle ladder exhausted" log line after publishing the failure notification — the
+        // log marks the brain-committed terminal state, so the bus publish has already
+        // happened by the time WaitForCycleExhaustedAsync returns. ClockPump releases the
+        // per-range and per-cycle _clock.Delay calls.
+        await using (new ClockPump(_clock, _signal))
+        {
+            await WaitForCycleExhaustedAsync(budget: TimeSpan.FromSeconds(20));
+        }
 
         Assert.Equal("FAILED", await ReadStatusAsync());
 
@@ -398,7 +508,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         sut.Start(CancellationToken.None);
         _signal.Pulse();
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "FAILED");
+        await WaitForPermanentFailureAsync();
 
         Assert.Equal("FAILED", await ReadStatusAsync());
         // AttemptCount is bumped to the §21.1 cycle cap (5) by MarkTerminallyFailedAsync so the
@@ -458,7 +568,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
 
         _network.SetAvailable(true);
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "UPLOADED");
+        await WaitForUploadedAsync();
     }
 
     // ── Per-tail isolation ───────────────────────────────────────────────────────────────────
@@ -494,9 +604,13 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
             sut.Start(CancellationToken.None);
             _signal.Pulse();
 
-            await PumpUntilAsync(async () =>
-                await ReadStatusAsync(FileId, ProviderId) == "FAILED" &&
-                await ReadStatusAsync(FileId, ProviderIdB) == "UPLOADED");
+            // Wait on the two production log signals that mark the brain-committed terminal
+            // states — one per provider. Match on structured {FileId}/{ProviderId} properties;
+            // the message-prefix check is a defense-in-depth disambiguator (not the primary
+            // gate) in case a future log site reuses the same property names.
+            var failedWait = WaitForPermanentFailureAsync(FileId, ProviderId);
+            var uploadedWait = WaitForUploadedAsync(FileId, ProviderIdB);
+            await Task.WhenAll(failedWait, uploadedWait);
 
             Assert.Equal("FAILED", await ReadStatusAsync(FileId, ProviderId));
             Assert.Equal("UPLOADED", await ReadStatusAsync(FileId, ProviderIdB));
@@ -548,7 +662,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         sut.Start(CancellationToken.None);
         _signal.Pulse();
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "UPLOADED");
+        await WaitForUploadedAsync();
 
         // Verify final tail content matches source bytes.
         var remoteId = await _connection.QuerySingleAsync<string>(
@@ -571,7 +685,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         sut.Start(CancellationToken.None);
         _signal.Pulse();
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "UPLOADED");
+        await WaitForUploadedAsync();
 
         Assert.Equal(0, await ReadSessionCountAsync());
     }
@@ -589,7 +703,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         sut.Start(CancellationToken.None);
         _signal.Pulse();
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "FAILED");
+        await WaitForPermanentFailureAsync();
 
         Assert.Equal(0, await ReadSessionCountAsync());
     }
@@ -650,7 +764,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         _registry.Register(ProviderId, _fsProvider);
         _signal.Pulse();
 
-        await PumpUntilAsync(async () => await ReadStatusAsync() == "UPLOADED");
+        await WaitForUploadedAsync();
         Assert.True(_serviceLogger.HasEntry(LogLevel.Information, "Worker started"));
     }
 }
