@@ -3,23 +3,23 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
   <ItemGroup Label="Logging">
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
     <PackageVersion Include="Serilog" Version="4.3.1" />
     <PackageVersion Include="Serilog.Extensions.Logging" Version="10.0.0" />
     <PackageVersion Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
   </ItemGroup>
   <ItemGroup Label="CLI">
-    <PackageVersion Include="System.CommandLine" Version="2.0.7" />
+    <PackageVersion Include="System.CommandLine" Version="2.0.8" />
   </ItemGroup>
   <ItemGroup Label="Database">
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.8" />
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
     <PackageVersion Include="Dapper" Version="2.1.72" />
   </ItemGroup>
   <ItemGroup Label="Storage">
     <PackageVersion Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.1" />
-    <PackageVersion Include="System.IO.Hashing" Version="10.0.0" />
+    <PackageVersion Include="System.IO.Hashing" Version="10.0.8" />
   </ItemGroup>
   <ItemGroup Label="Cloud Providers">
     <PackageVersion Include="Google.Apis.Drive.v3" Version="1.68.0.3656" />
