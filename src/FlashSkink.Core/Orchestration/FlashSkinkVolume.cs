@@ -1029,13 +1029,22 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var appVersion = GetAppInformationalVersion();
             var nowUtc = DateTime.UtcNow.ToString("O");
             var volumeId = Guid.NewGuid().ToString("D");
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "GracePeriodDays", Value = "30" }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = nowUtc }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeID", Value = volumeId }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionCreatedWith", Value = appVersion }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpened", Value = appVersion }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpenedUtc", Value = nowUtc }, cancellationToken: ct)).ConfigureAwait(false);
+
+            // Wrap all seven upserts in a single transaction so a SqliteException or
+            // cancellation mid-sequence leaves the brain unchanged. CreateAsync's failure
+            // path deletes the brain file anyway, but the transaction closes the narrow
+            // partial-seed window and matches the pattern used in BackfillAndStampOnOpenAsync.
+            using var tx = connection.BeginTransaction();
+
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "GracePeriodDays", Value = "30" }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeID", Value = volumeId }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionCreatedWith", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpened", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpenedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+
+            tx.Commit();
             // Recovery phrase is intentionally NOT persisted here — it is returned to the
             // caller exactly once via VolumeCreationReceipt.RecoveryPhrase. See blueprint
             // §18.8 ("not persisted by FlashSkink") and §29 Decision A16.
