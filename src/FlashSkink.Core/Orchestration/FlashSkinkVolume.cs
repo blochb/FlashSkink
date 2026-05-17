@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Dapper;
+using FlashSkink.Core.Abstractions.Crypto;
 using FlashSkink.Core.Abstractions.Models;
 using FlashSkink.Core.Abstractions.Notifications;
 using FlashSkink.Core.Abstractions.Providers;
@@ -108,9 +109,17 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     /// <summary>
     /// Creates a new volume at <paramref name="skinkRoot"/>: creates the directory skeleton,
     /// generates a recovery phrase, creates the vault, runs migrations, seeds initial
-    /// Settings rows, and returns an open <see cref="FlashSkinkVolume"/>.
+    /// Settings rows, and returns a <see cref="VolumeCreationReceipt"/> containing the open
+    /// volume and the phrase.
     /// </summary>
-    public static async Task<Result<FlashSkinkVolume>> CreateAsync(
+    /// <remarks>
+    /// <b>The recovery phrase is returned exactly once and is not persisted by FlashSkink
+    /// anywhere</b> — neither on the skink nor on any tail (blueprint §18.8, §29 Decision
+    /// A16). The caller is responsible for displaying the phrase to the user and disposing
+    /// <see cref="VolumeCreationReceipt.RecoveryPhrase"/> when done; losing the receipt
+    /// without recording the phrase forfeits the only out-of-band recovery path.
+    /// </remarks>
+    public static async Task<Result<VolumeCreationReceipt>> CreateAsync(
         string skinkRoot,
         string password,
         VolumeCreationOptions options,
@@ -128,6 +137,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         SqliteConnection? connection = null;
         bool vaultCreated = false;
         bool brainCreated = false;
+        RecoveryPhrase? phrase = null;
+        bool phraseOwned = false;
 
         try
         {
@@ -142,7 +153,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var vaultResult = await keyVault.CreateAsync(vaultPath, passwordMem, ct).ConfigureAwait(false);
             if (!vaultResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(vaultResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(vaultResult.Error!);
             }
 
             vaultCreated = true;
@@ -151,7 +162,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var brainResult = await brainFactory.CreateAsync(brainPath, dek, ct).ConfigureAwait(false);
             if (!brainResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(brainResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(brainResult.Error!);
             }
 
             brainCreated = true;
@@ -160,19 +171,22 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var migrationResult = await migrationRunner.RunAsync(connection, ct).ConfigureAwait(false);
             if (!migrationResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(migrationResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(migrationResult.Error!);
             }
 
             var mnemonicResult = mnemonicService.Generate();
             if (!mnemonicResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(mnemonicResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(mnemonicResult.Error!);
             }
 
-            var seedResult = await SeedInitialSettingsAsync(connection, mnemonicResult.Value!, ct).ConfigureAwait(false);
+            phrase = mnemonicResult.Value!;
+            phraseOwned = true;
+
+            var seedResult = await SeedInitialSettingsAsync(connection, ct).ConfigureAwait(false);
             if (!seedResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(seedResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(seedResult.Error!);
             }
 
             // Take ownership — clear locals so finally does not double-zero or delete files.
@@ -186,18 +200,25 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var session = new VolumeSession(ownedDek, ownedConnection);
             var volume = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
                 streamManager, lifecycle, keyVault, vaultPath).ConfigureAwait(false);
-            return Result<FlashSkinkVolume>.Ok(volume);
+
+            // Ownership of the phrase transfers to the receipt; the caller will dispose it.
+            phraseOwned = false;
+            return Result<VolumeCreationReceipt>.Ok(new VolumeCreationReceipt(volume, phrase));
         }
         catch (OperationCanceledException ex)
         {
-            return Result<FlashSkinkVolume>.Fail(ErrorCode.Cancelled, "Create volume was cancelled.", ex);
+            return Result<VolumeCreationReceipt>.Fail(ErrorCode.Cancelled, "Create volume was cancelled.", ex);
         }
         catch (Exception ex)
         {
-            return Result<FlashSkinkVolume>.Fail(ErrorCode.Unknown, "Unexpected error creating volume.", ex);
+            return Result<VolumeCreationReceipt>.Fail(ErrorCode.Unknown, "Unexpected error creating volume.", ex);
         }
         finally
         {
+            if (phraseOwned && phrase is not null)
+            {
+                phrase.Dispose();
+            }
             if (passwordBytes is not null)
             {
                 CryptographicOperations.ZeroMemory(passwordBytes);
@@ -977,7 +998,6 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
     private static async Task<Result> SeedInitialSettingsAsync(
         SqliteConnection connection,
-        string[] mnemonicWords,
         CancellationToken ct)
     {
         try
@@ -989,8 +1009,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, cancellationToken: ct)).ConfigureAwait(false);
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = DateTime.UtcNow.ToString("O") }, cancellationToken: ct)).ConfigureAwait(false);
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersion", Value = appVersion }, cancellationToken: ct)).ConfigureAwait(false);
-            // Stored in Settings (not logged, not surfaced through ErrorContext.Metadata) — Principle 26.
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "RecoveryPhrase", Value = string.Join(" ", mnemonicWords) }, cancellationToken: ct)).ConfigureAwait(false);
+            // Recovery phrase is intentionally NOT persisted here — it is returned to the
+            // caller exactly once via VolumeCreationReceipt.RecoveryPhrase. See blueprint
+            // §18.8 ("not persisted by FlashSkink") and §29 Decision A16.
             return Result.Ok();
         }
         catch (OperationCanceledException ex)

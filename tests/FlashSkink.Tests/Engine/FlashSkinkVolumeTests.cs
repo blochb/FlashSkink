@@ -42,7 +42,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task CreateAsync_NewSkinkRoot_ReturnsOpenVolume()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         Assert.True(File.Exists(Path.Combine(_skinkRoot, ".flashskink", "vault.bin")));
         Assert.True(File.Exists(Path.Combine(_skinkRoot, ".flashskink", "brain.db")));
@@ -52,20 +52,52 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     [Fact]
     public async Task CreateAsync_NewSkinkRoot_GeneratesRecoveryPhrase()
     {
-        await using var volume = (await FlashSkinkVolume.CreateAsync(
+        var receipt = (await FlashSkinkVolume.CreateAsync(
             _skinkRoot, Password, DefaultOptions)).Value!;
-        await volume.DisposeAsync();
+        try
+        {
+            await receipt.Volume.DisposeAsync();
 
-        var phrase = await ReadBrainSettingAsync("RecoveryPhrase");
-        Assert.NotNull(phrase);
-        Assert.Equal(24, phrase!.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length);
+            Assert.Equal(24, receipt.RecoveryPhrase.Count);
+            var wordSet = MnemonicService.Wordlist.ToHashSet(StringComparer.Ordinal);
+            for (var i = 0; i < 24; i++)
+            {
+                Assert.Contains(receipt.RecoveryPhrase[i].ToString(), wordSet);
+            }
+        }
+        finally
+        {
+            receipt.RecoveryPhrase.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task CreateAsync_DoesNotPersistRecoveryPhrase()
+    {
+        // Asserts the negative: §18.8 and §29 Decision A16 require the phrase to be
+        // returned via VolumeCreationReceipt exactly once and persisted nowhere — not
+        // in Settings, not in any other brain table. Defends against a future
+        // regression that re-adds the row "for convenience".
+        var receipt = (await FlashSkinkVolume.CreateAsync(
+            _skinkRoot, Password, DefaultOptions)).Value!;
+        try
+        {
+            await receipt.Volume.DisposeAsync();
+        }
+        finally
+        {
+            receipt.RecoveryPhrase.Dispose();
+        }
+
+        var persisted = await ReadBrainSettingAsync("RecoveryPhrase");
+        Assert.Null(persisted);
     }
 
     [Fact]
     public async Task CreateAsync_NewSkinkRoot_SeedsInitialSettings()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
         await volume.DisposeAsync();
 
         Assert.NotNull(await ReadBrainSettingAsync("GracePeriodDays"));
@@ -78,7 +110,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task OpenAsync_ExistingVolume_ReturnsOpenVolume()
     {
         var create = await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, DefaultOptions);
-        await create.Value!.DisposeAsync();
+        await create.Value!.Volume.DisposeAsync();
 
         var open = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(open.Success);
@@ -89,7 +121,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task OpenAsync_WrongPassword_ReturnsFailResult()
     {
         var create = await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, DefaultOptions);
-        await create.Value!.DisposeAsync();
+        await create.Value!.Volume.DisposeAsync();
 
         var open = await FlashSkinkVolume.OpenAsync(_skinkRoot, "wrong-password", DefaultOptions);
         Assert.False(open.Success);
@@ -129,7 +161,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task WriteFile_ThenReadFile_ProducesOriginalContent()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = RandomNumberGenerator.GetBytes(512);
         var writeResult = await volume.WriteFileAsync(new MemoryStream(payload), "a.bin");
@@ -145,7 +177,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task WriteFile_ThenReadFile_LargeFile_ProducesOriginalContent()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = RandomNumberGenerator.GetBytes(4 * 1024 * 1024);
         var writeResult = await volume.WriteFileAsync(new MemoryStream(payload), "big.bin");
@@ -161,7 +193,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task WriteFile_SamePath_SameContent_ReturnsUnchanged()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = Encoding.UTF8.GetBytes("same content");
         await volume.WriteFileAsync(new MemoryStream(payload), "f.txt");
@@ -178,7 +210,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
         // different content hits the UNIQUE index and returns PathConflict. Callers must
         // delete the existing file before writing new content at the same path.
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var first = Encoding.UTF8.GetBytes("first content");
         var second = Encoding.UTF8.GetBytes("different content");
@@ -192,7 +224,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ReadFile_NonExistentPath_ReturnsFileNotFound()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var result = await volume.ReadFileAsync("no-such-file.txt", new MemoryStream());
         Assert.False(result.Success);
@@ -205,7 +237,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task DeleteFile_ExistingFile_Succeeds()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = RandomNumberGenerator.GetBytes(64);
         await volume.WriteFileAsync(new MemoryStream(payload), "del.bin");
@@ -221,7 +253,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task DeleteFile_NonExistentPath_ReturnsFailResult()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var result = await volume.DeleteFileAsync("ghost.txt");
         Assert.False(result.Success);
@@ -233,7 +265,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task CreateFolder_AtRoot_ReturnsId()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var result = await volume.CreateFolderAsync("docs", null);
         Assert.True(result.Success);
@@ -244,7 +276,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task CreateFolder_UnderExistingParent_NestsCorrectly()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var docsResult = await volume.CreateFolderAsync("docs", null);
         var refResult = await volume.CreateFolderAsync("ref", docsResult.Value!);
@@ -264,7 +296,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task CreateFolder_InvalidName_ReturnsInvalidArgument(string name)
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var result = await volume.CreateFolderAsync(name, null);
         Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
@@ -274,7 +306,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task CreateFolder_DuplicateNameUnderSameParent_ReturnsPathConflict()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         await volume.CreateFolderAsync("dup", null);
         var second = await volume.CreateFolderAsync("dup", null);
@@ -285,7 +317,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task DeleteFolder_Empty_WithoutConfirmation_Succeeds()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var folder = await volume.CreateFolderAsync("empty-folder", null);
         var result = await volume.DeleteFolderAsync(folder.Value!, confirmed: false);
@@ -296,7 +328,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task DeleteFolder_NonEmpty_WithoutConfirmation_ReturnsConfirmationRequired()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var folder = await volume.CreateFolderAsync("nonempty", null);
         await volume.WriteFileAsync(new MemoryStream([1, 2, 3]), "nonempty/child.txt");
@@ -311,7 +343,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task DeleteFolder_NonEmpty_WithConfirmation_Succeeds()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var folder = await volume.CreateFolderAsync("cascade", null);
         await volume.WriteFileAsync(new MemoryStream([1, 2, 3]), "cascade/child.txt");
@@ -327,7 +359,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task RenameFolder_ExistingFolder_Succeeds()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var folder = await volume.CreateFolderAsync("old-name", null);
         var rename = await volume.RenameFolderAsync(folder.Value!, "new-name");
@@ -342,7 +374,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task MoveAsync_FileToFolder_Succeeds()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         await volume.WriteFileAsync(new MemoryStream([1, 2, 3]), "src.txt");
         var dest = await volume.CreateFolderAsync("dest-folder", null);
@@ -357,7 +389,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task MoveAsync_FolderUnderItsOwnDescendant_ReturnsCyclicMoveDetected()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var a = await volume.CreateFolderAsync("A", null);
         var b = await volume.CreateFolderAsync("B", a.Value!);
@@ -370,7 +402,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task MoveAsync_ToRoot_Succeeds()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var parent = await volume.CreateFolderAsync("parent", null);
         var child = await volume.CreateFolderAsync("child", parent.Value!);
@@ -388,7 +420,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ListChildren_PopulatedFolder_ReturnsExpectedItems()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         await volume.CreateFolderAsync("f1", null);
         await volume.CreateFolderAsync("f2", null);
@@ -406,7 +438,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ListFiles_PrefixMatch_IncludesAllNestedFiles()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         await volume.WriteFileAsync(new MemoryStream([1]), "a.txt");
         await volume.WriteFileAsync(new MemoryStream([2]), "docs/b.txt");
@@ -422,7 +454,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ListFiles_EmptyPrefix_IncludesAll()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         await volume.WriteFileAsync(new MemoryStream([1]), "a.txt");
         await volume.WriteFileAsync(new MemoryStream([2]), "docs/b.txt");
@@ -439,7 +471,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ChangePassword_ThenOpenWithNewPassword_Succeeds()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
         var changeResult = await volume.ChangePasswordAsync(Password, "new-password");
         Assert.True(changeResult.Success);
         await volume.DisposeAsync();
@@ -453,7 +485,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ChangePassword_WrongCurrentPassword_ReturnsFailResult()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var result = await volume.ChangePasswordAsync("wrong-current", "new");
         Assert.False(result.Success);
@@ -465,7 +497,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task RestoreFromGracePeriod_ValidBlobId_Succeeds()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = RandomNumberGenerator.GetBytes(64);
         var writeResult = await volume.WriteFileAsync(new MemoryStream(payload), "restore-me.bin");
@@ -487,7 +519,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task WriteThenRead_HighlyCompressible100KB_UsesLz4Branch()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = new byte[100 * 1024];
         Array.Fill(payload, (byte)'A');
@@ -507,7 +539,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task WriteThenRead_HighlyCompressible1MB_UsesZstdBranch()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = new byte[1024 * 1024];
         Array.Fill(payload, (byte)'B');
@@ -527,7 +559,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task WriteThenRead_RandomBytes1MB_UsesNoCompressionBranch()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = RandomNumberGenerator.GetBytes(1024 * 1024);
         var receipt = (await volume.WriteFileAsync(new MemoryStream(payload), "rand.bin")).Value!;
@@ -548,7 +580,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task WriteFileAsync_CancelledMidFlight_ReturnsCancelled()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var cts = new CancellationTokenSource();
         var data = new byte[16 * 1024 * 1024];
@@ -565,7 +597,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ReadFileAsync_CancelledMidFlight_ReturnsCancelled()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = RandomNumberGenerator.GetBytes(5 * 1024 * 1024);
         await volume.WriteFileAsync(new MemoryStream(payload), "cancel-read.bin");
@@ -586,7 +618,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ConcurrentReads_SerializeCorrectly()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var payload = RandomNumberGenerator.GetBytes(4 * 1024 * 1024);
         await volume.WriteFileAsync(new MemoryStream(payload), "shared.bin");
@@ -606,7 +638,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     public async Task ConcurrentWrites_SerializeCorrectly()
     {
         await using var volume = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).Value!.Volume;
 
         var tasks = Enumerable.Range(0, 5).Select(async i =>
         {
@@ -623,7 +655,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     [Fact]
     public async Task DisposeAsync_Idempotent_DoesNotThrow()
     {
-        var volume = (await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, DefaultOptions)).Value!;
+        var volume = (await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, DefaultOptions)).Value!.Volume;
         await volume.DisposeAsync();
         await volume.DisposeAsync();
     }
@@ -631,7 +663,7 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
     [Fact]
     public async Task PublicMethod_AfterDispose_ThrowsObjectDisposedException()
     {
-        var volume = (await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, DefaultOptions)).Value!;
+        var volume = (await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, DefaultOptions)).Value!.Volume;
         await volume.DisposeAsync();
 
         await Assert.ThrowsAsync<ObjectDisposedException>(

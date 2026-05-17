@@ -1238,10 +1238,6 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     public Task<Result<IReadOnlyList<ActivityLogEntry>>> GetActivityAsync(
         DateTimeOffset since, CancellationToken ct);
 
-    // Recovery phrase re-display (requires password + waiting period)
-    public Task<Result<string>> RevealRecoveryPhraseAsync(
-        string password, CancellationToken ct);
-
     // Password change
     public Task<Result> ChangePasswordAsync(
         string oldPassword, string newPassword, CancellationToken ct);
@@ -1264,7 +1260,6 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 - **`ListChildrenAsync(parentId: null)`** returns all root-level items.
 - **`AddTailAsync`** queues every existing file for upload to the new tail. Returns immediately with the tail info; uploads proceed in the background.
 - **`RemoveTailAsync`** deletes the OAuth token, queue rows, and session rows for the tail. Does not delete data on the provider side (user must do this manually if desired).
-- **`RevealRecoveryPhraseAsync`** requires the password and enforces a 60-second countdown before returning the phrase (Decision A16-d). The countdown is server-side in Core, not just a UI affectation — a malicious caller cannot skip it.
 - **`VerifyAsync`** walks every blob and every tail, confirming integrity. Long-running; respects cancellation.
 - **`ExportAsync`** writes every file in its original directory structure to the target. Used for migration out of FlashSkink (Decision A15-a).
 
@@ -2067,7 +2062,7 @@ Parameters are stored in the vault header (see §18.4) so future versions can ch
 
 Recovery: Mnemonic → KEK seed → KEK → unwrap DEK → decrypt brain mirror from any tail → reconstruct full volume.
 
-The mnemonic is shown exactly once at setup. After that, it can be re-displayed via `RevealRecoveryPhraseAsync` which requires the password and a 60-second waiting period (Decision A16-d).
+The mnemonic is shown exactly once at setup, returned via `VolumeCreationReceipt.RecoveryPhrase` from `FlashSkinkVolume.CreateAsync`. FlashSkink does not persist it on the skink or any tail (§18.8). The CLI is responsible for displaying the phrase to the user before disposing the receipt; once disposed, the underlying `char[][]` word buffers are zeroed and the phrase is unrecoverable from within FlashSkink (Decision A16-a — no re-display path).
 
 ### 18.4 DEK Vault
 
@@ -2108,7 +2103,7 @@ SQLCipher uses AES-256-CBC with HMAC-SHA512 page-level integrity. Page size is 4
 - **USB removed:** DEK retained in memory. Operations paused. Notification published.
 - **USB reinserted (same session):** `integrity_check`. Pass → resume. Fail → repair flow.
 - **USB reinserted (different host):** Same as above; DEK cannot transfer between hosts because it lives only in process memory.
-- **App closed / explicit lock:** `CryptographicOperations.ZeroMemory` on DEK, KEK, brain key, password buffer.
+- **App closed / explicit lock:** `CryptographicOperations.ZeroMemory` on DEK, KEK, brain key, password buffer. The recovery phrase `char[][]` buffers (held inside the `RecoveryPhrase` type returned by `MnemonicService.Generate` and surfaced via `VolumeCreationReceipt`) are zeroed when the receipt's `RecoveryPhrase` is disposed by the caller — typically immediately after display at setup.
 - **Process crash:** Memory is cleared by the OS. No persistent unencrypted state.
 
 ### 18.7 Provider Token Security
@@ -2122,7 +2117,7 @@ Token rotation: when a provider returns a new refresh token (some providers do t
 - DEK (held only in process memory while volume is open)
 - KEK (held only during operations that need it; zeroed immediately after)
 - Password (zeroed immediately after KEK derivation)
-- Mnemonic (shown to user once; not persisted by FlashSkink)
+- Mnemonic (returned exactly once via `VolumeCreationReceipt.RecoveryPhrase`; held only in `char[][]` buffers zeroed on `RecoveryPhrase.Dispose`; not persisted by FlashSkink on the skink or any tail)
 - Brain key (zeroed when SQLCipher connection closes)
 - Decrypted OAuth tokens (zeroed immediately after each provider call)
 
@@ -2493,7 +2488,9 @@ flashskink-cli failures ack    --skink <path> --id <failureId>
 flashskink-cli failures ack-all --skink <path>
 
 # Recovery / secrets
-flashskink-cli reveal-phrase   --skink <path>                       # Password-required, enforces 60 s countdown (Decision A16-d).
+# (No `reveal-phrase` command — the recovery phrase is displayed exactly once
+# at `setup` time via the VolumeCreationReceipt returned from CreateAsync and
+# is not persisted, so it cannot be re-displayed. Decision A16-a, §18.3, §18.8.)
 flashskink-cli change-password --skink <path>
 flashskink-cli reset-password  --skink <path>                       # Prompts for mnemonic interactively (never accepts it as a CLI arg).
 flashskink-cli recover     --provider <type> --client-id <id> --client-secret <secret> --output <newSkinkPath>
@@ -2839,7 +2836,7 @@ This section preserves every architectural and product decision with options, se
 | A13 — V1 Restore UX | CLI `restore` command (single file) and `export` (whole-tree) | OSS surface is CLI-only |
 | A14 — Integrity verification | (b) Automatic + `verify` CLI | High-trust low-cost |
 | A15 — Export | (a) `flashskink-cli export` | No lock-in; trust feature |
-| A16 — Mnemonic re-display | (d) Password + 60s countdown | Stronger friction, deliberate |
+| A16 — Mnemonic re-display | (a) No re-display; caller must record at setup | Persisting the phrase contradicts §18.8 and adds tail-surface exposure for marginal UX |
 | A17 — Password reset via mnemonic | (a) Fully supported | Natural consequence of key hierarchy |
 | A18 — Concurrent skink access | (b) Single-instance lock | Cheap insurance |
 | A19 — Multiple skinks per user | (a) Fully independent | No coordination needed |
