@@ -114,6 +114,40 @@ public sealed class InstanceLockTests : IDisposable
     }
 
     [Fact]
+    public async Task AcquireAsync_WithForce_WhileLockIsLive_ReturnsSingleInstanceLockHeld()
+    {
+        // The first holder owns a live lock (FileShare.None handle still open). A second
+        // acquire with force=true must NOT bypass it: on Linux/macOS, File.Delete would
+        // unlink the directory entry while the holder's flock remained on the original
+        // inode, letting a fresh OpenOrCreate create a separate inode and acquire its own
+        // flock — two processes both believing they hold the exclusive lock. The
+        // probe-open inside the force path detects the live state first and refuses to
+        // delete. (Principle 35; PR-72 review finding #1.)
+        var first = await InstanceLock.AcquireAsync(
+            _skinkRoot, TestAppVersion, force: false, logger: null, ct: CancellationToken.None);
+        Assert.True(first.Success);
+
+        try
+        {
+            var second = await InstanceLock.AcquireAsync(
+                _skinkRoot, TestAppVersion, force: true, logger: null, ct: CancellationToken.None);
+
+            Assert.False(second.Success);
+            Assert.NotNull(second.Error);
+            Assert.Equal(ErrorCode.SingleInstanceLockHeld, second.Error!.Code);
+            Assert.Contains("--force cannot clear a live lock", second.Error.Message);
+            // The first holder is this process — pid metadata should match.
+            Assert.Equal(
+                Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                second.Error.Metadata!["Pid"]);
+        }
+        finally
+        {
+            await first.Value!.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task AcquireAsync_WithoutForce_StaleLockFileOnDisk_StillSucceeds()
     {
         // Important behaviour pin: a stale *file* on disk (no live FileShare.None handle on

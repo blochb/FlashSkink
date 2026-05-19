@@ -93,6 +93,52 @@ internal sealed class InstanceLock : IAsyncDisposable
 
             if (force)
             {
+                // Detect a live lock before touching the file. File.Delete (unlink) on
+                // Linux/macOS succeeds on an flock-held file: it removes the directory
+                // entry without affecting the holder's lock on the underlying inode. A
+                // subsequent OpenOrCreate would then create a *different* inode at the
+                // same path and acquire its *own* flock — two processes would both
+                // believe they hold the exclusive lock, violating Principle 35.
+                //
+                // Probe-open with FileShare.None first. If the probe fails, the lock is
+                // genuinely held and --force must refuse. If it succeeds, the lock is
+                // stale — close the probe (so the delete below can remove the file on
+                // Windows, where deleting an open file fails) and fall through to the
+                // OpenOrCreate path. There is a small TOCTOU window between probe.Dispose
+                // and the OpenOrCreate where another process could race to acquire; --force
+                // is a human-initiated recovery action where that window is acceptable.
+                if (File.Exists(lockFilePath))
+                {
+                    FileStream? probe = null;
+                    try
+                    {
+                        probe = new FileStream(
+                            lockFilePath,
+                            FileMode.Open,
+                            FileAccess.ReadWrite,
+                            FileShare.None,
+                            bufferSize: 0,
+                            FileOptions.None);
+                    }
+                    catch (IOException ex)
+                    {
+                        var holder = TryReadHolderManifest(manifestFilePath);
+                        logger?.LogWarning(
+                            "Force-unlock blocked at {LockFilePath} — lock is live: {Holder}",
+                            lockFilePath, holder.ToDisplayString());
+                        return Task.FromResult(Result<InstanceLock>.Fail(
+                            BuildHeldErrorContext(ex, holder, lockFilePath, manifestFilePath,
+                                message:
+                                    $"FlashSkink is already running on this volume from another process or host " +
+                                    $"({holder.ToDisplayString()}); --force cannot clear a live lock.")));
+                    }
+                    // Probe succeeded → lock is stale. Release the probe so the delete
+                    // below can remove the file on Windows (NTFS denies File.Delete while
+                    // any handle is open; Linux/macOS would allow it but we always close
+                    // for consistency).
+                    probe.Dispose();
+                }
+
                 try
                 {
                     File.Delete(lockFilePath);
@@ -193,17 +239,17 @@ internal sealed class InstanceLock : IAsyncDisposable
         }
         catch (IOException ex)
         {
-            // Thrown by the `force`-path File.Delete when the file is held by another process
-            // (i.e., user passed --force but the lock is genuinely live, not stale).
+            // Live-lock detection is handled by the probe-open inside the `force` block;
+            // reaching this catch means File.Delete failed for some other reason (disk
+            // error, transient I/O fault). Map to StagingFailed rather than
+            // SingleInstanceLockHeld — the lock state is genuinely unknown here.
             logger?.LogWarning(
-                ex, "Cannot force-clear single-instance lock at {LockFilePath} — file in use.",
+                ex, "Force-clear of single-instance lock at {LockFilePath} failed.",
                 lockFilePath);
-            var holder = TryReadHolderManifest(manifestFilePath);
             return Task.FromResult(Result<InstanceLock>.Fail(
-                BuildHeldErrorContext(ex, holder, lockFilePath, manifestFilePath,
-                    message:
-                        $"FlashSkink is already running on this volume from another process or host " +
-                        $"({holder.ToDisplayString()}); --force cannot clear a live lock.")));
+                ErrorCode.StagingFailed,
+                $"Failed to force-clear single-instance lock at '{lockFilePath}'.",
+                ex));
         }
         catch (Exception ex)
         {

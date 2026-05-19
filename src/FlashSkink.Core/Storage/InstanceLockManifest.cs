@@ -4,10 +4,14 @@ using System.Text.Json;
 namespace FlashSkink.Core.Storage;
 
 /// <summary>
-/// On-disk payload written into <c>[skinkRoot]/.flashskink/instance.lock</c> at acquisition
-/// time. A second-instance launch reads this (with shared-read access) to surface the
+/// On-disk payload written into <c>[skinkRoot]/.flashskink/instance.manifest</c> by the
+/// holder immediately after acquiring the sibling exclusion file
+/// (<c>[skinkRoot]/.flashskink/instance.lock</c>). A second-instance launch fails to open
+/// the exclusion file, then reads this manifest with default file sharing to surface the
 /// holder's identity in the user-facing error message — "FlashSkink is already running on
-/// this volume from another process or host". (Blueprint §19.5.)
+/// this volume from another process or host". The two-file scheme is forced by the fact
+/// that <see cref="System.IO.FileShare.None"/> — the only reliably-exclusive mode on
+/// Linux/macOS — also blocks peer reads. (Blueprint §19.5.)
 /// </summary>
 /// <remarks>
 /// None of the four fields are secrets per Principle 26 — they appear in logs, notifications,
