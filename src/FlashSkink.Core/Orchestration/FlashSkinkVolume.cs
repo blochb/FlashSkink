@@ -43,6 +43,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     private readonly UploadQueueService _uploadQueueService;
     private readonly BrainMirrorService _brainMirrorService;
     private readonly CancellationTokenSource _volumeCts;
+    private readonly InstanceLock _instanceLock;
     private int _disposed;
 
     // ── Events (declared; raisers arrive in later phases) ────────────────────
@@ -87,7 +88,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         UploadWakeupSignal wakeupSignal,
         UploadQueueService uploadQueueService,
         BrainMirrorService brainMirrorService,
-        CancellationTokenSource volumeCts)
+        CancellationTokenSource volumeCts,
+        InstanceLock instanceLock)
     {
         _session = session;
         _context = context;
@@ -103,6 +105,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         _uploadQueueService = uploadQueueService;
         _brainMirrorService = brainMirrorService;
         _volumeCts = volumeCts;
+        _instanceLock = instanceLock;
     }
 
     // ── Static factory methods ───────────────────────────────────────────────
@@ -140,6 +143,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         bool brainCreated = false;
         RecoveryPhrase? phrase = null;
         bool phraseOwned = false;
+        InstanceLock? instanceLock = null;
+        bool lockHeld = false;
 
         try
         {
@@ -147,6 +152,22 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
             Directory.CreateDirectory(stagingPath);
             await FsyncDirectoryAsync(stagingPath).ConfigureAwait(false);
+
+            // Acquire the single-instance lock before any vault/brain work so a concurrent
+            // CreateAsync/OpenAsync on the same root fails fast with SingleInstanceLockHeld
+            // instead of racing on vault.bin / brain.db (Blueprint §19.5, Principle 35).
+            var lockResult = await InstanceLock.AcquireAsync(
+                skinkRoot,
+                GetAppInformationalVersion(),
+                options.ForceUnlock,
+                options.LoggerFactory.CreateLogger<InstanceLock>(),
+                ct).ConfigureAwait(false);
+            if (!lockResult.Success)
+            {
+                return Result<VolumeCreationReceipt>.Fail(lockResult.Error!);
+            }
+            instanceLock = lockResult.Value!;
+            lockHeld = true;
 
             passwordBytes = Encoding.UTF8.GetBytes(password);
             var passwordMem = new ReadOnlyMemory<byte>(passwordBytes);
@@ -193,14 +214,16 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             // Take ownership — clear locals so finally does not double-zero or delete files.
             var ownedDek = dek;
             var ownedConnection = connection;
+            var ownedLock = instanceLock;
             dek = null;
             connection = null;
             vaultCreated = false;
             brainCreated = false;
+            lockHeld = false;
 
             var session = new VolumeSession(ownedDek, ownedConnection);
             var volume = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
-                streamManager, lifecycle, keyVault, vaultPath).ConfigureAwait(false);
+                streamManager, lifecycle, keyVault, vaultPath, ownedLock!).ConfigureAwait(false);
 
             // Ownership of the phrase transfers to the receipt; the caller will dispose it.
             phraseOwned = false;
@@ -237,6 +260,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             {
                 try { File.Delete(vaultPath); } catch { /* best-effort vault cleanup on failure */ }
             }
+            // Release the single-instance lock last so any concurrent second-instance launch
+            // sees SingleInstanceLockHeld for the entire window during which vault/brain
+            // files might exist in a half-built state (Blueprint §19.5).
+            if (lockHeld && instanceLock is not null)
+            {
+                await instanceLock.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -259,12 +289,30 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
         byte[]? passwordBytes = null;
         VolumeSession? session = null;
+        InstanceLock? instanceLock = null;
+        bool lockHeld = false;
 
         try
         {
             ct.ThrowIfCancellationRequested();
 
             Directory.CreateDirectory(stagingPath);
+
+            // Acquire the single-instance lock before vault unlock so a concurrent open
+            // fails fast with SingleInstanceLockHeld instead of racing to derive the same
+            // KEK (Blueprint §19.5, Principle 35).
+            var lockResult = await InstanceLock.AcquireAsync(
+                skinkRoot,
+                GetAppInformationalVersion(),
+                options.ForceUnlock,
+                options.LoggerFactory.CreateLogger<InstanceLock>(),
+                ct).ConfigureAwait(false);
+            if (!lockResult.Success)
+            {
+                return Result<FlashSkinkVolume>.Fail(lockResult.Error!);
+            }
+            instanceLock = lockResult.Value!;
+            lockHeld = true;
 
             passwordBytes = Encoding.UTF8.GetBytes(password);
             var passwordMem = new ReadOnlyMemory<byte>(passwordBytes);
@@ -287,12 +335,14 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 return Result<FlashSkinkVolume>.Fail(backfillResult.Error!);
             }
 
-            // Take ownership so the finally block does not dispose the session.
+            // Take ownership so the finally block does not dispose the session or lock.
             var ownedSession = session;
+            var ownedLock = instanceLock;
             session = null;
+            lockHeld = false;
 
             var volume = await BuildVolumeFromSessionAsync(ownedSession, skinkRoot, options,
-                streamManager, lifecycle, keyVault, vaultPath).ConfigureAwait(false);
+                streamManager, lifecycle, keyVault, vaultPath, ownedLock!).ConfigureAwait(false);
             return Result<FlashSkinkVolume>.Ok(volume);
         }
         catch (OperationCanceledException ex)
@@ -312,6 +362,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             if (session is not null)
             {
                 await session.DisposeAsync().ConfigureAwait(false);
+            }
+            // Release the single-instance lock last so any concurrent second-instance
+            // launch sees SingleInstanceLockHeld for the entire window during which the
+            // session might exist in a half-built state (Blueprint §19.5).
+            if (lockHeld && instanceLock is not null)
+            {
+                await instanceLock.DisposeAsync().ConfigureAwait(false);
             }
         }
     }
@@ -880,6 +937,14 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             _context.Dispose();
             await _session.DisposeAsync().ConfigureAwait(false);
 
+            // Step 5 — release the single-instance lock LAST. Holding the lock past
+            // session teardown means a concurrent second-instance launch sees
+            // SingleInstanceLockHeld for the entire duration of our shutdown, not just
+            // up to the point where the brain connection closes. This preserves the
+            // "two processes never both think they own the volume" invariant across the
+            // full dispose interval. (Blueprint §19.5, Principle 35.)
+            await _instanceLock.DisposeAsync().ConfigureAwait(false);
+
             _volumeCts.Dispose();
         }
         finally
@@ -924,7 +989,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         RecyclableMemoryStreamManager streamManager,
         VolumeLifecycle lifecycle,
         KeyVault keyVault,
-        string vaultPath)
+        string vaultPath,
+        InstanceLock instanceLock)
     {
         var loggerFactory = options.LoggerFactory;
         var notificationBus = options.NotificationBus;
@@ -986,6 +1052,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             volumeCts.Dispose();
             context.Dispose();
             await session.DisposeAsync().ConfigureAwait(false);
+            await instanceLock.DisposeAsync().ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"Upload queue service failed to start: {queueStartResult.Error!.Code}");
         }
@@ -998,6 +1065,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             volumeCts.Dispose();
             context.Dispose();
             await session.DisposeAsync().ConfigureAwait(false);
+            await instanceLock.DisposeAsync().ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"Brain mirror service failed to start: {mirrorStartResult.Error!.Code}");
         }
@@ -1005,7 +1073,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         return new FlashSkinkVolume(
             session, context, writePipeline, readPipeline, lifecycle, keyVault, vaultPath,
             registry, netMonitor, clock, wakeupSignal, uploadQueueService, brainMirrorService,
-            volumeCts);
+            volumeCts, instanceLock);
     }
 
     /// <summary>
