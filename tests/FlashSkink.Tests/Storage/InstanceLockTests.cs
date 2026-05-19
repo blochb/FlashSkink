@@ -16,6 +16,7 @@ public sealed class InstanceLockTests : IDisposable
     private readonly string _skinkRoot;
     private readonly string _flashskinkDir;
     private readonly string _lockFilePath;
+    private readonly string _manifestFilePath;
     private const string TestAppVersion = "0.1.0+test";
 
     public InstanceLockTests()
@@ -24,6 +25,7 @@ public sealed class InstanceLockTests : IDisposable
             Path.GetTempPath(), $"flashskink-lock-test-{Guid.NewGuid():N}");
         _flashskinkDir = Path.Combine(_skinkRoot, ".flashskink");
         _lockFilePath = Path.Combine(_flashskinkDir, "instance.lock");
+        _manifestFilePath = Path.Combine(_flashskinkDir, "instance.manifest");
         Directory.CreateDirectory(_flashskinkDir);
     }
 
@@ -45,7 +47,9 @@ public sealed class InstanceLockTests : IDisposable
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
         Assert.True(File.Exists(_lockFilePath));
+        Assert.True(File.Exists(_manifestFilePath));
         Assert.Equal(_lockFilePath, result.Value!.LockFilePath);
+        Assert.Equal(_manifestFilePath, result.Value.ManifestFilePath);
 
         await result.Value.DisposeAsync();
     }
@@ -136,21 +140,9 @@ public sealed class InstanceLockTests : IDisposable
 
         try
         {
-            // Read the file with shared access — production code does the same on conflict.
-            byte[] bytes;
-            await using (var fs = new FileStream(
-                _lockFilePath, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete))
-            {
-                bytes = new byte[fs.Length];
-                var totalRead = 0;
-                while (totalRead < bytes.Length)
-                {
-                    var n = await fs.ReadAsync(bytes.AsMemory(totalRead));
-                    if (n <= 0) { break; }
-                    totalRead += n;
-                }
-            }
+            // Holder identity is written to the sibling manifest file (instance.manifest),
+            // not to the exclusion lock file. Any process can read it with default sharing.
+            var bytes = await File.ReadAllBytesAsync(_manifestFilePath);
 
             var parsed = InstanceLockManifest.TryParse(bytes, out var manifest);
             Assert.True(parsed);
@@ -183,16 +175,18 @@ public sealed class InstanceLockTests : IDisposable
     }
 
     [Fact]
-    public async Task DisposeAsync_DeletesLockFile()
+    public async Task DisposeAsync_DeletesLockAndManifestFiles()
     {
         var result = await InstanceLock.AcquireAsync(
             _skinkRoot, TestAppVersion, force: false, logger: null, ct: CancellationToken.None);
         Assert.True(result.Success);
         Assert.True(File.Exists(_lockFilePath));
+        Assert.True(File.Exists(_manifestFilePath));
 
         await result.Value!.DisposeAsync();
 
         Assert.False(File.Exists(_lockFilePath));
+        Assert.False(File.Exists(_manifestFilePath));
     }
 
     [Fact]
@@ -206,8 +200,9 @@ public sealed class InstanceLockTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
-        // A cancelled call must not leave a lock file behind.
+        // A cancelled call must not leave either file behind.
         Assert.False(File.Exists(_lockFilePath));
+        Assert.False(File.Exists(_manifestFilePath));
     }
 
     [Fact]

@@ -15,30 +15,42 @@ namespace FlashSkink.Core.Storage;
 /// <c>--force</c> flag. (Blueprint §19.5; CLAUDE.md Principle 35.)
 /// </summary>
 /// <remarks>
-/// The lock primitive is a <see cref="FileStream"/> opened with
-/// <see cref="FileAccess.ReadWrite"/> and <see cref="FileShare.Read"/>. The holder excludes
-/// any second writer (because the second writer's <see cref="FileAccess.ReadWrite"/>
-/// request conflicts with the holder's <see cref="FileShare.Read"/>) while still allowing
-/// a concurrent reader to peek at the manifest payload — the second-instance launch reads
-/// the manifest with <see cref="FileAccess.Read"/> to identify the holder. On Windows this
-/// maps to the kernel's sharing-mode check; on Linux/macOS .NET maps it to an advisory
-/// <c>flock</c>-equivalent (POSIX OFD or BSD <c>flock</c> depending on runtime). Either
-/// way, two processes cannot simultaneously hold the file open with write access.
+/// <para>
+/// Two-file scheme: <c>instance.lock</c> is the exclusion file, opened with
+/// <see cref="FileShare.None"/>. This is the one mode where .NET's cross-platform behaviour
+/// is reliably exclusive — on Windows the kernel sharing-mode check rejects a second open;
+/// on Linux/macOS .NET maps <see cref="FileShare.None"/> to an <c>flock(LOCK_EX)</c>-style
+/// exclusive advisory lock. Other share modes (<see cref="FileShare.Read"/>, etc.) map to
+/// <c>LOCK_SH</c> on Linux, which is compatible with itself and would let two writers both
+/// succeed — so they cannot be used for exclusion.
+/// </para>
+/// <para>
+/// Because <see cref="FileShare.None"/> excludes <i>all</i> concurrent access including
+/// read, the holder identity (pid, host, started-at, app-version) is written to a
+/// <i>separate</i> file, <c>instance.manifest</c>, that any process can read. A
+/// second-instance launch fails the lock acquisition, then reads the sibling manifest file
+/// to populate <see cref="ErrorContext.Metadata"/>.
+/// </para>
 /// </remarks>
 internal sealed class InstanceLock : IAsyncDisposable
 {
     private readonly FileStream _stream;
     private readonly string _lockFilePath;
+    private readonly string _manifestFilePath;
     private readonly ILogger? _logger;
     private int _disposed;
 
-    /// <summary>The absolute path to the lock file this instance is holding.</summary>
+    /// <summary>The absolute path to the exclusion file this instance is holding.</summary>
     internal string LockFilePath => _lockFilePath;
 
-    private InstanceLock(FileStream stream, string lockFilePath, ILogger? logger)
+    /// <summary>The absolute path to the sibling manifest file this instance wrote.</summary>
+    internal string ManifestFilePath => _manifestFilePath;
+
+    private InstanceLock(FileStream stream, string lockFilePath, string manifestFilePath, ILogger? logger)
     {
         _stream = stream;
         _lockFilePath = lockFilePath;
+        _manifestFilePath = manifestFilePath;
         _logger = logger;
     }
 
@@ -71,7 +83,9 @@ internal sealed class InstanceLock : IAsyncDisposable
         ILogger? logger,
         CancellationToken ct)
     {
-        var lockFilePath = Path.Combine(skinkRoot, ".flashskink", "instance.lock");
+        var flashskinkDir = Path.Combine(skinkRoot, ".flashskink");
+        var lockFilePath = Path.Combine(flashskinkDir, "instance.lock");
+        var manifestFilePath = Path.Combine(flashskinkDir, "instance.manifest");
 
         try
         {
@@ -104,40 +118,25 @@ internal sealed class InstanceLock : IAsyncDisposable
                     lockFilePath,
                     FileMode.OpenOrCreate,
                     FileAccess.ReadWrite,
-                    // FileShare.Read excludes a second writer (its ReadWrite request
-                    // conflicts with this Read-only share permission) while letting a
-                    // peer process read the manifest payload to identify us.
-                    FileShare.Read,
+                    // FileShare.None is the only mode that is reliably exclusive on both
+                    // Windows (kernel sharing-mode check) and Linux/macOS (flock LOCK_EX).
+                    FileShare.None,
                     bufferSize: 0,
                     FileOptions.WriteThrough);
             }
             catch (IOException ex)
             {
                 // Another process holds the lock (or, less commonly, an unrelated I/O
-                // error). Read the manifest with shared access to surface the holder.
-                var holder = TryReadHolderManifest(lockFilePath);
+                // error). Read the sibling manifest file to surface the holder identity.
+                var holder = TryReadHolderManifest(manifestFilePath);
                 logger?.LogWarning(
                     "Single-instance lock at {LockFilePath} is already held: {Holder}",
                     lockFilePath, holder.ToDisplayString());
-                var ctx = new ErrorContext
-                {
-                    Code = ErrorCode.SingleInstanceLockHeld,
-                    Message =
-                        $"FlashSkink is already running on this volume from another process or host " +
-                        $"({holder.ToDisplayString()}). Close the other instance and try again.",
-                    ExceptionType = ex.GetType().FullName,
-                    ExceptionMessage = ex.Message,
-                    StackTrace = ex.StackTrace,
-                    Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
-                    {
-                        ["Pid"] = holder.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        ["Host"] = holder.Host,
-                        ["StartedAtUtc"] = holder.StartedAtUtc,
-                        ["AppVersion"] = holder.AppVersion,
-                        ["LockFilePath"] = lockFilePath,
-                    },
-                };
-                return Task.FromResult(Result<InstanceLock>.Fail(ctx));
+                return Task.FromResult(Result<InstanceLock>.Fail(
+                    BuildHeldErrorContext(ex, holder, lockFilePath, manifestFilePath,
+                        message:
+                            $"FlashSkink is already running on this volume from another process or host " +
+                            $"({holder.ToDisplayString()}). Close the other instance and try again.")));
             }
             catch (UnauthorizedAccessException ex)
             {
@@ -150,31 +149,31 @@ internal sealed class InstanceLock : IAsyncDisposable
                     ex));
             }
 
-            // Lock acquired. Write the manifest so a concurrent reader can identify us.
-            // If this throws, we must dispose the stream to release the OS lock — otherwise
-            // the lock is held but no manifest exists, and we have no way to return the
-            // FileStream ownership to the caller.
+            // Lock acquired. Write the sibling manifest so a concurrent reader can identify
+            // us. We're the sole writer of the manifest while we hold the lock; a peer
+            // attempting to acquire will fail the lock-open and read the manifest with
+            // shared-read access. If the manifest write throws, we must dispose the stream
+            // to release the OS lock — otherwise the lock is held but no manifest exists,
+            // and we cannot return ownership to the caller.
             try
             {
-                var manifest = InstanceLockManifest.Current(appVersion).SerializeUtf8();
-                stream.SetLength(0);
-                stream.Write(manifest, 0, manifest.Length);
-                stream.Flush(flushToDisk: true);
+                var manifestBytes = InstanceLockManifest.Current(appVersion).SerializeUtf8();
+                File.WriteAllBytes(manifestFilePath, manifestBytes);
             }
             catch (Exception ex)
             {
                 stream.Dispose();
                 logger?.LogWarning(
-                    ex, "Failed to write single-instance lock manifest at {LockFilePath}.",
-                    lockFilePath);
+                    ex, "Failed to write single-instance lock manifest at {ManifestFilePath}.",
+                    manifestFilePath);
                 return Task.FromResult(Result<InstanceLock>.Fail(
                     ErrorCode.StagingFailed,
-                    $"Failed to write single-instance lock manifest at '{lockFilePath}'.",
+                    $"Failed to write single-instance lock manifest at '{manifestFilePath}'.",
                     ex));
             }
 
             return Task.FromResult(Result<InstanceLock>.Ok(
-                new InstanceLock(stream, lockFilePath, logger)));
+                new InstanceLock(stream, lockFilePath, manifestFilePath, logger)));
         }
         catch (OperationCanceledException ex)
         {
@@ -199,26 +198,12 @@ internal sealed class InstanceLock : IAsyncDisposable
             logger?.LogWarning(
                 ex, "Cannot force-clear single-instance lock at {LockFilePath} — file in use.",
                 lockFilePath);
-            var holder = TryReadHolderManifest(lockFilePath);
-            var ctx = new ErrorContext
-            {
-                Code = ErrorCode.SingleInstanceLockHeld,
-                Message =
-                    $"FlashSkink is already running on this volume from another process or host " +
-                    $"({holder.ToDisplayString()}); --force cannot clear a live lock.",
-                ExceptionType = ex.GetType().FullName,
-                ExceptionMessage = ex.Message,
-                StackTrace = ex.StackTrace,
-                Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    ["Pid"] = holder.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    ["Host"] = holder.Host,
-                    ["StartedAtUtc"] = holder.StartedAtUtc,
-                    ["AppVersion"] = holder.AppVersion,
-                    ["LockFilePath"] = lockFilePath,
-                },
-            };
-            return Task.FromResult(Result<InstanceLock>.Fail(ctx));
+            var holder = TryReadHolderManifest(manifestFilePath);
+            return Task.FromResult(Result<InstanceLock>.Fail(
+                BuildHeldErrorContext(ex, holder, lockFilePath, manifestFilePath,
+                    message:
+                        $"FlashSkink is already running on this volume from another process or host " +
+                        $"({holder.ToDisplayString()}); --force cannot clear a live lock.")));
         }
         catch (Exception ex)
         {
@@ -232,52 +217,85 @@ internal sealed class InstanceLock : IAsyncDisposable
         }
     }
 
+    /// <summary>Builds the shared <see cref="ErrorContext"/> for a lock-held failure.</summary>
+    private static ErrorContext BuildHeldErrorContext(
+        Exception ex,
+        InstanceLockManifest holder,
+        string lockFilePath,
+        string manifestFilePath,
+        string message)
+        => new()
+        {
+            Code = ErrorCode.SingleInstanceLockHeld,
+            Message = message,
+            ExceptionType = ex.GetType().FullName,
+            ExceptionMessage = ex.Message,
+            StackTrace = ex.StackTrace,
+            Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Pid"] = holder.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["Host"] = holder.Host,
+                ["StartedAtUtc"] = holder.StartedAtUtc,
+                ["AppVersion"] = holder.AppVersion,
+                ["LockFilePath"] = lockFilePath,
+                ["ManifestFilePath"] = manifestFilePath,
+            },
+        };
+
     /// <summary>
-    /// Reads the holder's manifest with shared-read access. Returns
-    /// <see cref="InstanceLockManifest.Unknown"/> if the file cannot be read or parsed —
-    /// holder identity is best-effort diagnostic detail; the lock conflict itself is what
-    /// the caller needs to know about.
+    /// Reads the holder's manifest from the sibling file (independent of the locked exclusion
+    /// file). Returns <see cref="InstanceLockManifest.Unknown"/> if the file does not exist
+    /// or cannot be parsed — holder identity is best-effort diagnostic detail; the lock
+    /// conflict itself is what the caller needs to know about.
     /// </summary>
-    private static InstanceLockManifest TryReadHolderManifest(string lockFilePath)
+    private static InstanceLockManifest TryReadHolderManifest(string manifestFilePath)
     {
         try
         {
-            using var read = new FileStream(
-                lockFilePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete,
-                bufferSize: 0,
-                FileOptions.None);
-            Span<byte> buffer = stackalloc byte[512];
-            var total = 0;
-            while (total < buffer.Length)
+            // The manifest is a plain file written by the holder — no lock contention,
+            // any process can read with default shared semantics.
+            if (!File.Exists(manifestFilePath))
             {
-                var read1 = read.Read(buffer[total..]);
-                if (read1 <= 0) { break; }
-                total += read1;
+                return InstanceLockManifest.Unknown;
             }
-            return InstanceLockManifest.TryParse(buffer[..total], out var m)
+            var bytes = File.ReadAllBytes(manifestFilePath);
+            return InstanceLockManifest.TryParse(bytes, out var m)
                 ? m
                 : InstanceLockManifest.Unknown;
         }
         catch
         {
-            // File deleted between failure and read, denied, etc. — fall back to placeholder.
+            // File deleted between Exists and ReadAllBytes, denied, etc. — fall back to placeholder.
             return InstanceLockManifest.Unknown;
         }
     }
 
     /// <summary>
-    /// Releases the OS lock by closing the file handle, then best-effort deletes the lock
-    /// file. Idempotent — safe to call multiple times. Never throws (matches the
-    /// <see cref="VolumeSession"/> / <see cref="FlashSkinkVolume"/> dispose contract).
+    /// Releases the OS lock by closing the file handle, then best-effort deletes both the
+    /// manifest file and the lock file. Idempotent — safe to call multiple times. Never
+    /// throws (matches the <see cref="VolumeSession"/> / <see cref="FlashSkinkVolume"/>
+    /// dispose contract).
     /// </summary>
     public ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return ValueTask.CompletedTask;
+        }
+
+        // Delete the manifest first — a peer reading it during the dispose window sees
+        // either the holder's data (if still present) or `Unknown` (if already deleted),
+        // both correct. After this the holder is no longer identifiable, but the lock is
+        // still held, so the peer's acquire still fails with SingleInstanceLockHeld.
+        try
+        {
+            File.Delete(_manifestFilePath);
+        }
+        catch
+        {
+            _logger?.LogDebug(
+                "Best-effort delete of {ManifestFilePath} on dispose did not succeed.",
+                _manifestFilePath);
         }
 
         try

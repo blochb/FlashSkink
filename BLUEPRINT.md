@@ -2195,17 +2195,22 @@ A 1% reservation is held for brain WAL/journal operations to prevent a completel
 
 Per Decision A18-b, FlashSkink holds an exclusive OS-level file lock on `[USB]/.flashskink/instance.lock` for the entire lifetime of an open volume. A second concurrent `CreateAsync` or `OpenAsync` on the same skink root — same host, or a different host against the same USB volume mounted via a network share — returns `Result.Fail(ErrorCode.SingleInstanceLockHeld)` with metadata identifying the holder. The user-facing message is: *"FlashSkink is already running on this volume from another process or host (pid=…, host=…, started=…, version=…). Close the other instance and try again."*
 
-**Acquisition mechanism.** The lock is a `FileStream` opened with `FileAccess.ReadWrite` and `FileShare.Read`. The holder excludes any second writer — a second `FileAccess.ReadWrite` request conflicts with the holder's `FileShare.Read` permission — while still allowing a reader to peek at the manifest payload with `FileAccess.Read`. On Windows this maps to the kernel sharing-mode check; on Linux/macOS .NET maps it to an advisory `flock`-equivalent. Either way, two processes cannot simultaneously hold the file open with write access.
+**Acquisition mechanism.** The lock primitive uses a two-file scheme:
 
-**Lock manifest.** Immediately after acquisition the holder writes a compact JSON payload into the locked file:
+- `[USB]/.flashskink/instance.lock` — the *exclusion file*. Opened with `FileMode.OpenOrCreate`, `FileAccess.ReadWrite`, and `FileShare.None`. This is the only `FileShare` mode where .NET's cross-platform behaviour is reliably exclusive: on Windows the kernel sharing-mode check rejects a second open; on Linux/macOS .NET maps `FileShare.None` to `flock(LOCK_EX)`. Other share modes map to `LOCK_SH` on Linux, which is compatible with itself and would let two writers both succeed — so they cannot be used for exclusion. The exclusion file's contents are irrelevant; it stays held open for the volume's lifetime.
+- `[USB]/.flashskink/instance.manifest` — the holder-identity *manifest file*. A plain UTF-8 JSON file written by the holder immediately after acquiring the lock. Any process can read it with default file sharing.
+
+**Lock manifest.** Immediately after acquiring the exclusion file, the holder writes the manifest:
 
 ```json
 {"pid":12345,"host":"alice-laptop","startedAtUtc":"2025-05-19T14:32:01.1234567Z","appVersion":"0.1.0+abc1234"}
 ```
 
-A second-instance launch reads this payload with shared-read access (`FileShare.ReadWrite | FileShare.Delete`) to populate the holder identity in the error metadata. None of the four fields are secrets (Principle 26); they appear in logs, notifications, and bug reports.
+A second-instance launch fails to open the exclusion file, then reads the sibling manifest file to populate the holder identity in the error metadata. None of the four fields are secrets (Principle 26); they appear in logs, notifications, and bug reports.
 
-**Dispose ordering.** `FlashSkinkVolume.DisposeAsync` releases the lock as its final step, *after* the upload queue, brain mirror, volume context, and `VolumeSession` have all torn down. Holding the lock across the entire shutdown window preserves the "two processes never both think they own the volume" invariant — a concurrent second-instance launch sees `SingleInstanceLockHeld` until our teardown is fully complete.
+The two-file split is forced by the fact that the only reliably-exclusive `FileShare` mode on Linux is `FileShare.None`, which excludes *all* concurrent access including read. A single-file design that wrote the manifest into the locked file itself would either not exclude properly (using `FileShare.Read`, which Linux maps to a shared lock) or not let peers read the manifest. The two-file scheme decouples these concerns.
+
+**Dispose ordering.** `FlashSkinkVolume.DisposeAsync` releases the lock as its final step, *after* the upload queue, brain mirror, volume context, and `VolumeSession` have all torn down. Holding the lock across the entire shutdown window preserves the "two processes never both think they own the volume" invariant — a concurrent second-instance launch sees `SingleInstanceLockHeld` until our teardown is fully complete. The dispose sequence is: delete the manifest file (best-effort; a peer reading during the window sees either the holder's data or `Unknown`), close the exclusion file (releases the OS lock), delete the exclusion file (best-effort).
 
 **Stale-lock recovery.** On clean shutdown the lock file is deleted. On crash (segfault, kill -9, host power loss), the OS releases the underlying file lock automatically but leaves the file on disk as a cosmetic artifact. The next `OpenAsync` succeeds because no live `FileShare.None` handle exists; the new holder simply rewrites the manifest in place. The `VolumeCreationOptions.ForceUnlock` flag (exposed as the Phase-4 CLI `--force`) deletes the file before attempting to acquire — useful only in the rare case where another *unrelated* application has the file open for reading and is preventing rewrite. It is not a way to seize a live lock from a running FlashSkink instance: a genuinely-held lock returns `SingleInstanceLockHeld` even with `--force`.
 
