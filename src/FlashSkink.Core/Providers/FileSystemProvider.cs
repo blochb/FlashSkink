@@ -136,7 +136,12 @@ public sealed class FileSystemProvider : IStorageProvider, ISupportsRemoteHashCh
             var sidecarJson = JsonSerializer.SerializeToUtf8Bytes(
                 new { totalBytes, createdUtc = DateTimeOffset.UtcNow },
                 new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
-            await AtomicWriteHelper.WriteAndFsyncAsync(sidecarPath, sidecarJson, ct).ConfigureAwait(false);
+            // Principle 17 — CancellationToken.None for the sidecar write: once we decide to open
+            // the session we must durably commit the sidecar. Abandoning it mid-write (e.g. because
+            // the caller's token fires during a slow fsync on Linux) would leave a partial sidecar
+            // file with no future cleanup owner and make the session non-resumable. Cancellation is
+            // observed at the top of this method; the write itself is the atomic-commit step.
+            await AtomicWriteHelper.WriteAndFsyncAsync(sidecarPath, sidecarJson, CancellationToken.None).ConfigureAwait(false);
 
             _logger.LogDebug("Opened upload session for {Remote} ({TotalBytes} bytes)", safe, totalBytes);
 
