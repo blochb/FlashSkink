@@ -10,6 +10,7 @@ using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Abstractions.Time;
 using FlashSkink.Core.Crypto;
 using FlashSkink.Core.Engine;
+using FlashSkink.Core.Identity;
 using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Providers;
 using FlashSkink.Core.Storage;
@@ -325,15 +326,19 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
             session = openResult.Value!;
 
-            // Backfill volume identity and stamp the open-time app-version (Refactor PR A).
-            // Runs before ownership transfer so a failure leaves `session` non-null and the
-            // existing finally block disposes it cleanly.
+            // Backfill volume identity, stamp the open-time app-version (Refactor PR A),
+            // and increment VolumeEpoch + read VolumeState (dev plan §3.5.1). Runs before
+            // ownership transfer so a failure leaves `session` non-null and the existing
+            // finally block disposes it cleanly. The returned (state, newEpoch) tuple is
+            // captured but unused in §3.5.1 — it is consumed by the §3.5.2 witness
+            // handshake call site added later in this folder.
             var backfillResult = await BackfillAndStampOnOpenAsync(
                 session.BrainConnection!, ct).ConfigureAwait(false);
             if (!backfillResult.Success)
             {
                 return Result<FlashSkinkVolume>.Fail(backfillResult.Error!);
             }
+            _ = backfillResult.Value; // (volumeState, newEpoch) — consumed by §3.5.2 handshake.
 
             // Take ownership so the finally block does not dispose the session or lock.
             var ownedSession = session;
@@ -1108,6 +1113,15 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeID", Value = volumeId }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            // VolumeEpoch — monotonically-increasing per-session counter for the witness
+            // protocol (dev plan §3.5.1, Blueprint §19.6). Seeded directly at "1" rather
+            // than "0"-then-incremented because CreateAsync does not call
+            // BackfillAndStampOnOpenAsync (which is what would do the increment). The
+            // first session ever IS the create session, so it gets epoch 1.
+            // VolumeState is intentionally NOT seeded — its absence is interpreted as
+            // VolumeState.Normal by BackfillAndStampOnOpenAsync, keeping this seed step
+            // minimal. §3.5.2's handshake owns writes to Settings["VolumeState"].
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeEpoch", Value = "1" }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionCreatedWith", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpened", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
             await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpenedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
@@ -1138,16 +1152,25 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     /// <summary>
     /// Idempotent post-open maintenance: writes the random <c>VolumeID</c> GUID if missing
     /// from a legacy brain, migrates the legacy <c>AppVersion</c> key to
-    /// <c>AppVersionCreatedWith</c> if present, and always overwrites
-    /// <c>AppVersionLastOpened</c> and <c>AppVersionLastOpenedUtc</c> with the current
-    /// app version and wall-clock time. All operations run in a single transaction so a
-    /// failure mid-flight leaves the brain unchanged (blueprint §31, CLAUDE.md Principles
-    /// 33 / 34). Safe to call on a brand-new brain just seeded by
+    /// <c>AppVersionCreatedWith</c> if present, always overwrites <c>AppVersionLastOpened</c>
+    /// and <c>AppVersionLastOpenedUtc</c> with the current app version and wall-clock
+    /// time, reads <c>VolumeState</c> (defaulting to <see cref="VolumeState.Normal"/> for
+    /// absent or unparseable rows), and increments <c>VolumeEpoch</c> by exactly one
+    /// (treating an absent row as <c>0</c>, so the next-written value becomes <c>1</c>).
+    /// All operations run in a single transaction so a failure mid-flight leaves the brain
+    /// unchanged (blueprint §31, CLAUDE.md Principles 33 / 34; dev plan §3.5.1 adds the
+    /// epoch increment and state read). Safe to call on a brand-new brain just seeded by
     /// <see cref="SeedInitialSettingsAsync"/>: the backfills are no-ops; only the
     /// last-opened stamps refresh (the seed and the open happen at the same moment, so
-    /// the refresh writes the same values).
+    /// the refresh writes the same values) and the epoch increments past the seed value.
     /// </summary>
-    private static async Task<Result> BackfillAndStampOnOpenAsync(
+    /// <returns>
+    /// A tuple carrying the current <see cref="VolumeState"/> read from the brain and the
+    /// new <c>VolumeEpoch</c> value just written. The <see cref="VolumeState"/> is the
+    /// pre-handshake state; §3.5.2 may transition it to <see cref="VolumeState.Fenced"/>
+    /// based on the handshake outcome and re-persist the row.
+    /// </returns>
+    private static async Task<Result<(VolumeState State, long NewEpoch)>> BackfillAndStampOnOpenAsync(
         SqliteConnection connection,
         CancellationToken ct)
     {
@@ -1215,24 +1238,76 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 new { Key = "AppVersionLastOpenedUtc", Value = nowUtc },
                 transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
 
+            // 4. Read VolumeState (dev plan §3.5.1; Blueprint §19.7 — added §3.5.2). An
+            //    absent row is interpreted as Normal — the default. A row that cannot be
+            //    parsed as a VolumeState (corruption, hand-edit, future enum value) is ALSO
+            //    treated as Normal so a bad row never blocks open. The §3.5.2 handshake
+            //    owns writes to this row; this step only reads.
+            var volumeStateRaw = await connection.QuerySingleOrDefaultAsync<string?>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'VolumeState'",
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+            var volumeState = volumeStateRaw is not null
+                && Enum.TryParse<VolumeState>(volumeStateRaw, ignoreCase: false, out var parsedState)
+                    ? parsedState
+                    : VolumeState.Normal;
+
+            // 5. Increment VolumeEpoch (dev plan §3.5.1). Absent row → 0 → write 1. A
+            //    non-parseable value is a HARD error here, not silently treated as 0:
+            //    the epoch IS the conflict-detection signal, and zeroing a corrupted
+            //    value would mask divergence. The strict parse is documented in dev
+            //    plan §3.5.1 and tested by VolumeEpochTests.OpenAsync_GarbageEpochValue.
+            var currentEpochRaw = await connection.QuerySingleOrDefaultAsync<string?>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'VolumeEpoch'",
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+            long currentEpoch;
+            if (currentEpochRaw is null)
+            {
+                currentEpoch = 0L;
+            }
+            else if (!long.TryParse(
+                currentEpochRaw,
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out currentEpoch))
+            {
+                return Result<(VolumeState, long)>.Fail(
+                    ErrorCode.DatabaseReadFailed,
+                    $"Settings['VolumeEpoch'] contains a non-numeric value: '{currentEpochRaw}'.");
+            }
+            var newEpoch = currentEpoch + 1L;
+            await connection.ExecuteAsync(new CommandDefinition(upsert,
+                new
+                {
+                    Key = "VolumeEpoch",
+                    Value = newEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                },
+                transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+
             // If Commit throws, SqliteTransaction.Dispose() rolls back the underlying
             // SQLite transaction during stack unwinding; the original exception is caught
             // below and returned as Result.Fail with the brain in its pre-transaction state.
             tx.Commit();
-            return Result.Ok();
+            return Result<(VolumeState, long)>.Ok((volumeState, newEpoch));
         }
         catch (OperationCanceledException ex)
         {
-            return Result.Fail(ErrorCode.Cancelled, "Backfill-and-stamp on open was cancelled.", ex);
+            return Result<(VolumeState, long)>.Fail(
+                ErrorCode.Cancelled, "Backfill-and-stamp on open was cancelled.", ex);
         }
         catch (SqliteException ex)
         {
-            return Result.Fail(ErrorCode.DatabaseWriteFailed,
+            return Result<(VolumeState, long)>.Fail(
+                ErrorCode.DatabaseWriteFailed,
                 $"Failed to backfill and stamp settings on open. SqliteErrorCode={ex.SqliteErrorCode}.", ex);
         }
         catch (Exception ex)
         {
-            return Result.Fail(ErrorCode.Unknown,
+            return Result<(VolumeState, long)>.Fail(
+                ErrorCode.Unknown,
                 "Unexpected error during backfill-and-stamp on open.", ex);
         }
     }

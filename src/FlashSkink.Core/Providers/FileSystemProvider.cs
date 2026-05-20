@@ -642,6 +642,9 @@ public sealed class FileSystemProvider : IStorageProvider, ISupportsRemoteHashCh
     /// Layout for brain-mirror objects (sanitised name starting with <c>"_brain_"</c>, i.e. the
     /// caller passed <c>"_brain/..."</c>): <c>{rootPath}/_brain/{nameAfterPrefix}</c> — unsharded,
     /// co-existing with <c>blobs/</c> and <c>_health/</c> at the tail root (dev plan §3.1).
+    /// Layout for witness objects (sanitised name starting with <c>"_witness_"</c>, i.e. the
+    /// caller passed <c>"_witness/..."</c>): <c>{rootPath}/_witness/{nameAfterPrefix}</c> —
+    /// unsharded, parallel to <c>_brain/</c> (dev plan §3.5.1; Blueprint §19.6).
     /// </summary>
     private string ComputeRemotePath(string sanitisedRemote)
     {
@@ -650,6 +653,13 @@ public sealed class FileSystemProvider : IStorageProvider, ISupportsRemoteHashCh
         {
             var rest = sanitisedRemote[BrainPrefix.Length..];
             return Path.Combine(_rootPath, "_brain", rest);
+        }
+
+        const string WitnessPrefix = "_witness_";
+        if (sanitisedRemote.StartsWith(WitnessPrefix, StringComparison.Ordinal))
+        {
+            var rest = sanitisedRemote[WitnessPrefix.Length..];
+            return Path.Combine(_rootPath, "_witness", rest);
         }
 
         Debug.Assert(sanitisedRemote.Length >= 4, "remote name must be >= 4 chars to shard");

@@ -203,4 +203,23 @@ public enum ErrorCode
 
     /// <summary>Self-healing requires at least one surviving tail, and none are available.</summary>
     NoSurvivorsAvailable,
+
+    // ── Clone safety ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A tail's witness epoch is at or beyond the local brain's epoch (or a witness on a
+    /// reachable tail carries the <c>ConflictObserved</c> marker), indicating that a diverged
+    /// clone has performed sessions that this volume does not contain. The volume transitions
+    /// to fenced state (<see cref="VolumeFenced"/>) until resolved by
+    /// <c>FlashSkinkVolume.PromoteAsync</c>. (Blueprint §19.6–19.7, dev plan §3.5.2.)
+    /// </summary>
+    SplitBrainDetected,
+
+    /// <summary>
+    /// The volume is in fenced state (split-brain was detected in a prior session and persisted
+    /// in <c>Settings["VolumeState"]</c>). Phase 2 uploads are blocked on every tail until the
+    /// user resolves the conflict via <c>FlashSkinkVolume.PromoteAsync</c>. Phase 1 writes and
+    /// reads continue to function. (Blueprint §19.7, dev plan §3.5.2.)
+    /// </summary>
+    VolumeFenced,
 }
