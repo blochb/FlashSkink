@@ -54,7 +54,7 @@ jobs:
 
           echo "Context built: $(wc -l < /tmp/review/context.md) lines, $(wc -c < /tmp/review/context.md) bytes"
 
-      - uses: anthropics/claude-code-action@7d7d3055f1fdc9a97a040c69ead9ba392fa6326a  # v1.0.113
+      - uses: anthropics/claude-code-action@51ea8ea73a139f2a74ff649e3092c25a904aed7e  # v1.0.123
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: >-
