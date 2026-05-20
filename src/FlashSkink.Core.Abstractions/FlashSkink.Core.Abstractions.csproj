@@ -5,4 +5,10 @@
     <RootNamespace>FlashSkink.Core.Abstractions</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- MnemonicService.Generate calls the internal RecoveryPhrase constructor
+         to transfer ownership of freshly-allocated char[][] word buffers. -->
+    <InternalsVisibleTo Include="FlashSkink.Core" />
+  </ItemGroup>
+
 </Project>

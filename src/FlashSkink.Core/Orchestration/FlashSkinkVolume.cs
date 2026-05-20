@@ -1,6 +1,8 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using Dapper;
+using FlashSkink.Core.Abstractions.Crypto;
 using FlashSkink.Core.Abstractions.Models;
 using FlashSkink.Core.Abstractions.Notifications;
 using FlashSkink.Core.Abstractions.Providers;
@@ -41,6 +43,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     private readonly UploadQueueService _uploadQueueService;
     private readonly BrainMirrorService _brainMirrorService;
     private readonly CancellationTokenSource _volumeCts;
+    private readonly InstanceLock _instanceLock;
     private int _disposed;
 
     // ── Events (declared; raisers arrive in later phases) ────────────────────
@@ -85,7 +88,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         UploadWakeupSignal wakeupSignal,
         UploadQueueService uploadQueueService,
         BrainMirrorService brainMirrorService,
-        CancellationTokenSource volumeCts)
+        CancellationTokenSource volumeCts,
+        InstanceLock instanceLock)
     {
         _session = session;
         _context = context;
@@ -101,6 +105,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         _uploadQueueService = uploadQueueService;
         _brainMirrorService = brainMirrorService;
         _volumeCts = volumeCts;
+        _instanceLock = instanceLock;
     }
 
     // ── Static factory methods ───────────────────────────────────────────────
@@ -108,9 +113,17 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     /// <summary>
     /// Creates a new volume at <paramref name="skinkRoot"/>: creates the directory skeleton,
     /// generates a recovery phrase, creates the vault, runs migrations, seeds initial
-    /// Settings rows, and returns an open <see cref="FlashSkinkVolume"/>.
+    /// Settings rows, and returns a <see cref="VolumeCreationReceipt"/> containing the open
+    /// volume and the phrase.
     /// </summary>
-    public static async Task<Result<FlashSkinkVolume>> CreateAsync(
+    /// <remarks>
+    /// <b>The recovery phrase is returned exactly once and is not persisted by FlashSkink
+    /// anywhere</b> — neither on the skink nor on any tail (blueprint §18.8, §29 Decision
+    /// A16). The caller is responsible for displaying the phrase to the user and disposing
+    /// <see cref="VolumeCreationReceipt.RecoveryPhrase"/> when done; losing the receipt
+    /// without recording the phrase forfeits the only out-of-band recovery path.
+    /// </remarks>
+    public static async Task<Result<VolumeCreationReceipt>> CreateAsync(
         string skinkRoot,
         string password,
         VolumeCreationOptions options,
@@ -128,6 +141,10 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         SqliteConnection? connection = null;
         bool vaultCreated = false;
         bool brainCreated = false;
+        RecoveryPhrase? phrase = null;
+        bool phraseOwned = false;
+        InstanceLock? instanceLock = null;
+        bool lockHeld = false;
 
         try
         {
@@ -136,13 +153,29 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             Directory.CreateDirectory(stagingPath);
             await FsyncDirectoryAsync(stagingPath).ConfigureAwait(false);
 
+            // Acquire the single-instance lock before any vault/brain work so a concurrent
+            // CreateAsync/OpenAsync on the same root fails fast with SingleInstanceLockHeld
+            // instead of racing on vault.bin / brain.db (Blueprint §19.5, Principle 35).
+            var lockResult = await InstanceLock.AcquireAsync(
+                skinkRoot,
+                GetAppInformationalVersion(),
+                options.ForceUnlock,
+                options.LoggerFactory.CreateLogger<InstanceLock>(),
+                ct).ConfigureAwait(false);
+            if (!lockResult.Success)
+            {
+                return Result<VolumeCreationReceipt>.Fail(lockResult.Error!);
+            }
+            instanceLock = lockResult.Value!;
+            lockHeld = true;
+
             passwordBytes = Encoding.UTF8.GetBytes(password);
             var passwordMem = new ReadOnlyMemory<byte>(passwordBytes);
 
             var vaultResult = await keyVault.CreateAsync(vaultPath, passwordMem, ct).ConfigureAwait(false);
             if (!vaultResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(vaultResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(vaultResult.Error!);
             }
 
             vaultCreated = true;
@@ -151,7 +184,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var brainResult = await brainFactory.CreateAsync(brainPath, dek, ct).ConfigureAwait(false);
             if (!brainResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(brainResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(brainResult.Error!);
             }
 
             brainCreated = true;
@@ -160,44 +193,56 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var migrationResult = await migrationRunner.RunAsync(connection, ct).ConfigureAwait(false);
             if (!migrationResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(migrationResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(migrationResult.Error!);
             }
 
             var mnemonicResult = mnemonicService.Generate();
             if (!mnemonicResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(mnemonicResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(mnemonicResult.Error!);
             }
 
-            var seedResult = await SeedInitialSettingsAsync(connection, mnemonicResult.Value!, ct).ConfigureAwait(false);
+            phrase = mnemonicResult.Value!;
+            phraseOwned = true;
+
+            var seedResult = await SeedInitialSettingsAsync(connection, ct).ConfigureAwait(false);
             if (!seedResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(seedResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(seedResult.Error!);
             }
 
             // Take ownership — clear locals so finally does not double-zero or delete files.
             var ownedDek = dek;
             var ownedConnection = connection;
+            var ownedLock = instanceLock;
             dek = null;
             connection = null;
             vaultCreated = false;
             brainCreated = false;
+            lockHeld = false;
 
             var session = new VolumeSession(ownedDek, ownedConnection);
             var volume = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
-                streamManager, lifecycle, keyVault, vaultPath).ConfigureAwait(false);
-            return Result<FlashSkinkVolume>.Ok(volume);
+                streamManager, lifecycle, keyVault, vaultPath, ownedLock!).ConfigureAwait(false);
+
+            // Ownership of the phrase transfers to the receipt; the caller will dispose it.
+            phraseOwned = false;
+            return Result<VolumeCreationReceipt>.Ok(new VolumeCreationReceipt(volume, phrase));
         }
         catch (OperationCanceledException ex)
         {
-            return Result<FlashSkinkVolume>.Fail(ErrorCode.Cancelled, "Create volume was cancelled.", ex);
+            return Result<VolumeCreationReceipt>.Fail(ErrorCode.Cancelled, "Create volume was cancelled.", ex);
         }
         catch (Exception ex)
         {
-            return Result<FlashSkinkVolume>.Fail(ErrorCode.Unknown, "Unexpected error creating volume.", ex);
+            return Result<VolumeCreationReceipt>.Fail(ErrorCode.Unknown, "Unexpected error creating volume.", ex);
         }
         finally
         {
+            if (phraseOwned && phrase is not null)
+            {
+                phrase.Dispose();
+            }
             if (passwordBytes is not null)
             {
                 CryptographicOperations.ZeroMemory(passwordBytes);
@@ -214,6 +259,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             if (vaultCreated && File.Exists(vaultPath))
             {
                 try { File.Delete(vaultPath); } catch { /* best-effort vault cleanup on failure */ }
+            }
+            // Release the single-instance lock last so any concurrent second-instance launch
+            // sees SingleInstanceLockHeld for the entire window during which vault/brain
+            // files might exist in a half-built state (Blueprint §19.5).
+            if (lockHeld && instanceLock is not null)
+            {
+                await instanceLock.DisposeAsync().ConfigureAwait(false);
             }
         }
     }
@@ -237,12 +289,30 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
         byte[]? passwordBytes = null;
         VolumeSession? session = null;
+        InstanceLock? instanceLock = null;
+        bool lockHeld = false;
 
         try
         {
             ct.ThrowIfCancellationRequested();
 
             Directory.CreateDirectory(stagingPath);
+
+            // Acquire the single-instance lock before vault unlock so a concurrent open
+            // fails fast with SingleInstanceLockHeld instead of racing to derive the same
+            // KEK (Blueprint §19.5, Principle 35).
+            var lockResult = await InstanceLock.AcquireAsync(
+                skinkRoot,
+                GetAppInformationalVersion(),
+                options.ForceUnlock,
+                options.LoggerFactory.CreateLogger<InstanceLock>(),
+                ct).ConfigureAwait(false);
+            if (!lockResult.Success)
+            {
+                return Result<FlashSkinkVolume>.Fail(lockResult.Error!);
+            }
+            instanceLock = lockResult.Value!;
+            lockHeld = true;
 
             passwordBytes = Encoding.UTF8.GetBytes(password);
             var passwordMem = new ReadOnlyMemory<byte>(passwordBytes);
@@ -253,13 +323,26 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 return Result<FlashSkinkVolume>.Fail(openResult.Error!);
             }
 
-            // Take ownership so the finally block does not dispose the session.
             session = openResult.Value!;
+
+            // Backfill volume identity and stamp the open-time app-version (Refactor PR A).
+            // Runs before ownership transfer so a failure leaves `session` non-null and the
+            // existing finally block disposes it cleanly.
+            var backfillResult = await BackfillAndStampOnOpenAsync(
+                session.BrainConnection!, ct).ConfigureAwait(false);
+            if (!backfillResult.Success)
+            {
+                return Result<FlashSkinkVolume>.Fail(backfillResult.Error!);
+            }
+
+            // Take ownership so the finally block does not dispose the session or lock.
             var ownedSession = session;
+            var ownedLock = instanceLock;
             session = null;
+            lockHeld = false;
 
             var volume = await BuildVolumeFromSessionAsync(ownedSession, skinkRoot, options,
-                streamManager, lifecycle, keyVault, vaultPath).ConfigureAwait(false);
+                streamManager, lifecycle, keyVault, vaultPath, ownedLock!).ConfigureAwait(false);
             return Result<FlashSkinkVolume>.Ok(volume);
         }
         catch (OperationCanceledException ex)
@@ -279,6 +362,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             if (session is not null)
             {
                 await session.DisposeAsync().ConfigureAwait(false);
+            }
+            // Release the single-instance lock last so any concurrent second-instance
+            // launch sees SingleInstanceLockHeld for the entire window during which the
+            // session might exist in a half-built state (Blueprint §19.5).
+            if (lockHeld && instanceLock is not null)
+            {
+                await instanceLock.DisposeAsync().ConfigureAwait(false);
             }
         }
     }
@@ -847,6 +937,14 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             _context.Dispose();
             await _session.DisposeAsync().ConfigureAwait(false);
 
+            // Step 5 — release the single-instance lock LAST. Holding the lock past
+            // session teardown means a concurrent second-instance launch sees
+            // SingleInstanceLockHeld for the entire duration of our shutdown, not just
+            // up to the point where the brain connection closes. This preserves the
+            // "two processes never both think they own the volume" invariant across the
+            // full dispose interval. (Blueprint §19.5, Principle 35.)
+            await _instanceLock.DisposeAsync().ConfigureAwait(false);
+
             _volumeCts.Dispose();
         }
         finally
@@ -891,7 +989,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         RecyclableMemoryStreamManager streamManager,
         VolumeLifecycle lifecycle,
         KeyVault keyVault,
-        string vaultPath)
+        string vaultPath,
+        InstanceLock instanceLock)
     {
         var loggerFactory = options.LoggerFactory;
         var notificationBus = options.NotificationBus;
@@ -953,6 +1052,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             volumeCts.Dispose();
             context.Dispose();
             await session.DisposeAsync().ConfigureAwait(false);
+            await instanceLock.DisposeAsync().ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"Upload queue service failed to start: {queueStartResult.Error!.Code}");
         }
@@ -965,6 +1065,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             volumeCts.Dispose();
             context.Dispose();
             await session.DisposeAsync().ConfigureAwait(false);
+            await instanceLock.DisposeAsync().ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"Brain mirror service failed to start: {mirrorStartResult.Error!.Code}");
         }
@@ -972,25 +1073,52 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         return new FlashSkinkVolume(
             session, context, writePipeline, readPipeline, lifecycle, keyVault, vaultPath,
             registry, netMonitor, clock, wakeupSignal, uploadQueueService, brainMirrorService,
-            volumeCts);
+            volumeCts, instanceLock);
     }
 
+    /// <summary>
+    /// Writes the initial <c>Settings</c> rows at volume creation: grace period, audit
+    /// interval, creation timestamp, the random <c>VolumeID</c> GUID, and three app-version
+    /// rows (<c>AppVersionCreatedWith</c>, <c>AppVersionLastOpened</c>,
+    /// <c>AppVersionLastOpenedUtc</c>). <c>VolumeID</c> is generated via
+    /// <see cref="Guid.NewGuid"/> and is intentionally independent of any cryptographic key
+    /// material — two skinks initialised from the same recovery phrase are distinct volumes
+    /// (blueprint §31). App-version values come from
+    /// <see cref="AssemblyInformationalVersionAttribute"/> (MinVer-stamped at build time).
+    /// </summary>
     private static async Task<Result> SeedInitialSettingsAsync(
         SqliteConnection connection,
-        string[] mnemonicWords,
         CancellationToken ct)
     {
         try
         {
             ct.ThrowIfCancellationRequested();
             const string upsert = "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@Key, @Value)";
-            var appVersion = typeof(FlashSkinkVolume).Assembly.GetName().Version?.ToString() ?? "0.0.0.0";
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "GracePeriodDays", Value = "30" }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = DateTime.UtcNow.ToString("O") }, cancellationToken: ct)).ConfigureAwait(false);
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersion", Value = appVersion }, cancellationToken: ct)).ConfigureAwait(false);
-            // Stored in Settings (not logged, not surfaced through ErrorContext.Metadata) — Principle 26.
-            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "RecoveryPhrase", Value = string.Join(" ", mnemonicWords) }, cancellationToken: ct)).ConfigureAwait(false);
+            var appVersion = GetAppInformationalVersion();
+            var nowUtc = DateTime.UtcNow.ToString("O");
+            var volumeId = Guid.NewGuid().ToString("D");
+
+            // Wrap all seven upserts in a single transaction so a SqliteException or
+            // cancellation mid-sequence leaves the brain unchanged. CreateAsync's failure
+            // path deletes the brain file anyway, but the transaction closes the narrow
+            // partial-seed window and matches the pattern used in BackfillAndStampOnOpenAsync.
+            using var tx = connection.BeginTransaction();
+
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "GracePeriodDays", Value = "30" }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AuditIntervalHours", Value = "168" }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeCreatedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "VolumeID", Value = volumeId }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionCreatedWith", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpened", Value = appVersion }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert, new { Key = "AppVersionLastOpenedUtc", Value = nowUtc }, transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+
+            // If Commit throws, SqliteTransaction.Dispose() rolls back the underlying
+            // SQLite transaction during stack unwinding; the original exception is caught
+            // below and returned as Result.Fail with the brain in its pre-transaction state.
+            tx.Commit();
+            // Recovery phrase is intentionally NOT persisted here — it is returned to the
+            // caller exactly once via VolumeCreationReceipt.RecoveryPhrase. See blueprint
+            // §18.8 ("not persisted by FlashSkink") and §29 Decision A16.
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
@@ -1006,6 +1134,119 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             return Result.Fail(ErrorCode.Unknown, "Unexpected error seeding settings.", ex);
         }
     }
+
+    /// <summary>
+    /// Idempotent post-open maintenance: writes the random <c>VolumeID</c> GUID if missing
+    /// from a legacy brain, migrates the legacy <c>AppVersion</c> key to
+    /// <c>AppVersionCreatedWith</c> if present, and always overwrites
+    /// <c>AppVersionLastOpened</c> and <c>AppVersionLastOpenedUtc</c> with the current
+    /// app version and wall-clock time. All operations run in a single transaction so a
+    /// failure mid-flight leaves the brain unchanged (blueprint §31, CLAUDE.md Principles
+    /// 33 / 34). Safe to call on a brand-new brain just seeded by
+    /// <see cref="SeedInitialSettingsAsync"/>: the backfills are no-ops; only the
+    /// last-opened stamps refresh (the seed and the open happen at the same moment, so
+    /// the refresh writes the same values).
+    /// </summary>
+    private static async Task<Result> BackfillAndStampOnOpenAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var nowUtc = DateTime.UtcNow.ToString("O");
+            var appVersion = GetAppInformationalVersion();
+            const string upsert = "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@Key, @Value)";
+
+            using var tx = connection.BeginTransaction();
+
+            // 1. Backfill VolumeID if a legacy brain lacks it.
+            var existingVolumeId = await connection.QuerySingleOrDefaultAsync<string?>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'VolumeID'",
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+            if (existingVolumeId is null)
+            {
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "INSERT INTO Settings (Key, Value) VALUES ('VolumeID', @Value)",
+                    new { Value = Guid.NewGuid().ToString("D") },
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+            }
+
+            // 2. Backfill AppVersionCreatedWith from the legacy AppVersion key if present.
+            //    If both are missing (hand-edited or partially-corrupt brain), seed a
+            //    distinguishable sentinel so audit logs can tell "we don't know" apart
+            //    from "we don't know specifically because MinVer wasn't wired" ("0.0.0-unknown").
+            var existingCreatedWith = await connection.QuerySingleOrDefaultAsync<string?>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'AppVersionCreatedWith'",
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+            if (existingCreatedWith is null)
+            {
+                var legacyAppVersion = await connection.QuerySingleOrDefaultAsync<string?>(
+                    new CommandDefinition(
+                        "SELECT Value FROM Settings WHERE Key = 'AppVersion'",
+                        transaction: tx,
+                        cancellationToken: ct)).ConfigureAwait(false);
+                var seedValue = legacyAppVersion ?? "unknown-legacy";
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "INSERT INTO Settings (Key, Value) VALUES ('AppVersionCreatedWith', @Value)",
+                    new { Value = seedValue },
+                    transaction: tx,
+                    cancellationToken: ct)).ConfigureAwait(false);
+                if (legacyAppVersion is not null)
+                {
+                    await connection.ExecuteAsync(new CommandDefinition(
+                        "DELETE FROM Settings WHERE Key = 'AppVersion'",
+                        transaction: tx,
+                        cancellationToken: ct)).ConfigureAwait(false);
+                }
+            }
+
+            // 3. Always overwrite the open-time stamps so they reflect the current opener.
+            await connection.ExecuteAsync(new CommandDefinition(upsert,
+                new { Key = "AppVersionLastOpened", Value = appVersion },
+                transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+            await connection.ExecuteAsync(new CommandDefinition(upsert,
+                new { Key = "AppVersionLastOpenedUtc", Value = nowUtc },
+                transaction: tx, cancellationToken: ct)).ConfigureAwait(false);
+
+            // If Commit throws, SqliteTransaction.Dispose() rolls back the underlying
+            // SQLite transaction during stack unwinding; the original exception is caught
+            // below and returned as Result.Fail with the brain in its pre-transaction state.
+            tx.Commit();
+            return Result.Ok();
+        }
+        catch (OperationCanceledException ex)
+        {
+            return Result.Fail(ErrorCode.Cancelled, "Backfill-and-stamp on open was cancelled.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            return Result.Fail(ErrorCode.DatabaseWriteFailed,
+                $"Failed to backfill and stamp settings on open. SqliteErrorCode={ex.SqliteErrorCode}.", ex);
+        }
+        catch (Exception ex)
+        {
+            return Result.Fail(ErrorCode.Unknown,
+                "Unexpected error during backfill-and-stamp on open.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Returns the MinVer-stamped informational version of the
+    /// <c>FlashSkink.Core</c> assembly (a SemVer string with optional commit suffix),
+    /// or the sentinel <c>"0.0.0-unknown"</c> when the attribute is missing. Never throws.
+    /// </summary>
+    private static string GetAppInformationalVersion()
+        => typeof(FlashSkinkVolume).Assembly
+               .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+               .InformationalVersion
+           ?? "0.0.0-unknown";
 
     private static Task FsyncDirectoryAsync(string path)
     {

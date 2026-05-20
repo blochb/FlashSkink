@@ -75,7 +75,9 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var result = await FlashSkinkVolume.CreateAsync(
             _skinkRoot, Password, options ?? DefaultOptions());
         Assert.True(result.Success, result.Error?.Message);
-        return result.Value!;
+        // The RecoveryPhrase is intentionally leaked across this test fixture — these
+        // tests exercise upload paths, not phrase lifecycle. xUnit GCs it at test end.
+        return result.Value!.Volume;
     }
 
     /// <summary>

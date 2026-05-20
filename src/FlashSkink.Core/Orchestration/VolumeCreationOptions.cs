@@ -50,4 +50,17 @@ public sealed class VolumeCreationOptions
     /// is used.
     /// </summary>
     public IClock? Clock { get; init; }
+
+    /// <summary>
+    /// Opt-in stale-lock recovery. When <see langword="true"/>, <see cref="FlashSkinkVolume.CreateAsync"/>
+    /// and <see cref="FlashSkinkVolume.OpenAsync"/> delete any pre-existing
+    /// <c>[skinkRoot]/.flashskink/instance.lock</c> file before attempting to acquire the
+    /// single-instance lock. Intended for the Phase-4 CLI <c>--force</c> flag exposed to
+    /// users recovering from a previous-process crash that left a stale file behind; the OS
+    /// already releases the underlying file lock on process exit, so this flag exists only
+    /// to clear the cosmetic file artifact. Setting this to <see langword="true"/> does
+    /// <b>not</b> bypass the lock — it merely tolerates a stale file. Production callers
+    /// should leave this <see langword="false"/> (the default). (Blueprint §19.5.)
+    /// </summary>
+    public bool ForceUnlock { get; init; }
 }

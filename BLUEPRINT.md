@@ -43,7 +43,8 @@
 28. Tech Stack
 29. Decision Records
 30. Out of Scope (V1)
-31. Post-V1 Direction
+31. App Identity and Versioning
+32. Post-V1 Direction
 
 ---
 
@@ -271,7 +272,7 @@ The mirror model commits to specific behaviours:
 - **Multi-device sync.** A volume is single-user, single-skink. Two USBs are two volumes.
 - **Selective sync.** All files on the skink go to all tails. The user does not pick which files go where.
 
-These are not deficiencies but deliberate scope decisions. A snapshot product, if built, is a separate product (see §31 Post-V1 Direction).
+These are not deficiencies but deliberate scope decisions. A snapshot product, if built, is a separate product (see §32 Post-V1 Direction).
 
 ---
 
@@ -1238,10 +1239,6 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     public Task<Result<IReadOnlyList<ActivityLogEntry>>> GetActivityAsync(
         DateTimeOffset since, CancellationToken ct);
 
-    // Recovery phrase re-display (requires password + waiting period)
-    public Task<Result<string>> RevealRecoveryPhraseAsync(
-        string password, CancellationToken ct);
-
     // Password change
     public Task<Result> ChangePasswordAsync(
         string oldPassword, string newPassword, CancellationToken ct);
@@ -1264,7 +1261,6 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 - **`ListChildrenAsync(parentId: null)`** returns all root-level items.
 - **`AddTailAsync`** queues every existing file for upload to the new tail. Returns immediately with the tail info; uploads proceed in the background.
 - **`RemoveTailAsync`** deletes the OAuth token, queue rows, and session rows for the tail. Does not delete data on the provider side (user must do this manually if desired).
-- **`RevealRecoveryPhraseAsync`** requires the password and enforces a 60-second countdown before returning the phrase (Decision A16-d). The countdown is server-side in Core, not just a UI affectation — a malicious caller cannot skip it.
 - **`VerifyAsync`** walks every blob and every tail, confirming integrity. Long-running; respects cancellation.
 - **`ExportAsync`** writes every file in its original directory structure to the target. Used for migration out of FlashSkink (Decision A15-a).
 
@@ -1790,10 +1786,15 @@ CREATE TABLE Settings (
 );
 
 -- Initial settings (set at volume creation):
---   "GracePeriodDays" = "30"
---   "AuditIntervalHours" = "24"
---   "VolumeCreatedUtc" = "..."
---   "AppVersion" = "1.0.0"
+--   "GracePeriodDays"          = "30"
+--   "AuditIntervalHours"       = "168"     -- weekly; portable USB isn't always plugged in (§31)
+--   "VolumeCreatedUtc"         = "..."
+--   "VolumeID"                 = "<random GUID>"  -- never derived from recovery phrase (§31)
+--   "AppVersionCreatedWith"    = "1.0.0+abc1234"  -- AssemblyInformationalVersionAttribute, MinVer-stamped
+--   "AppVersionLastOpened"     = "1.0.0+abc1234"  -- overwritten every Open
+--   "AppVersionLastOpenedUtc"  = "..."             -- overwritten every Open
+-- Recovery phrase is NOT persisted (§18.8, §29 A16) — returned exactly once via
+-- VolumeCreationReceipt.RecoveryPhrase from FlashSkinkVolume.CreateAsync.
 ```
 
 ### 16.3 Schema Migration
@@ -1802,7 +1803,7 @@ Migrations are versioned scripts embedded in the binary. The `MigrationRunner` r
 
 ```
 1. Open brain (with SQLCipher key).
-2. Read Settings["AppVersion"] and SchemaVersions max(Version).
+2. Read Settings["AppVersionCreatedWith"] and SchemaVersions max(Version).
 3. If schema version < expected:
      a. Mirror the brain DB to .flashskink/brain.db.pre-migration-{timestamp}
      b. For each missing version N:
@@ -2067,7 +2068,7 @@ Parameters are stored in the vault header (see §18.4) so future versions can ch
 
 Recovery: Mnemonic → KEK seed → KEK → unwrap DEK → decrypt brain mirror from any tail → reconstruct full volume.
 
-The mnemonic is shown exactly once at setup. After that, it can be re-displayed via `RevealRecoveryPhraseAsync` which requires the password and a 60-second waiting period (Decision A16-d).
+The mnemonic is shown exactly once at setup, returned via `VolumeCreationReceipt.RecoveryPhrase` from `FlashSkinkVolume.CreateAsync`. FlashSkink does not persist it on the skink or any tail (§18.8). The CLI is responsible for displaying the phrase to the user before disposing the receipt; once disposed, the underlying `char[][]` word buffers are zeroed and the phrase is unrecoverable from within FlashSkink (Decision A16-a — no re-display path).
 
 ### 18.4 DEK Vault
 
@@ -2108,7 +2109,7 @@ SQLCipher uses AES-256-CBC with HMAC-SHA512 page-level integrity. Page size is 4
 - **USB removed:** DEK retained in memory. Operations paused. Notification published.
 - **USB reinserted (same session):** `integrity_check`. Pass → resume. Fail → repair flow.
 - **USB reinserted (different host):** Same as above; DEK cannot transfer between hosts because it lives only in process memory.
-- **App closed / explicit lock:** `CryptographicOperations.ZeroMemory` on DEK, KEK, brain key, password buffer.
+- **App closed / explicit lock:** `CryptographicOperations.ZeroMemory` on DEK, KEK, brain key, password buffer. The recovery phrase `char[][]` buffers (held inside the `RecoveryPhrase` type returned by `MnemonicService.Generate` and surfaced via `VolumeCreationReceipt`) are zeroed when the receipt's `RecoveryPhrase` is disposed by the caller — typically immediately after display at setup.
 - **Process crash:** Memory is cleared by the OS. No persistent unencrypted state.
 
 ### 18.7 Provider Token Security
@@ -2122,7 +2123,7 @@ Token rotation: when a provider returns a new refresh token (some providers do t
 - DEK (held only in process memory while volume is open)
 - KEK (held only during operations that need it; zeroed immediately after)
 - Password (zeroed immediately after KEK derivation)
-- Mnemonic (shown to user once; not persisted by FlashSkink)
+- Mnemonic (returned exactly once via `VolumeCreationReceipt.RecoveryPhrase`; held only in `char[][]` buffers zeroed on `RecoveryPhrase.Dispose`; not persisted by FlashSkink on the skink or any tail)
 - Brain key (zeroed when SQLCipher connection closes)
 - Decrypted OAuth tokens (zeroed immediately after each provider call)
 
@@ -2192,9 +2193,28 @@ A 1% reservation is held for brain WAL/journal operations to prevent a completel
 
 ### 19.5 Single-Instance Lock
 
-Per Decision A18-b, FlashSkink holds an exclusive file lock on `[USB]/.flashskink/instance.lock` while open. Second-instance launch detects the lock and exits with a clear error: "FlashSkink is already running on this volume from another process or host. Close the other instance and try again."
+Per Decision A18-b, FlashSkink holds an exclusive OS-level file lock on `[USB]/.flashskink/instance.lock` for the entire lifetime of an open volume. A second concurrent `CreateAsync` or `OpenAsync` on the same skink root — same host, or a different host against the same USB volume mounted via a network share — returns `Result.Fail(ErrorCode.SingleInstanceLockHeld)` with metadata identifying the holder. The user-facing message is: *"FlashSkink is already running on this volume from another process or host (pid=…, host=…, started=…, version=…). Close the other instance and try again."*
 
-The lock is released on clean shutdown and on process exit (the OS releases file locks held by terminated processes).
+**Acquisition mechanism.** The lock primitive uses a two-file scheme:
+
+- `[USB]/.flashskink/instance.lock` — the *exclusion file*. Opened with `FileMode.OpenOrCreate`, `FileAccess.ReadWrite`, and `FileShare.None`. This is the only `FileShare` mode where .NET's cross-platform behaviour is reliably exclusive: on Windows the kernel sharing-mode check rejects a second open; on Linux/macOS .NET maps `FileShare.None` to `flock(LOCK_EX)`. Other share modes map to `LOCK_SH` on Linux, which is compatible with itself and would let two writers both succeed — so they cannot be used for exclusion. The exclusion file's contents are irrelevant; it stays held open for the volume's lifetime.
+- `[USB]/.flashskink/instance.manifest` — the holder-identity *manifest file*. A plain UTF-8 JSON file written by the holder immediately after acquiring the lock. Any process can read it with default file sharing.
+
+**Lock manifest.** Immediately after acquiring the exclusion file, the holder writes the manifest:
+
+```json
+{"pid":12345,"host":"alice-laptop","startedAtUtc":"2025-05-19T14:32:01.1234567Z","appVersion":"0.1.0+abc1234"}
+```
+
+A second-instance launch fails to open the exclusion file, then reads the sibling manifest file to populate the holder identity in the error metadata. None of the four fields are secrets (Principle 26); they appear in logs, notifications, and bug reports.
+
+The two-file split is forced by the fact that the only reliably-exclusive `FileShare` mode on Linux is `FileShare.None`, which excludes *all* concurrent access including read. A single-file design that wrote the manifest into the locked file itself would either not exclude properly (using `FileShare.Read`, which Linux maps to a shared lock) or not let peers read the manifest. The two-file scheme decouples these concerns.
+
+**Dispose ordering.** `FlashSkinkVolume.DisposeAsync` releases the lock as its final step, *after* the upload queue, brain mirror, volume context, and `VolumeSession` have all torn down. Holding the lock across the entire shutdown window preserves the "two processes never both think they own the volume" invariant — a concurrent second-instance launch sees `SingleInstanceLockHeld` until our teardown is fully complete. The dispose sequence is: delete the manifest file (best-effort; a peer reading during the window sees either the holder's data or `Unknown`), close the exclusion file (releases the OS lock), delete the exclusion file (best-effort).
+
+**Stale-lock recovery.** On clean shutdown both files are deleted (manifest first, then the exclusion file). On crash (segfault, kill -9, host power loss), the OS releases the underlying file lock automatically but leaves the files on disk as cosmetic artifacts. The next `OpenAsync` succeeds because no live `FileShare.None` handle exists; the new holder simply opens the existing exclusion file and overwrites the manifest. The `VolumeCreationOptions.ForceUnlock` flag (exposed as the Phase-4 CLI `--force`) is the cleanup hook for unusual cases such as restrictive-permission leftovers.
+
+`--force` must not bypass a *live* lock — and the obvious "delete the file before acquiring" implementation does exactly that on Linux/macOS, where `unlink(2)` succeeds on an `flock`-held file: it removes the directory entry without affecting the holder's lock on the underlying inode, after which a fresh `OpenOrCreate` creates a *different* inode at the same path and acquires its *own* `flock` — both processes then believe they hold the exclusive lock. To prevent that, `InstanceLock.AcquireAsync` probes the file with `FileShare.None` before any delete: if the probe fails, the lock is genuinely held and the force is refused with `SingleInstanceLockHeld`; if the probe succeeds, the lock is stale and the delete proceeds. The probe makes `--force` behave identically on every platform.
 
 ---
 
@@ -2493,7 +2513,9 @@ flashskink-cli failures ack    --skink <path> --id <failureId>
 flashskink-cli failures ack-all --skink <path>
 
 # Recovery / secrets
-flashskink-cli reveal-phrase   --skink <path>                       # Password-required, enforces 60 s countdown (Decision A16-d).
+# (No `reveal-phrase` command — the recovery phrase is displayed exactly once
+# at `setup` time via the VolumeCreationReceipt returned from CreateAsync and
+# is not persisted, so it cannot be re-displayed. Decision A16-a, §18.3, §18.8.)
 flashskink-cli change-password --skink <path>
 flashskink-cli reset-password  --skink <path>                       # Prompts for mnemonic interactively (never accepts it as a CLI arg).
 flashskink-cli recover     --provider <type> --client-id <id> --client-secret <secret> --output <newSkinkPath>
@@ -2747,9 +2769,12 @@ Any native dependency that fails this validation is a PR 0.1 blocker.
 | Hashing | `System.IO.Hashing` (XxHash64) + `System.Security.Cryptography` (SHA-256) | `Core` |
 | BIP-39 | Focused BIP-39 library (e.g. `dotnetstandard-bip39`) | `Core` |
 | Memory zeroing | `CryptographicOperations.ZeroMemory` | `Core` |
+| Versioning | `MinVer` (SemVer from git tags → `AssemblyInformationalVersionAttribute`) | All (wired in `Directory.Build.props`) |
 | Testing | `xUnit` + `Moq` + `FsCheck` (property-based for crash consistency) | `Tests` |
 | Publish | `dotnet publish --self-contained -r <RID> -p:PublishSingleFile=true` | CLI per RID |
 | Code signing | `signtool` (Windows Authenticode) + `codesign` (macOS Developer ID) | Build pipeline |
+
+**Reproducibility:** all production assemblies build with `<Deterministic>true</Deterministic>` and `<EmbedUntrackedSources>true</EmbedUntrackedSources>` in `Directory.Build.props`. `<ContinuousIntegrationBuild>` flips on under CI. MinVer derives the SemVer from the nearest annotated git tag (e.g. `v0.1.0`) so a tagged commit can be rebuilt identically from source. See §31.
 
 **Native dependency notes:**
 
@@ -2839,7 +2864,7 @@ This section preserves every architectural and product decision with options, se
 | A13 — V1 Restore UX | CLI `restore` command (single file) and `export` (whole-tree) | OSS surface is CLI-only |
 | A14 — Integrity verification | (b) Automatic + `verify` CLI | High-trust low-cost |
 | A15 — Export | (a) `flashskink-cli export` | No lock-in; trust feature |
-| A16 — Mnemonic re-display | (d) Password + 60s countdown | Stronger friction, deliberate |
+| A16 — Mnemonic re-display | (a) No re-display; caller must record at setup | Persisting the phrase contradicts §18.8 and adds tail-surface exposure for marginal UX |
 | A17 — Password reset via mnemonic | (a) Fully supported | Natural consequence of key hierarchy |
 | A18 — Concurrent skink access | (b) Single-instance lock | Cheap insurance |
 | A19 — Multiple skinks per user | (a) Fully independent | No coordination needed |
@@ -2916,16 +2941,56 @@ The following are deliberately excluded from V1. Some are planned for V2+ (with 
 
 ---
 
-## 31. Post-V1 Direction
+## 31. App Identity and Versioning
 
-### 31.1 V1.1 (first patch release after V1)
+This section unifies four concerns that were previously implicit: how a volume identifies itself, how the application identifies itself, how the brain remembers both over time, and the explicit prohibition on phoning home for updates. The four exist together because they share one motivation — a portable, nomadic appliance with no central server must carry its own identity story on the skink.
+
+### 31.1 Volume identity
+
+Every volume carries a random GUID at `Settings["VolumeID"]`, written at create time by `FlashSkinkVolume.CreateAsync` and backfilled at open time on legacy brains by `FlashSkinkVolume.OpenAsync`. The GUID is generated via `Guid.NewGuid()` (Version 4, cryptographically-strong random) and is **deliberately independent of any key material**: two skinks initialised from the same 24-word BIP-39 recovery phrase share encryption keys but have distinct volume identities. This separation matters for the deferred witness / clone-detection protocol (post-V1 Phase 3.5): clones are detected by identity divergence on shared tails, not by key divergence.
+
+The GUID is not a secret. It may appear in logs, audit-log entries, notifications, error messages, and bug reports without violating Principle 26 (logging never contains secrets).
+
+### 31.2 Application version
+
+Version metadata is sourced from `AssemblyInformationalVersionAttribute`, populated by [MinVer](https://github.com/adamralph/minver) at build time from the nearest annotated git tag. `MinVer` is referenced in `Directory.Build.props` with `PrivateAssets="all"` so it does not propagate to consumers. Builds are reproducible: `<Deterministic>true</Deterministic>` plus `<EmbedUntrackedSources>true</EmbedUntrackedSources>` plus `<ContinuousIntegrationBuild>` under CI ensure a tagged commit produces byte-identical binaries on every supported RID.
+
+Runtime canonical source: `typeof(FlashSkinkVolume).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()`. The CLI surfaces this via `flashskink --version` in Phase 4. `Assembly.GetName().Version` (the 4-part `AssemblyVersion`) is *not* canonical — it carries only `MAJOR.MINOR.PATCH.0` and loses the prerelease / commit suffix.
+
+### 31.3 Brain version stamping
+
+The brain remembers three version values:
+
+- `Settings["AppVersionCreatedWith"]` — written once at `CreateAsync`. Immutable after that. The version of FlashSkink that wrote the very first row in this brain.
+- `Settings["AppVersionLastOpened"]` — overwritten on every `OpenAsync`. The version that most recently opened the volume.
+- `Settings["AppVersionLastOpenedUtc"]` — overwritten on every `OpenAsync`. ISO-8601 UTC timestamp of the most recent open.
+
+Both open-time stamps are written by `BackfillAndStampOnOpenAsync` inside a single transaction immediately after migrations complete. The transaction also handles a one-time legacy migration: brains created before this section existed have an `AppVersion` key; on first open under the new code, the value is copied into `AppVersionCreatedWith` and the legacy key is deleted. Brains missing both keys (hand-edited or partially corrupt) are stamped with the sentinel `"unknown-legacy"` so audit logs can distinguish "we never knew" from "MinVer wasn't wired at create time" (which would have produced `"0.0.0-unknown"`).
+
+### 31.4 Schema forward-compat
+
+`MigrationRunner.RunAsync` reads `SchemaVersions.max(Version)` and refuses to open any brain whose schema version exceeds the running app's `MigrationRunner.CurrentSchemaVersion`. The failure returns `ErrorCode.VolumeIncompatibleVersion` with a clear user-facing message instructing them to update FlashSkink. This is the *only* hard upper-bound version check in the system. Lower-bound migrations are forward-only and automatic (see §16.3).
+
+### 31.5 No auto-update, no phone-home
+
+FlashSkink **never** checks for updates, **never** contacts an update server, and **never** transmits version information to any third party. This is a direct consequence of Principle 32 (no telemetry, no update checks) and the §3 row "Zero trust in the application" — the user holds the only durable secret, the application holds no accounts, and no part of FlashSkink phones home for any reason.
+
+Update mechanics are entirely manual: the user downloads a new release zip, replaces the binary on the USB, and runs it. The schema forward-compat check (§31.4) is what prevents an older binary from corrupting a brain written by a newer one; no version comparison ever happens against a network resource. If a future post-V1 release introduces opt-in version-check functionality, it requires a blueprint amendment and an explicit user toggle that defaults to off.
+
+The reasoning is positioning, not just preference: a backup product that phones home is one disclosed log away from leaking "this user runs FlashSkink on a USB they plug into X hosts." That's exactly the kind of metadata FlashSkink is designed to make impossible. Auto-update tooling produces it as a side effect. Therefore: never.
+
+---
+
+## 32. Post-V1 Direction
+
+### 32.1 V1.1 (first patch release after V1)
 
 Candidate contents, to be decided based on V1 feedback:
 - Additional provider adapters (Backblaze B2, AWS S3) if users request
 - CLI ergonomics polish (shell completion improvements, better `--watch` rendering)
 - Performance tuning based on real-world usage data
 
-### 31.2 V2 (major)
+### 32.2 V2 (major)
 
 Candidate contents:
 - Registered OAuth app option (alongside BYOC)
@@ -2934,7 +2999,7 @@ Candidate contents:
 - Interactive TUI (curses-style file browser in the CLI)
 - Configurable advanced settings made more discoverable in `config list`
 
-### 31.3 Snapshot Product (separate)
+### 32.3 Snapshot Product (separate)
 
 If built, shares:
 - Provider adapters
@@ -2950,7 +3015,7 @@ Differs in:
 
 Target: technical users currently using Borg / Restic / Arq who want the FlashSkink-style portable-USB twist.
 
-### 31.4 Hardware Pilot
+### 32.4 Hardware Pilot
 
 Scope: 50-100 pre-loaded USB drives sold 3-6 months after V1 ships. Decision criteria to proceed:
 - V1 software has > 1000 users
@@ -2964,7 +3029,7 @@ Pilot design:
 - Flat international shipping
 - All-sales-final policy
 
-### 31.5 Mobile Client Direction
+### 32.5 Mobile Client Direction
 
 Recorded intent (Decision C6): When mobile is introduced post-V1, it operates as a viewer/restorer that communicates with the skink through a local transport (Bluetooth, WiFi Direct, or local network). The skink is always the intermediary to cloud providers; the phone never holds OAuth tokens or decryption keys.
 

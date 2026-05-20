@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using FlashSkink.Core.Abstractions.Crypto;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Crypto;
 using Xunit;
@@ -255,8 +256,9 @@ public class KeyVaultTests : IDisposable
     {
         await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
         var garbage = new[] { "notaword", "alsonotaword", "definitelynot" };
+        using var phrase = RecoveryPhrase.FromUserInput(garbage).Value!;
 
-        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), garbage, CancellationToken.None);
+        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), phrase, CancellationToken.None);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
@@ -265,9 +267,9 @@ public class KeyVaultTests : IDisposable
     [Fact]
     public async Task UnlockFromMnemonicAsync_VaultNotFound_ReturnsVolumeNotFound()
     {
-        var words = _mnemonic.Generate().Value!;
+        using var phrase = _mnemonic.Generate().Value!;
 
-        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), words, CancellationToken.None);
+        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), phrase, CancellationToken.None);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.VolumeNotFound, result.Error!.Code);
@@ -277,9 +279,9 @@ public class KeyVaultTests : IDisposable
     public async Task UnlockFromMnemonicAsync_WrongMnemonic_ReturnsInvalidPassword()
     {
         await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
-        var wrongWords = _mnemonic.Generate().Value!; // random mnemonic ≠ vault KEK
+        using var wrongPhrase = _mnemonic.Generate().Value!; // random mnemonic ≠ vault KEK
 
-        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), wrongWords, CancellationToken.None);
+        var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), wrongPhrase, CancellationToken.None);
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
@@ -293,29 +295,29 @@ public class KeyVaultTests : IDisposable
         // produces the identical KEK that UnlockFromMnemonicAsync will derive from those
         // same words — so both calls unwrap to the same DEK. If this test breaks, the KDF
         // in §1.2 has diverged between the two code paths.
-        var wordsResult = _mnemonic.Generate();
-        Assert.True(wordsResult.Success);
-        var words = wordsResult.Value!;
+        var phraseResult = _mnemonic.Generate();
+        Assert.True(phraseResult.Success);
+        using var phrase = phraseResult.Value!;
 
-        var seedResult = _mnemonic.ToSeed(words);
+        var seedResult = _mnemonic.ToSeed(phrase);
         Assert.True(seedResult.Success);
         var seed = seedResult.Value!;
 
         // Create the vault using the seed bytes as the password — this locks the DEK under
-        // the same KEK that UnlockFromMnemonicAsync will derive from the same words.
+        // the same KEK that UnlockFromMnemonicAsync will derive from the same phrase.
         var createResult = await _sut.CreateAsync(VaultPath(), seed, CancellationToken.None);
         Assert.True(createResult.Success);
         var expectedDek = createResult.Value!;
 
-        var unlockResult = await _sut.UnlockFromMnemonicAsync(VaultPath(), words, CancellationToken.None);
+        var unlockResult = await _sut.UnlockFromMnemonicAsync(VaultPath(), phrase, CancellationToken.None);
 
         Assert.True(unlockResult.Success);
         var actualDek = unlockResult.Value!;
         Assert.Equal(expectedDek, actualDek);
 
-        System.Security.Cryptography.CryptographicOperations.ZeroMemory(expectedDek);
-        System.Security.Cryptography.CryptographicOperations.ZeroMemory(actualDek);
-        System.Security.Cryptography.CryptographicOperations.ZeroMemory(seed);
+        CryptographicOperations.ZeroMemory(expectedDek);
+        CryptographicOperations.ZeroMemory(actualDek);
+        CryptographicOperations.ZeroMemory(seed);
     }
 
     // ── Stored KDF params are consumed on unlock ──────────────────────────────
