@@ -27,6 +27,10 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
     private ErrorCode _failNextBeginCode = ErrorCode.ProviderUnreachable;
     private int _failNextFinaliseCount;
     private ErrorCode _failNextFinaliseCode = ErrorCode.UploadFailed;
+    private int _failNextListCount;
+    private ErrorCode _failNextListCode = ErrorCode.ProviderUnreachable;
+    private int _failNextDownloadCount;
+    private ErrorCode _failNextDownloadCode = ErrorCode.ProviderUnreachable;
 
     public FaultInjectingStorageProvider(IStorageProvider inner)
     {
@@ -89,6 +93,34 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
         _failNextFinaliseCode = code;
     }
 
+    /// <summary>
+    /// Causes the next <see cref="ListAsync"/> call to fail with <see cref="ErrorCode.ProviderUnreachable"/>.
+    /// Added for <c>WitnessStoreTests</c> (dev plan §3.5.1) to exercise the offline-tail
+    /// read path.
+    /// </summary>
+    public void FailNextList() => FailNextListWith(ErrorCode.ProviderUnreachable);
+
+    /// <summary>Causes the next <see cref="ListAsync"/> call to fail with <paramref name="code"/>.</summary>
+    public void FailNextListWith(ErrorCode code)
+    {
+        _failNextListCount++;
+        _failNextListCode = code;
+    }
+
+    /// <summary>
+    /// Causes the next <see cref="DownloadAsync"/> call to fail with <see cref="ErrorCode.ProviderUnreachable"/>.
+    /// Added for <c>WitnessStoreTests</c> (dev plan §3.5.1) to exercise the
+    /// list-succeeded-then-download-failed path.
+    /// </summary>
+    public void FailNextDownload() => FailNextDownloadWith(ErrorCode.ProviderUnreachable);
+
+    /// <summary>Causes the next <see cref="DownloadAsync"/> call to fail with <paramref name="code"/>.</summary>
+    public void FailNextDownloadWith(ErrorCode code)
+    {
+        _failNextDownloadCount++;
+        _failNextDownloadCode = code;
+    }
+
     /// <summary>Resets all injected faults to defaults (no failures, no latency).</summary>
     public void Reset()
     {
@@ -104,6 +136,10 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
         _failNextBeginCode = ErrorCode.ProviderUnreachable;
         _failNextFinaliseCount = 0;
         _failNextFinaliseCode = ErrorCode.UploadFailed;
+        _failNextListCount = 0;
+        _failNextListCode = ErrorCode.ProviderUnreachable;
+        _failNextDownloadCount = 0;
+        _failNextDownloadCode = ErrorCode.ProviderUnreachable;
     }
 
     // ── IStorageProvider ─────────────────────────────────────────────────────────────────────
@@ -167,8 +203,17 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
     public Task<Result> AbortUploadAsync(UploadSession session, CancellationToken ct) =>
         _inner.AbortUploadAsync(session, ct);
 
-    public Task<Result<Stream>> DownloadAsync(string remoteId, CancellationToken ct) =>
-        _inner.DownloadAsync(remoteId, ct);
+    public Task<Result<Stream>> DownloadAsync(string remoteId, CancellationToken ct)
+    {
+        if (_failNextDownloadCount > 0)
+        {
+            _failNextDownloadCount--;
+            return Task.FromResult(Result<Stream>.Fail(
+                _failNextDownloadCode, $"Injected download failure: {_failNextDownloadCode}."));
+        }
+
+        return _inner.DownloadAsync(remoteId, ct);
+    }
 
     public Task<Result> DeleteAsync(string remoteId, CancellationToken ct) =>
         _inner.DeleteAsync(remoteId, ct);
@@ -176,8 +221,17 @@ internal sealed class FaultInjectingStorageProvider : IStorageProvider, ISupport
     public Task<Result<bool>> ExistsAsync(string remoteId, CancellationToken ct) =>
         _inner.ExistsAsync(remoteId, ct);
 
-    public Task<Result<IReadOnlyList<string>>> ListAsync(string prefix, CancellationToken ct) =>
-        _inner.ListAsync(prefix, ct);
+    public Task<Result<IReadOnlyList<string>>> ListAsync(string prefix, CancellationToken ct)
+    {
+        if (_failNextListCount > 0)
+        {
+            _failNextListCount--;
+            return Task.FromResult(Result<IReadOnlyList<string>>.Fail(
+                _failNextListCode, $"Injected list failure: {_failNextListCode}."));
+        }
+
+        return _inner.ListAsync(prefix, ct);
+    }
 
     public Task<Result<ProviderHealth>> CheckHealthAsync(CancellationToken ct) =>
         _inner.CheckHealthAsync(ct);
