@@ -222,11 +222,20 @@ internal sealed class WitnessStore
         {
             ct.ThrowIfCancellationRequested();
 
-            // Step 1 — best-effort cleanup of any pre-existing witnesses. For
-            // FileSystemProvider the same remote path is reused (the upload overwrites),
-            // but cloud providers may treat overwrite as a new object — explicit deletes
-            // keep the "at most one witness per tail" invariant on every provider type.
-            // All failures here are non-fatal: the upload below is the authoritative step.
+            // Step 1 — best-effort cleanup of any pre-existing witnesses. Explicit deletes
+            // keep the "at most one witness per tail" invariant on every provider type and
+            // give the subsequent upload-session triplet a clean destination. Note that
+            // FileSystemProvider.FinaliseUploadAsync refuses to overwrite an existing
+            // destination file (it uses `File.Move(.., overwrite: false)` per §13.4 step 6
+            // semantics), so a delete failure that leaves the old witness on disk WILL
+            // surface as a later StagingFailed with InnerErrorCode=UploadFailed and the
+            // message "Destination file already exists on tail." Cloud providers in Phase 4
+            // will behave differently again — some accept overwrite as a new object, others
+            // require the delete first. The cleanup is best-effort because (a) on the common
+            // happy path it succeeds, and (b) the practical blast radius of a delete failure
+            // is small: a process that cannot delete a file in this directory usually cannot
+            // write to it either, so the upload would fail regardless. The log message at the
+            // failure site below is intentionally not promising a successful overwrite.
             var listResult = await provider.ListAsync(
                 WitnessRemotePrefix, CancellationToken.None).ConfigureAwait(false);
             if (listResult.Success)
@@ -238,7 +247,7 @@ internal sealed class WitnessStore
                     if (!deleteResult.Success)
                     {
                         _logger.LogDebug(
-                            "Best-effort delete of existing witness {RemoteId} on tail {ProviderId} failed ({Code}); upload will overwrite.",
+                            "Best-effort delete of existing witness {RemoteId} on tail {ProviderId} failed ({Code}); subsequent upload may fail if the destination still exists.",
                             existingId, provider.ProviderID, deleteResult.Error!.Code);
                     }
                 }
@@ -246,7 +255,7 @@ internal sealed class WitnessStore
             else
             {
                 _logger.LogDebug(
-                    "Pre-write list of witness prefix on tail {ProviderId} failed ({Code}); upload will overwrite if possible.",
+                    "Pre-write list of witness prefix on tail {ProviderId} failed ({Code}); subsequent upload may fail if a stale witness still exists.",
                     provider.ProviderID, listResult.Error!.Code);
             }
 

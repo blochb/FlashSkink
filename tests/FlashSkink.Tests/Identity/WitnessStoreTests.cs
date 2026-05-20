@@ -216,6 +216,14 @@ public sealed class WitnessStoreTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.StagingFailed, result.Error!.Code);
+        // Error metadata is a contract the §3.5.2 handshake will read when building its
+        // BackgroundFailures row and notification metadata. Regressions in the keys or
+        // values would degrade diagnostics silently — assert both keys here.
+        Assert.NotNull(result.Error.Metadata);
+        Assert.Equal(faulty.ProviderID, result.Error.Metadata!["ProviderID"]);
+        Assert.Equal(
+            ErrorCode.ProviderUnreachable.ToString(),
+            result.Error.Metadata["InnerErrorCode"]);
 
         // No session was opened, so there should be no staging artefacts on disk.
         var stagingDir = Path.Combine(_root, ".flashskink-staging");
@@ -235,6 +243,11 @@ public sealed class WitnessStoreTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.StagingFailed, result.Error!.Code);
+        Assert.NotNull(result.Error.Metadata);
+        Assert.Equal(faulty.ProviderID, result.Error.Metadata!["ProviderID"]);
+        Assert.Equal(
+            ErrorCode.UploadFailed.ToString(),
+            result.Error.Metadata["InnerErrorCode"]);
 
         // AbortUploadAsync in the finally block should have cleared the staging slot.
         var stagingDir = Path.Combine(_root, ".flashskink-staging");
@@ -254,6 +267,11 @@ public sealed class WitnessStoreTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.StagingFailed, result.Error!.Code);
+        Assert.NotNull(result.Error.Metadata);
+        Assert.Equal(faulty.ProviderID, result.Error.Metadata!["ProviderID"]);
+        Assert.Equal(
+            ErrorCode.UploadFailed.ToString(),
+            result.Error.Metadata["InnerErrorCode"]);
 
         // The witness file should NOT exist because finalisation failed and the session
         // was aborted. Test passes if the file is missing OR present with no leakage.
