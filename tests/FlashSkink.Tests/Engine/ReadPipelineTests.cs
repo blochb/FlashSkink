@@ -22,6 +22,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
     private static readonly byte[] Dek = new byte[32]; // all-zeros DEK for tests
 
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly string _skinkRoot;
     private readonly RecordingNotificationBus _bus;
     private readonly WritePipeline _writePipeline;
@@ -42,13 +43,14 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         _writePipeline = new WritePipeline(new FileTypeService(), new EntropyDetector(), loggerFactory);
         _readPipeline = new ReadPipeline(loggerFactory);
 
-        var wal = new WalRepository(_connection, loggerFactory.CreateLogger<WalRepository>());
-        var blobs = new BlobRepository(_connection, loggerFactory.CreateLogger<BlobRepository>());
-        var files = new FileRepository(_connection, wal, loggerFactory.CreateLogger<FileRepository>());
-        var activity = new ActivityLogRepository(_connection, loggerFactory.CreateLogger<ActivityLogRepository>());
+        _brain = new BrainAccess(_connection);
+        var wal = new WalRepository(_brain, loggerFactory.CreateLogger<WalRepository>());
+        var blobs = new BlobRepository(_brain, loggerFactory.CreateLogger<BlobRepository>());
+        var files = new FileRepository(_brain, wal, loggerFactory.CreateLogger<FileRepository>());
+        var activity = new ActivityLogRepository(_brain, loggerFactory.CreateLogger<ActivityLogRepository>());
 
         _context = new VolumeContext(
-            brainConnection: _connection,
+            brain: _brain,
             dek: Dek.AsMemory(),
             skinkRoot: _skinkRoot,
             sha256: IncrementalHash.CreateHash(HashAlgorithmName.SHA256),

@@ -12,13 +12,13 @@ namespace FlashSkink.Core.Metadata;
 /// </summary>
 public sealed class BlobRepository
 {
-    private readonly SqliteConnection _connection;
+    private readonly IBrainAccess _brain;
     private readonly ILogger<BlobRepository> _logger;
 
-    /// <summary>Creates a <see cref="BlobRepository"/> bound to the given open brain connection.</summary>
-    public BlobRepository(SqliteConnection connection, ILogger<BlobRepository> logger)
+    /// <summary>Creates a <see cref="BlobRepository"/> bound to the given brain access wrapper.</summary>
+    public BlobRepository(IBrainAccess brain, ILogger<BlobRepository> logger)
     {
-        _connection = connection;
+        _brain = brain;
         _logger = logger;
     }
 
@@ -58,7 +58,8 @@ public sealed class BlobRepository
                     (@BlobId, @EncryptedSize, @PlaintextSize, @PlaintextSha256, @EncryptedXxHash,
                      @Compression, @BlobPath, @CreatedUtc, @SoftDeletedUtc, @PurgeAfterUtc)
                 """;
-            await _connection.ExecuteAsync(new CommandDefinition(sql, new
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(sql, new
             {
                 blob.BlobId,
                 blob.EncryptedSize,
@@ -106,7 +107,8 @@ public sealed class BlobRepository
                 FROM Blobs
                 WHERE BlobID = @BlobId
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, new { BlobId = blobId }, cancellationToken: ct))
                 .ConfigureAwait(false);
             var row = rows.FirstOrDefault();
@@ -148,7 +150,8 @@ public sealed class BlobRepository
                   AND SoftDeletedUtc IS NULL
                 LIMIT 1
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, new { Hash = plaintextSha256 }, cancellationToken: ct))
                 .ConfigureAwait(false);
             var row = rows.FirstOrDefault();
@@ -178,7 +181,8 @@ public sealed class BlobRepository
         {
             ct.ThrowIfCancellationRequested();
             var now = DateTime.UtcNow;
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE Blobs SET SoftDeletedUtc = @Now, PurgeAfterUtc = @PurgeAfter WHERE BlobID = @BlobId",
                 new { Now = now.ToString("O"), PurgeAfter = purgeAfterUtc.ToString("O"), BlobId = blobId },
                 cancellationToken: ct)).ConfigureAwait(false);
@@ -212,7 +216,8 @@ public sealed class BlobRepository
         {
             ct.ThrowIfCancellationRequested();
             var now = DateTime.UtcNow.ToString("O");
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE Blobs SET SoftDeletedUtc = @Now, PurgeAfterUtc = @Now WHERE BlobID = @BlobId",
                 new { Now = now, BlobId = blobId },
                 cancellationToken: ct)).ConfigureAwait(false);
@@ -251,7 +256,8 @@ public sealed class BlobRepository
                 WHERE PurgeAfterUtc <= @Now
                 ORDER BY PurgeAfterUtc ASC
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, new { Now = DateTime.UtcNow.ToString("O") }, cancellationToken: ct))
                 .ConfigureAwait(false);
             return Result<IReadOnlyList<BlobRecord>>.Ok(rows.Select(MapBlob).ToList());
@@ -282,7 +288,8 @@ public sealed class BlobRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM Blobs WHERE BlobID = @BlobId",
                 new { BlobId = blobId }, cancellationToken: ct)).ConfigureAwait(false);
             return Result.Ok();

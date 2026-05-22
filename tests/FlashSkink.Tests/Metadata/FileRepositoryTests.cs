@@ -11,14 +11,16 @@ namespace FlashSkink.Tests.Metadata;
 public class FileRepositoryTests : IAsyncLifetime
 {
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly WalRepository _wal;
     private readonly FileRepository _sut;
 
     public FileRepositoryTests()
     {
         _connection = BrainTestHelper.CreateInMemoryConnection();
-        _wal = new WalRepository(_connection, NullLogger<WalRepository>.Instance);
-        _sut = new FileRepository(_connection, _wal, NullLogger<FileRepository>.Instance);
+        _brain = new BrainAccess(_connection);
+        _wal = new WalRepository(_brain, NullLogger<WalRepository>.Instance);
+        _sut = new FileRepository(_brain, _wal, NullLogger<FileRepository>.Instance);
     }
 
     public async Task InitializeAsync() => await BrainTestHelper.ApplySchemaAsync(_connection);

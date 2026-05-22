@@ -107,15 +107,20 @@ public class VolumeSessionTests : IDisposable
     }
 
     [Fact]
-    public async Task OpenAsync_WithCorrectPassword_BrainConnectionIsOpen()
+    public async Task OpenAsync_WithCorrectPassword_BrainAccessIsUsable()
     {
         await SeedVaultAsync();
 
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.NotNull(result.Value!.BrainConnection);
-        Assert.Equal(ConnectionState.Open, result.Value!.BrainConnection!.State);
+        Assert.NotNull(result.Value!.Brain);
+        // Verify the brain is usable by acquiring and releasing a scope and querying the
+        // underlying connection state.
+        using (var scope = await result.Value!.Brain!.LockAsync(CancellationToken.None))
+        {
+            Assert.Equal(ConnectionState.Open, scope.Connection.State);
+        }
         await result.Value.DisposeAsync();
     }
 

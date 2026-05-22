@@ -33,6 +33,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
     private readonly string _skinkRoot;
     private readonly string _tailRoot;
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly UploadQueueRepository _queueRepo;
     private readonly BlobRepository _blobRepo;
     private readonly FileRepository _fileRepo;
@@ -56,12 +57,13 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         Directory.CreateDirectory(_tailRoot);
 
         _connection = BrainTestHelper.CreateInMemoryConnection();
-        _queueRepo = new UploadQueueRepository(_connection,
+        _brain = new BrainAccess(_connection);
+        _queueRepo = new UploadQueueRepository(_brain,
             NullLogger<UploadQueueRepository>.Instance);
-        _blobRepo = new BlobRepository(_connection, NullLogger<BlobRepository>.Instance);
-        var walRepo = new WalRepository(_connection, NullLogger<WalRepository>.Instance);
-        _fileRepo = new FileRepository(_connection, walRepo, NullLogger<FileRepository>.Instance);
-        _activityRepo = new ActivityLogRepository(_connection,
+        _blobRepo = new BlobRepository(_brain, NullLogger<BlobRepository>.Instance);
+        var walRepo = new WalRepository(_brain, NullLogger<WalRepository>.Instance);
+        _fileRepo = new FileRepository(_brain, walRepo, NullLogger<FileRepository>.Instance);
+        _activityRepo = new ActivityLogRepository(_brain,
             NullLogger<ActivityLogRepository>.Instance);
         _registry = new InMemoryProviderRegistry(
             NullLogger<InMemoryProviderRegistry>.Instance);
@@ -101,12 +103,12 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────────
 
-    private UploadQueueService CreateService(SqliteConnection? connection = null)
+    private UploadQueueService CreateService(IBrainAccess? brain = null)
     {
         return new UploadQueueService(
             _queueRepo, _blobRepo, _fileRepo, _activityRepo,
             _registry, _network, _bus, _rangeUploader, RetryPolicy.Default,
-            _clock, _signal, connection ?? _connection, _skinkRoot, _serviceLogger);
+            _clock, _signal, brain ?? _brain, _skinkRoot, _serviceLogger);
     }
 
     private async Task<(string BlobId, byte[] Bytes)> CreateLocalBlobAsync(int sizeBytes)

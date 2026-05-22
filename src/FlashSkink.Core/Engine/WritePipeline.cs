@@ -138,12 +138,17 @@ public sealed class WritePipeline
             if (existingResult.Value is { } existingBlob)
             {
                 // Same content — check if the same virtual path already points at it.
-                var existingFile = await context.BrainConnection.QuerySingleOrDefaultAsync<dynamic>(
-                    new CommandDefinition(
-                        "SELECT FileID FROM Files WHERE VirtualPath = @P AND BlobID = @B",
-                        new { P = virtualPath, B = existingBlob.BlobId },
-                        cancellationToken: ct))
-                    .ConfigureAwait(false);
+                // Short-lived brain scope for the existing-file lookup (Principle 36).
+                dynamic? existingFile;
+                using (var lookupScope = await context.Brain.LockAsync(ct).ConfigureAwait(false))
+                {
+                    existingFile = await lookupScope.Connection.QuerySingleOrDefaultAsync<dynamic>(
+                        new CommandDefinition(
+                            "SELECT FileID FROM Files WHERE VirtualPath = @P AND BlobID = @B",
+                            new { P = virtualPath, B = existingBlob.BlobId },
+                            cancellationToken: ct))
+                        .ConfigureAwait(false);
+                }
 
                 if (existingFile is not null)
                 {
@@ -498,12 +503,18 @@ public sealed class WritePipeline
         CancellationToken ct)
     {
         SqliteTransaction? tx = null;
+        BrainScope brainScope = default;
+        bool scopeAcquired = false;
         try
         {
-            tx = ctx.BrainConnection.BeginTransaction();
+            // Hold the brain scope across the entire commit — Begin, all five SQL statements,
+            // the WAL transition, and Commit. (Principle 36.)
+            brainScope = await ctx.Brain.LockAsync(ct).ConfigureAwait(false);
+            scopeAcquired = true;
+            tx = brainScope.Connection.BeginTransaction();
 
             // INSERT INTO Blobs
-            await ctx.BrainConnection.ExecuteAsync(new CommandDefinition(
+            await brainScope.Connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO Blobs " +
                 "(BlobID, EncryptedSize, PlaintextSize, PlaintextSHA256, " +
                 "EncryptedXXHash, Compression, BlobPath, CreatedUtc, SoftDeletedUtc, PurgeAfterUtc) " +
@@ -524,7 +535,7 @@ public sealed class WritePipeline
                 cancellationToken: ct)).ConfigureAwait(false);
 
             // INSERT INTO Files
-            await ctx.BrainConnection.ExecuteAsync(new CommandDefinition(
+            await brainScope.Connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO Files " +
                 "(FileID, ParentID, IsFolder, IsSymlink, SymlinkTarget, Name, " +
                 "Extension, MimeType, VirtualPath, SizeBytes, CreatedUtc, ModifiedUtc, AddedUtc, BlobID) " +
@@ -546,7 +557,7 @@ public sealed class WritePipeline
                 cancellationToken: ct)).ConfigureAwait(false);
 
             // INSERT INTO TailUploads — INSERT-SELECT against active providers (zero rows in Phase 2)
-            await ctx.BrainConnection.ExecuteAsync(new CommandDefinition(
+            await brainScope.Connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO TailUploads (FileID, ProviderID, Status, QueuedUtc, AttemptCount) " +
                 "SELECT @FileId, ProviderID, 'PENDING', @Now, 0 " +
                 "FROM Providers WHERE IsActive = 1",
@@ -559,7 +570,7 @@ public sealed class WritePipeline
                 cancellationToken: ct)).ConfigureAwait(false);
 
             // INSERT INTO ActivityLog
-            await ctx.BrainConnection.ExecuteAsync(new CommandDefinition(
+            await brainScope.Connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO ActivityLog (EntryID, OccurredUtc, Category, Summary, Detail) " +
                 "VALUES (@EntryId, @Now, @Category, @Summary, NULL)",
                 new
@@ -619,6 +630,10 @@ public sealed class WritePipeline
         finally
         {
             tx?.Dispose();
+            if (scopeAcquired)
+            {
+                brainScope.Dispose();
+            }
         }
     }
 

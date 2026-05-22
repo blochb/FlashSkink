@@ -10,12 +10,14 @@ namespace FlashSkink.Tests.Metadata;
 public class WalRepositoryTests : IAsyncLifetime
 {
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly WalRepository _sut;
 
     public WalRepositoryTests()
     {
         _connection = BrainTestHelper.CreateInMemoryConnection();
-        _sut = new WalRepository(_connection, NullLogger<WalRepository>.Instance);
+        _brain = new BrainAccess(_connection);
+        _sut = new WalRepository(_brain, NullLogger<WalRepository>.Instance);
     }
 
     public async Task InitializeAsync() => await BrainTestHelper.ApplySchemaAsync(_connection);

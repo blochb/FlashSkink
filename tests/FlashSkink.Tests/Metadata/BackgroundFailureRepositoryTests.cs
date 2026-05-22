@@ -9,12 +9,14 @@ namespace FlashSkink.Tests.Metadata;
 public class BackgroundFailureRepositoryTests : IAsyncLifetime
 {
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly BackgroundFailureRepository _sut;
 
     public BackgroundFailureRepositoryTests()
     {
         _connection = BrainTestHelper.CreateInMemoryConnection();
-        _sut = new BackgroundFailureRepository(_connection, NullLogger<BackgroundFailureRepository>.Instance);
+        _brain = new BrainAccess(_connection);
+        _sut = new BackgroundFailureRepository(_brain, NullLogger<BackgroundFailureRepository>.Instance);
     }
 
     public async Task InitializeAsync() => await BrainTestHelper.ApplySchemaAsync(_connection);

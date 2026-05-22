@@ -5,6 +5,7 @@ using FlashSkink.Core.Abstractions.Providers;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Abstractions.Time;
 using FlashSkink.Core.Crypto;
+using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Storage;
 using FlashSkink.Core.Upload;
 using Microsoft.Data.Sqlite;
@@ -39,7 +40,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
     private const int NonceSize = 12;
     private const int TagSize = 16;
 
-    private readonly SqliteConnection _brain;
+    private readonly IBrainAccess _brain;
     private readonly ReadOnlyMemory<byte> _dek;
     private readonly string _skinkRoot;
     private readonly IProviderRegistry _registry;
@@ -63,14 +64,14 @@ public sealed class BrainMirrorService : IAsyncDisposable
     /// reference parameter — none are disposed here.
     /// </summary>
     public BrainMirrorService(
-        SqliteConnection brainConnection,
+        IBrainAccess brain,
         ReadOnlyMemory<byte> dek,
         string skinkRoot,
         IProviderRegistry providerRegistry,
         INotificationBus notificationBus,
         IClock clock,
         ILogger<BrainMirrorService> logger)
-        : this(brainConnection, dek, skinkRoot, providerRegistry, notificationBus, clock, logger,
+        : this(brain, dek, skinkRoot, providerRegistry, notificationBus, clock, logger,
                DefaultMaxInMemoryMirrorBytes)
     {
     }
@@ -80,7 +81,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
     /// public constructor which defaults the cap to 1 GiB.
     /// </summary>
     internal BrainMirrorService(
-        SqliteConnection brainConnection,
+        IBrainAccess brain,
         ReadOnlyMemory<byte> dek,
         string skinkRoot,
         IProviderRegistry providerRegistry,
@@ -89,7 +90,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
         ILogger<BrainMirrorService> logger,
         long maxInMemoryMirrorBytes)
     {
-        _brain = brainConnection;
+        _brain = brain;
         _dek = dek;
         _skinkRoot = skinkRoot;
         _registry = providerRegistry;
@@ -558,7 +559,13 @@ public sealed class BrainMirrorService : IAsyncDisposable
             string pragmaKey = keyResult.Value!;
 
             // SqliteConnection.BackupDatabase is synchronous; offload so we don't block the
-            // calling sync-context.
+            // calling sync-context. The brain scope is held for the full backup so no other
+            // SQL can run concurrently on the source connection (Principle 36). The Task.Run
+            // lambda captures only `sourceConnection` (a class reference) — capturing the
+            // readonly-struct scope itself would copy it into the closure, which is harmless
+            // here but easy to misread later.
+            using var brainScope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var sourceConnection = brainScope.Connection;
             await Task.Run(() =>
             {
                 var csb = new SqliteConnectionStringBuilder
@@ -573,7 +580,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
                     keyCmd.CommandText = pragmaKey;
                     keyCmd.ExecuteNonQuery();
                 }
-                _brain.BackupDatabase(dest);
+                sourceConnection.BackupDatabase(dest);
                 dest.Close();
             }, ct).ConfigureAwait(false);
 

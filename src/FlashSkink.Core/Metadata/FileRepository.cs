@@ -14,16 +14,24 @@ namespace FlashSkink.Core.Metadata;
 /// to avoid cross-repository coordination and keeps the Blobs soft-delete atomically coupled
 /// to the Files DML.
 /// </summary>
+/// <remarks>
+/// All SQL flows through <see cref="IBrainAccess"/> per Principle 36. Multi-statement
+/// transactions acquire one <see cref="BrainScope"/> for the full transaction lifetime
+/// (open → all statements → commit) so the gate prevents concurrent commands from corrupting
+/// the connection's internal <c>_commands</c> list mid-transaction. Calls into
+/// <see cref="WalRepository"/> from inside a transaction pass the transaction parameter; that
+/// overload uses <see cref="SqliteTransaction.Connection"/> and does not re-acquire the gate.
+/// </remarks>
 public sealed class FileRepository
 {
-    private readonly SqliteConnection _connection;
+    private readonly IBrainAccess _brain;
     private readonly WalRepository _wal;
     private readonly ILogger<FileRepository> _logger;
 
-    /// <summary>Creates a <see cref="FileRepository"/> bound to the given open brain connection.</summary>
-    public FileRepository(SqliteConnection connection, WalRepository wal, ILogger<FileRepository> logger)
+    /// <summary>Creates a <see cref="FileRepository"/> bound to the given brain access wrapper.</summary>
+    public FileRepository(IBrainAccess brain, WalRepository wal, ILogger<FileRepository> logger)
     {
-        _connection = connection;
+        _brain = brain;
         _wal = wal;
         _logger = logger;
     }
@@ -51,9 +59,13 @@ public sealed class FileRepository
         BlobId = r.BlobID is DBNull || r.BlobID is null ? null : (string)r.BlobID,
     };
 
-    private async Task<int> ReadGracePeriodDaysAsync()
+    /// <summary>
+    /// Reads the grace-period setting using the supplied connection (which must be held under a
+    /// brain scope by the caller). Returns 30 days when the setting is missing or malformed.
+    /// </summary>
+    private static async Task<int> ReadGracePeriodDaysAsync(SqliteConnection connection)
     {
-        var raw = await _connection.QuerySingleOrDefaultAsync<string>(
+        var raw = await connection.QuerySingleOrDefaultAsync<string>(
             "SELECT Value FROM Settings WHERE Key = 'GracePeriodDays'").ConfigureAwait(false);
         return int.TryParse(raw, out var d) ? d : 30;
     }
@@ -79,7 +91,8 @@ public sealed class FileRepository
                     (@FileId, @ParentId, @IsFolder, @IsSymlink, @SymlinkTarget, @Name, @Extension,
                      @MimeType, @VirtualPath, @SizeBytes, @CreatedUtc, @ModifiedUtc, @AddedUtc, @BlobId)
                 """;
-            await _connection.ExecuteAsync(new CommandDefinition(sql, new
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(sql, new
             {
                 file.FileId,
                 file.ParentId,
@@ -140,7 +153,8 @@ public sealed class FileRepository
                 FROM Files
                 WHERE FileID = @FileId
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, new { FileId = fileId }, cancellationToken: ct))
                 .ConfigureAwait(false);
             var row = rows.FirstOrDefault();
@@ -179,7 +193,8 @@ public sealed class FileRepository
                 FROM Files
                 WHERE VirtualPath = @VirtualPath
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, new { VirtualPath = virtualPath }, cancellationToken: ct))
                 .ConfigureAwait(false);
             var row = rows.FirstOrDefault();
@@ -221,7 +236,8 @@ public sealed class FileRepository
                    OR (ParentID = @ParentId)
                 ORDER BY IsFolder DESC, Name ASC
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, new { ParentId = parentId }, cancellationToken: ct))
                 .ConfigureAwait(false);
             return Result<IReadOnlyList<VolumeFile>>.Ok(rows.Select(MapFile).ToList());
@@ -267,7 +283,8 @@ public sealed class FileRepository
                 WHERE VirtualPath LIKE @Prefix || '%' ESCAPE '\'
                 ORDER BY VirtualPath ASC
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, new { Prefix = escapedPrefix }, cancellationToken: ct))
                 .ConfigureAwait(false);
             return Result<IReadOnlyList<VolumeFile>>.Ok(rows.Select(MapFile).ToList());
@@ -315,16 +332,21 @@ public sealed class FileRepository
                 ct.ThrowIfCancellationRequested();
                 currentPath = currentPath.Length == 0 ? segment : currentPath + "/" + segment;
 
-                // Find existing row with this name under current parent.
+                // Find existing row with this name under current parent. Short-lived scope —
+                // released before the recursive InsertAsync below, which acquires its own.
                 const string findSql =
                     """
                     SELECT FileID, IsFolder FROM Files
                     WHERE Name = @Name
                       AND ((@ParentId IS NULL AND ParentID IS NULL) OR ParentID = @ParentId)
                     """;
-                var existing = await _connection.QuerySingleOrDefaultAsync<(string FileID, long IsFolder)>(
-                    new CommandDefinition(findSql, new { Name = segment, ParentId = currentParentId },
-                        cancellationToken: ct)).ConfigureAwait(false);
+                (string FileID, long IsFolder) existing;
+                using (var scope = await _brain.LockAsync(ct).ConfigureAwait(false))
+                {
+                    existing = await scope.Connection.QuerySingleOrDefaultAsync<(string FileID, long IsFolder)>(
+                        new CommandDefinition(findSql, new { Name = segment, ParentId = currentParentId },
+                            cancellationToken: ct)).ConfigureAwait(false);
+                }
 
                 if (existing.FileID is not null)
                 {
@@ -389,7 +411,8 @@ public sealed class FileRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            var count = await _connection.QuerySingleAsync<int>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var count = await scope.Connection.QuerySingleAsync<int>(
                 new CommandDefinition(
                     "SELECT COUNT(*) FROM Files WHERE ParentID = @FolderId",
                     new { FolderId = folderId }, cancellationToken: ct)).ConfigureAwait(false);
@@ -434,7 +457,8 @@ public sealed class FileRepository
                 )
                 SELECT * FROM descendants
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, new { FolderId = folderId }, cancellationToken: ct))
                 .ConfigureAwait(false);
             return Result<IReadOnlyList<VolumeFile>>.Ok(rows.Select(MapFile).ToList());
@@ -469,6 +493,8 @@ public sealed class FileRepository
         VolumeFile? file = null;
         WalRow? walRow = null;
         SqliteTransaction? tx = null;
+        BrainScope scope = default;
+        bool scopeAcquired = false;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -483,10 +509,15 @@ public sealed class FileRepository
                 return Result.Fail(ErrorCode.FileNotFound, $"File '{fileId}' not found.");
             }
 
-            var graceDays = await ReadGracePeriodDaysAsync().ConfigureAwait(false);
+            // Acquire the brain scope for the entire transaction lifetime. Held until the
+            // finally block releases it — covers grace-period read + tx open + writes + commit.
+            scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            scopeAcquired = true;
+
+            var graceDays = await ReadGracePeriodDaysAsync(scope.Connection).ConfigureAwait(false);
             var now = DateTime.UtcNow;
 
-            tx = _connection.BeginTransaction();
+            tx = scope.Connection.BeginTransaction();
 
             walRow = new WalRow(
                 WalId: Guid.NewGuid().ToString(),
@@ -505,17 +536,17 @@ public sealed class FileRepository
             // Soft-delete the blob if referenced.
             if (file.BlobId is not null)
             {
-                await _connection.ExecuteAsync(new CommandDefinition(
+                await scope.Connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE Blobs SET SoftDeletedUtc = @Now, PurgeAfterUtc = @PurgeAfter WHERE BlobID = @BlobId",
                     new { Now = now.ToString("O"), PurgeAfter = now.AddDays(graceDays).ToString("O"), BlobId = file.BlobId },
                     tx)).ConfigureAwait(false);
             }
 
-            await _connection.ExecuteAsync(new CommandDefinition(
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM Files WHERE FileID = @FileId",
                 new { FileId = fileId }, tx)).ConfigureAwait(false);
 
-            await _connection.ExecuteAsync(new CommandDefinition(
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 INSERT INTO DeleteLog (LogID, DeletedAt, FileID, Name, VirtualPath, IsFolder, Trigger)
                 VALUES (@LogId, @DeletedAt, @FileId, @Name, @VirtualPath, @IsFolder, 'USER_ACTION')
@@ -530,16 +561,17 @@ public sealed class FileRepository
                     IsFolder = file.IsFolder ? 1 : 0,
                 }, tx)).ConfigureAwait(false);
 
-            await _wal.TransitionAsync(walRow.WalId, "COMMITTED", CancellationToken.None).ConfigureAwait(false);
+            await _wal.TransitionAsync(walRow.WalId, "COMMITTED", CancellationToken.None, tx).ConfigureAwait(false);
             tx.Commit();
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
         {
             tx?.Rollback();
-            if (walRow is not null)
+            if (walRow is not null && scopeAcquired)
             {
-                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None).ConfigureAwait(false);
+                // WAL FAILED transition runs while we still hold the scope.
+                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None, tx).ConfigureAwait(false);
             }
             _logger.LogInformation("DeleteFileAsync cancelled for {FileId}", fileId);
             return Result.Fail(ErrorCode.Cancelled, "Delete file was cancelled.", ex);
@@ -547,9 +579,9 @@ public sealed class FileRepository
         catch (SqliteException ex)
         {
             tx?.Rollback();
-            if (walRow is not null)
+            if (walRow is not null && scopeAcquired)
             {
-                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None).ConfigureAwait(false);
+                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None, tx).ConfigureAwait(false);
             }
             _logger.LogError(ex, "Database error deleting file {FileId}", fileId);
             return Result.Fail(ErrorCode.DatabaseWriteFailed, "Failed to delete file.", ex);
@@ -557,9 +589,9 @@ public sealed class FileRepository
         catch (Exception ex)
         {
             tx?.Rollback();
-            if (walRow is not null)
+            if (walRow is not null && scopeAcquired)
             {
-                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None).ConfigureAwait(false);
+                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None, tx).ConfigureAwait(false);
             }
             _logger.LogError(ex, "Unexpected error deleting file {FileId}", fileId);
             return Result.Fail(ErrorCode.Unknown, "Unexpected error deleting file.", ex);
@@ -567,6 +599,10 @@ public sealed class FileRepository
         finally
         {
             tx?.Dispose();
+            if (scopeAcquired)
+            {
+                scope.Dispose();
+            }
         }
     }
 
@@ -582,6 +618,8 @@ public sealed class FileRepository
     {
         WalRow? walRow = null;
         SqliteTransaction? tx = null;
+        BrainScope scope = default;
+        bool scopeAcquired = false;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -612,10 +650,13 @@ public sealed class FileRepository
             }
             var descendants = descendantsResult.Value!;
 
-            var graceDays = await ReadGracePeriodDaysAsync().ConfigureAwait(false);
+            scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            scopeAcquired = true;
+
+            var graceDays = await ReadGracePeriodDaysAsync(scope.Connection).ConfigureAwait(false);
             var now = DateTime.UtcNow;
 
-            tx = _connection.BeginTransaction();
+            tx = scope.Connection.BeginTransaction();
 
             walRow = new WalRow(
                 WalId: Guid.NewGuid().ToString(),
@@ -634,7 +675,7 @@ public sealed class FileRepository
             // Soft-delete all referenced blobs.
             foreach (var d in descendants.Where(d => d.BlobId is not null))
             {
-                await _connection.ExecuteAsync(new CommandDefinition(
+                await scope.Connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE Blobs SET SoftDeletedUtc = @Now, PurgeAfterUtc = @PurgeAfter WHERE BlobID = @BlobId",
                     new { Now = now.ToString("O"), PurgeAfter = now.AddDays(graceDays).ToString("O"), BlobId = d.BlobId },
                     tx)).ConfigureAwait(false);
@@ -644,14 +685,14 @@ public sealed class FileRepository
             if (descendants.Count > 0)
             {
                 var idArray = descendants.Select(d => d.FileId).ToArray();
-                await _connection.ExecuteAsync(new CommandDefinition(
+                await scope.Connection.ExecuteAsync(new CommandDefinition(
                     "DELETE FROM Files WHERE FileID IN @Ids",
                     new { Ids = idArray }, tx)).ConfigureAwait(false);
 
                 // Write DeleteLog entries.
                 foreach (var d in descendants)
                 {
-                    await _connection.ExecuteAsync(new CommandDefinition(
+                    await scope.Connection.ExecuteAsync(new CommandDefinition(
                         """
                         INSERT INTO DeleteLog (LogID, DeletedAt, FileID, Name, VirtualPath, IsFolder, Trigger)
                         VALUES (@LogId, @DeletedAt, @FileId, @Name, @VirtualPath, @IsFolder, 'CASCADE')
@@ -668,16 +709,16 @@ public sealed class FileRepository
                 }
             }
 
-            await _wal.TransitionAsync(walRow.WalId, "COMMITTED", CancellationToken.None).ConfigureAwait(false);
+            await _wal.TransitionAsync(walRow.WalId, "COMMITTED", CancellationToken.None, tx).ConfigureAwait(false);
             tx.Commit();
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
         {
             tx?.Rollback();
-            if (walRow is not null)
+            if (walRow is not null && scopeAcquired)
             {
-                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None).ConfigureAwait(false);
+                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None, tx).ConfigureAwait(false);
             }
             _logger.LogInformation("DeleteFolderCascadeAsync cancelled for {FolderId}", folderId);
             return Result.Fail(ErrorCode.Cancelled, "Cascade delete was cancelled.", ex);
@@ -685,9 +726,9 @@ public sealed class FileRepository
         catch (SqliteException ex)
         {
             tx?.Rollback();
-            if (walRow is not null)
+            if (walRow is not null && scopeAcquired)
             {
-                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None).ConfigureAwait(false);
+                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None, tx).ConfigureAwait(false);
             }
             _logger.LogError(ex, "Database error in cascade delete of {FolderId}", folderId);
             return Result.Fail(ErrorCode.DatabaseWriteFailed, "Cascade delete failed.", ex);
@@ -695,9 +736,9 @@ public sealed class FileRepository
         catch (Exception ex)
         {
             tx?.Rollback();
-            if (walRow is not null)
+            if (walRow is not null && scopeAcquired)
             {
-                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None).ConfigureAwait(false);
+                await _wal.TransitionAsync(walRow.WalId, "FAILED", CancellationToken.None, tx).ConfigureAwait(false);
             }
             _logger.LogError(ex, "Unexpected error in cascade delete of {FolderId}", folderId);
             return Result.Fail(ErrorCode.Unknown, "Unexpected error in cascade delete.", ex);
@@ -705,6 +746,10 @@ public sealed class FileRepository
         finally
         {
             tx?.Dispose();
+            if (scopeAcquired)
+            {
+                scope.Dispose();
+            }
         }
     }
 
@@ -718,6 +763,8 @@ public sealed class FileRepository
     public async Task<Result> RenameFolderAsync(string folderId, string newName, CancellationToken ct)
     {
         SqliteTransaction? tx = null;
+        BrainScope scope = default;
+        bool scopeAcquired = false;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -741,16 +788,19 @@ public sealed class FileRepository
                     : string.Empty);
             var newVirtualPath = parentPrefix.Length > 0 ? parentPrefix + "/" + newName : newName;
 
-            tx = _connection.BeginTransaction();
+            scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            scopeAcquired = true;
+
+            tx = scope.Connection.BeginTransaction();
 
             // Update the folder row itself.
-            await _connection.ExecuteAsync(new CommandDefinition(
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE Files SET Name = @Name, VirtualPath = @VirtualPath, ModifiedUtc = @ModifiedUtc WHERE FileID = @FileId",
                 new { Name = newName, VirtualPath = newVirtualPath, ModifiedUtc = now.ToString("O"), FileId = folderId },
                 tx)).ConfigureAwait(false);
 
             // Cascade VirtualPath updates to all descendants (§16.4).
-            await _connection.ExecuteAsync(new CommandDefinition(
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 WITH RECURSIVE descendants AS (
                     SELECT FileID FROM Files WHERE ParentID = @FolderId
@@ -802,6 +852,10 @@ public sealed class FileRepository
         finally
         {
             tx?.Dispose();
+            if (scopeAcquired)
+            {
+                scope.Dispose();
+            }
         }
     }
 
@@ -815,6 +869,8 @@ public sealed class FileRepository
     public async Task<Result> MoveAsync(string fileId, string? newParentId, CancellationToken ct)
     {
         SqliteTransaction? tx = null;
+        BrainScope scope = default;
+        bool scopeAcquired = false;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -842,9 +898,13 @@ public sealed class FileRepository
                     )
                     SELECT FileID FROM ancestors WHERE FileID = @FileId
                     """;
-                var cycleRow = await _connection.QuerySingleOrDefaultAsync<string>(
-                    new CommandDefinition(cycleSql, new { NewParentId = newParentId, FileId = fileId },
-                        cancellationToken: ct)).ConfigureAwait(false);
+                string? cycleRow;
+                using (var cycleScope = await _brain.LockAsync(ct).ConfigureAwait(false))
+                {
+                    cycleRow = await cycleScope.Connection.QuerySingleOrDefaultAsync<string>(
+                        new CommandDefinition(cycleSql, new { NewParentId = newParentId, FileId = fileId },
+                            cancellationToken: ct)).ConfigureAwait(false);
+                }
                 if (cycleRow is not null)
                 {
                     return Result.Fail(ErrorCode.CyclicMoveDetected,
@@ -876,9 +936,12 @@ public sealed class FileRepository
             var oldPrefix = file.VirtualPath;
             var now = DateTime.UtcNow;
 
-            tx = _connection.BeginTransaction();
+            scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            scopeAcquired = true;
 
-            await _connection.ExecuteAsync(new CommandDefinition(
+            tx = scope.Connection.BeginTransaction();
+
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE Files SET ParentID = @NewParentId, VirtualPath = @VirtualPath, ModifiedUtc = @Now WHERE FileID = @FileId",
                 new { NewParentId = newParentId, VirtualPath = newVirtualPath, Now = now.ToString("O"), FileId = fileId },
                 tx)).ConfigureAwait(false);
@@ -886,7 +949,7 @@ public sealed class FileRepository
             // Cascade VirtualPath for folder descendants.
             if (file.IsFolder)
             {
-                await _connection.ExecuteAsync(new CommandDefinition(
+                await scope.Connection.ExecuteAsync(new CommandDefinition(
                     """
                     WITH RECURSIVE descendants AS (
                         SELECT FileID FROM Files WHERE ParentID = @FolderId
@@ -938,6 +1001,10 @@ public sealed class FileRepository
         finally
         {
             tx?.Dispose();
+            if (scopeAcquired)
+            {
+                scope.Dispose();
+            }
         }
     }
 
@@ -952,12 +1019,17 @@ public sealed class FileRepository
         string blobId, string virtualPath, CancellationToken ct)
     {
         SqliteTransaction? tx = null;
+        BrainScope scope = default;
+        bool scopeAcquired = false;
         try
         {
             ct.ThrowIfCancellationRequested();
 
+            scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            scopeAcquired = true;
+
             // Verify the blob still exists.
-            var blobRow = await _connection.QuerySingleOrDefaultAsync<string>(
+            var blobRow = await scope.Connection.QuerySingleOrDefaultAsync<string>(
                 new CommandDefinition(
                     "SELECT BlobID FROM Blobs WHERE BlobID = @BlobId",
                     new { BlobId = blobId }, cancellationToken: ct)).ConfigureAwait(false);
@@ -970,9 +1042,9 @@ public sealed class FileRepository
             var now = DateTime.UtcNow;
             var name = virtualPath.Split('/').Last();
 
-            tx = _connection.BeginTransaction();
+            tx = scope.Connection.BeginTransaction();
 
-            await _connection.ExecuteAsync(new CommandDefinition(
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE Blobs SET SoftDeletedUtc = NULL, PurgeAfterUtc = NULL WHERE BlobID = @BlobId",
                 new { BlobId = blobId }, tx)).ConfigureAwait(false);
 
@@ -991,7 +1063,7 @@ public sealed class FileRepository
                 BlobId = blobId,
             };
 
-            await _connection.ExecuteAsync(new CommandDefinition(
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 INSERT INTO Files
                     (FileID, ParentID, IsFolder, IsSymlink, SymlinkTarget, Name, Extension,
@@ -1042,6 +1114,10 @@ public sealed class FileRepository
         finally
         {
             tx?.Dispose();
+            if (scopeAcquired)
+            {
+                scope.Dispose();
+            }
         }
     }
 }

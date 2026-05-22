@@ -25,6 +25,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
     private readonly string _skinkRoot;
     private readonly string _tailRoot;
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly UploadQueueRepository _queueRepo;
     private readonly FakeClock _clock;
     private readonly FileSystemProvider _fsProvider;
@@ -38,7 +39,8 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         Directory.CreateDirectory(_tailRoot);
 
         _connection = BrainTestHelper.CreateInMemoryConnection();
-        _queueRepo = new UploadQueueRepository(_connection, NullLogger<UploadQueueRepository>.Instance);
+        _brain = new BrainAccess(_connection);
+        _queueRepo = new UploadQueueRepository(_brain, NullLogger<UploadQueueRepository>.Instance);
         _clock = new FakeClock(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
         _fsProvider = new FileSystemProvider(
             ProviderId, "Test Tail", _tailRoot, NullLogger<FileSystemProvider>.Instance);

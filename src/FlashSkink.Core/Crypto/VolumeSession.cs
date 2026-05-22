@@ -7,13 +7,14 @@ using Microsoft.Extensions.Logging;
 namespace FlashSkink.Core.Crypto;
 
 /// <summary>
-/// Holds the live DEK and open brain <see cref="SqliteConnection"/> for the duration of
-/// an unlocked volume. Zeroes the DEK and closes the connection on dispose.
+/// Holds the live DEK and the brain <see cref="IBrainAccess"/> wrapper for the duration
+/// of an unlocked volume. Zeroes the DEK and disposes the brain access (which closes the
+/// underlying connection) on dispose.
 /// </summary>
 public sealed class VolumeSession : IAsyncDisposable
 {
     private readonly byte[] _dek;
-    private readonly SqliteConnection? _brainConnection;
+    private readonly BrainAccess? _brain;
     private int _disposed;
 
     /// <summary>
@@ -30,30 +31,34 @@ public sealed class VolumeSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// The open encrypted brain connection. <see langword="null"/> only if the caller
-    /// explicitly passes <see langword="null"/> (not expected in normal use).
+    /// The brain access wrapper. <see langword="null"/> only if the caller explicitly
+    /// passes <see langword="null"/> (not expected in normal use). All brain SQL flows
+    /// through this; raw <see cref="SqliteConnection"/> is never exposed (Principle 36).
     /// </summary>
-    public SqliteConnection? BrainConnection => _brainConnection;
+    public IBrainAccess? Brain => _brain;
 
-    internal VolumeSession(byte[] dek, SqliteConnection? brainConnection)
+    internal VolumeSession(byte[] dek, BrainAccess? brain)
     {
         _dek = dek;
-        _brainConnection = brainConnection;
+        _brain = brain;
     }
 
     /// <summary>
-    /// Zeroes the DEK and closes the brain connection. Idempotent — safe to call multiple times.
+    /// Zeroes the DEK and disposes the brain access (which closes the underlying
+    /// connection). Idempotent — safe to call multiple times.
     /// </summary>
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
         CryptographicOperations.ZeroMemory(_dek);
-        _brainConnection?.Dispose(); // Dispose closes the connection implicitly.
-        return ValueTask.CompletedTask;
+        if (_brain is not null)
+        {
+            await _brain.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }
 
@@ -128,6 +133,10 @@ public sealed class VolumeLifecycle
             return Result<VolumeSession>.Fail(migrationResult.Error!);
         }
 
-        return Result<VolumeSession>.Ok(new VolumeSession(dek, connection));
+        // Wrap the raw connection in BrainAccess immediately. From here on, no
+        // raw SqliteConnection flows downstream (Principle 36 — except the
+        // sanctioned migration/factory paths that ran above).
+        var brain = new BrainAccess(connection);
+        return Result<VolumeSession>.Ok(new VolumeSession(dek, brain));
     }
 }

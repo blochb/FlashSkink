@@ -12,13 +12,13 @@ namespace FlashSkink.Core.Metadata;
 /// </summary>
 public sealed class BackgroundFailureRepository
 {
-    private readonly SqliteConnection _connection;
+    private readonly IBrainAccess _brain;
     private readonly ILogger<BackgroundFailureRepository> _logger;
 
-    /// <summary>Creates a <see cref="BackgroundFailureRepository"/> bound to the given open brain connection.</summary>
-    public BackgroundFailureRepository(SqliteConnection connection, ILogger<BackgroundFailureRepository> logger)
+    /// <summary>Creates a <see cref="BackgroundFailureRepository"/> bound to the given brain access wrapper.</summary>
+    public BackgroundFailureRepository(IBrainAccess brain, ILogger<BackgroundFailureRepository> logger)
     {
-        _connection = connection;
+        _brain = brain;
         _logger = logger;
     }
 
@@ -40,7 +40,8 @@ public sealed class BackgroundFailureRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 INSERT INTO BackgroundFailures
                     (FailureID, OccurredUtc, Source, ErrorCode, Message, Metadata, Acknowledged)
@@ -84,7 +85,8 @@ public sealed class BackgroundFailureRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            var rows = await _connection.QueryAsync<dynamic>(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(new CommandDefinition(
                 """
                 SELECT FailureID, OccurredUtc, Source, ErrorCode, Message, Metadata, Acknowledged
                 FROM BackgroundFailures
@@ -116,7 +118,8 @@ public sealed class BackgroundFailureRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE BackgroundFailures SET Acknowledged = 1 WHERE FailureID = @FailureId",
                 new { FailureId = failureId }, cancellationToken: ct)).ConfigureAwait(false);
             return Result.Ok();
@@ -144,7 +147,8 @@ public sealed class BackgroundFailureRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE BackgroundFailures SET Acknowledged = 1 WHERE Acknowledged = 0",
                 cancellationToken: ct)).ConfigureAwait(false);
             return Result.Ok();
