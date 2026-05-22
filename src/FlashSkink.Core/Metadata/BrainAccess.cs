@@ -154,7 +154,21 @@ public sealed class BrainAccess : IBrainAccess, IAsyncDisposable
         // wrapping a destroyed SqliteConnection.
         if (Volatile.Read(ref _disposed) != 0)
         {
-            _gate.Release();
+            // SemaphoreSlim does not guarantee FIFO wake order — if the disposer
+            // beat us through WaitAsync, it may have already executed
+            // _gate.Dispose() in its finally. Releasing a disposed SemaphoreSlim
+            // throws ObjectDisposedException("SemaphoreSlim") which would mask
+            // the intended ObjectDisposedException(nameof(BrainAccess)) below.
+            // Swallow it: the caller's contract is "ObjectDisposedException on
+            // a disposed BrainAccess", and the explicit throw guarantees that.
+            try
+            {
+                _gate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
             throw new ObjectDisposedException(nameof(BrainAccess));
         }
 

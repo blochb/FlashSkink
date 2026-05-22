@@ -314,9 +314,21 @@ public sealed class BrainAccessTests
         var disposer = Task.Run(() => brain.DisposeAsync().AsTask());
         await Task.Delay(50); // give dispose time to flip _disposed and start its WaitAsync
 
-        // Release the holder. SemaphoreSlim is FIFO: the waiter wakes first, its
-        // re-verify check trips on _disposed=1, it releases the gate and throws
-        // ObjectDisposedException. The disposer then acquires the gate and finishes.
+        // Release the holder. SemaphoreSlim does NOT guarantee FIFO wake order,
+        // so either of two orderings is valid and both must surface
+        // ObjectDisposedException to the LockAsync caller:
+        //   (a) Waiter wakes first → its re-verify check trips on _disposed=1,
+        //       it releases the gate and throws ObjectDisposedException; the
+        //       disposer then acquires the gate and finishes.
+        //   (b) Disposer wakes first → disposes connection, releases and
+        //       disposes the gate; the waiter wakes from a now-disposed
+        //       semaphore (the in-block try/catch swallows the resulting
+        //       SemaphoreSlim ObjectDisposedException) and reaches the
+        //       explicit `throw new ObjectDisposedException(nameof(BrainAccess))`.
+        // The assertion intentionally does not check ObjectName — both
+        // orderings end at the same explicit throw, but tightening the
+        // assertion to ObjectName == "BrainAccess" would be safe only because
+        // of the try/catch in the re-verify block.
         holderRelease.SetResult();
 
         await Assert.ThrowsAsync<ObjectDisposedException>(() => waiter);
