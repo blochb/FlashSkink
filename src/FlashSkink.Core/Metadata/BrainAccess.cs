@@ -52,30 +52,65 @@ public interface IBrainAccess
 /// gate on <see cref="Dispose"/>. Use with <c>using var scope = await
 /// brain.LockAsync(ct);</c>.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Copy-safety.</strong> <see cref="BrainScope"/> is a <c>readonly struct</c>
+/// so callers receive it by value, which means an accidental copy
+/// (e.g. <c>void DoWork(BrainScope scope)</c>) could in principle dispose the
+/// gate twice and throw <see cref="SemaphoreFullException"/>. We can't promote
+/// this to a <c>ref struct</c> because <see cref="ValueTask{TResult}"/> (the
+/// return type of <see cref="IBrainAccess.LockAsync"/>) does not allow ref
+/// struct type arguments. Instead the scope holds a single-shot release token:
+/// the first <see cref="Dispose"/> releases the gate via
+/// <see cref="Interlocked.Exchange(ref int, int)"/>; every subsequent dispose
+/// is a no-op. A default-valued (zero-initialised) scope is also a safe no-op.
+/// </para>
+/// </remarks>
 public readonly struct BrainScope : IDisposable
 {
-    private readonly SemaphoreSlim? _gate;
+    private readonly BrainScopeReleaseToken? _token;
 
     /// <summary>The brain connection. Valid only for the lifetime of this scope.</summary>
     public SqliteConnection Connection { get; }
 
-    internal BrainScope(SqliteConnection connection, SemaphoreSlim gate)
+    internal BrainScope(SqliteConnection connection, BrainScopeReleaseToken token)
     {
         Connection = connection;
-        _gate = gate;
+        _token = token;
     }
 
     /// <summary>
-    /// Releases the brain gate. <strong>Not idempotent on a non-default scope</strong> — calling
-    /// <see cref="Dispose"/> a second time would invoke <see cref="SemaphoreSlim.Release()"/>
-    /// twice on a <c>maxCount</c>-1 semaphore and throw
-    /// <see cref="SemaphoreFullException"/>. The <c>using var</c> convention used by every
-    /// caller in this codebase guarantees a single dispose. Calling on a default-valued
-    /// (zero-initialised) scope is a safe no-op.
+    /// Releases the brain gate exactly once across all copies of this scope. Idempotent;
+    /// safe to call on a default-valued (zero-initialised) scope.
     /// </summary>
     public void Dispose()
     {
-        _gate?.Release();
+        _token?.Release();
+    }
+}
+
+/// <summary>
+/// Single-shot release token shared by every copy of a <see cref="BrainScope"/>.
+/// The first call to <see cref="Release"/> releases the gate; later calls are no-ops.
+/// This is the mechanism that makes <see cref="BrainScope.Dispose"/> safe to call
+/// twice (e.g. when a scope is shallow-copied across a method boundary).
+/// </summary>
+internal sealed class BrainScopeReleaseToken
+{
+    private readonly SemaphoreSlim _gate;
+    private int _released;
+
+    internal BrainScopeReleaseToken(SemaphoreSlim gate)
+    {
+        _gate = gate;
+    }
+
+    internal void Release()
+    {
+        if (Interlocked.Exchange(ref _released, 1) == 0)
+        {
+            _gate.Release();
+        }
     }
 }
 
@@ -111,7 +146,33 @@ public sealed class BrainAccess : IBrainAccess, IAsyncDisposable
         }
 
         await _gate.WaitAsync(ct).ConfigureAwait(false);
-        return new BrainScope(_connection, _gate);
+
+        // Re-verify after acquiring the gate: a concurrent DisposeAsync may
+        // have flipped _disposed and torn down _connection while we were
+        // waiting in line. Without this check the waiter would wake on the
+        // gate released inside DisposeAsync's finally and return a scope
+        // wrapping a destroyed SqliteConnection.
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            // SemaphoreSlim does not guarantee FIFO wake order — if the disposer
+            // beat us through WaitAsync, it may have already executed
+            // _gate.Dispose() in its finally. Releasing a disposed SemaphoreSlim
+            // throws ObjectDisposedException("SemaphoreSlim") which would mask
+            // the intended ObjectDisposedException(nameof(BrainAccess)) below.
+            // Swallow it: the caller's contract is "ObjectDisposedException on
+            // a disposed BrainAccess", and the explicit throw guarantees that.
+            try
+            {
+                _gate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            throw new ObjectDisposedException(nameof(BrainAccess));
+        }
+
+        return new BrainScope(_connection, new BrainScopeReleaseToken(_gate));
     }
 
     /// <summary>

@@ -236,22 +236,106 @@ public sealed class BrainAccessTests
     }
 
     [Fact]
-    public async Task BrainScope_DoubleDispose_OnNonDefault_ThrowsSemaphoreFull()
+    public async Task BrainScope_DoubleDispose_OnNonDefault_IsIdempotent()
     {
-        // Contract test (XML doc on BrainScope.Dispose): a non-default scope is NOT
-        // idempotent. The struct has no internal dispose tracking, so a second Dispose
-        // calls SemaphoreSlim.Release() twice — exceeding the maxCount=1 — and throws
-        // SemaphoreFullException. The `using var` convention used by every caller in
-        // the codebase guarantees a single dispose. This test exists so a future change
-        // that wraps the struct in a way that disposes twice fails loudly here rather
-        // than corrupting the gate count and breaking the BrainAccess invariant.
+        // Contract: BrainScope holds a single-shot release token. The first Dispose
+        // releases the gate; every later Dispose (e.g. on an accidental shallow copy
+        // of the struct passed across a method boundary) is a safe no-op. Without
+        // this, a second Dispose would call SemaphoreSlim.Release() on a maxCount=1
+        // semaphore and throw SemaphoreFullException, corrupting the gate.
         var conn = OpenConnection();
         await using var brain = new BrainAccess(conn);
         var scope = await brain.LockAsync(CancellationToken.None);
 
         scope.Dispose();
 
-        Assert.Throws<SemaphoreFullException>(() => scope.Dispose());
+        var ex = Record.Exception(() => scope.Dispose());
+        Assert.Null(ex);
+
+        // Gate must still be healthy: a fresh acquire succeeds.
+        using var scope2 = await brain.LockAsync(CancellationToken.None);
+        Assert.Equal(ConnectionState.Open, scope2.Connection.State);
+    }
+
+    [Fact]
+    public async Task BrainScope_CopyDoubleDispose_IsIdempotent()
+    {
+        // Accidental shallow copy across a method boundary (e.g. void DoWork(BrainScope)) —
+        // the original and the copy share the same release token, so disposing both must
+        // not double-release the gate.
+        var conn = OpenConnection();
+        await using var brain = new BrainAccess(conn);
+        var original = await brain.LockAsync(CancellationToken.None);
+        var copy = original; // shallow copy of readonly struct
+
+        original.Dispose();
+
+        var ex = Record.Exception(() => copy.Dispose());
+        Assert.Null(ex);
+
+        // Gate must still be healthy.
+        using var scope2 = await brain.LockAsync(CancellationToken.None);
+        Assert.Equal(ConnectionState.Open, scope2.Connection.State);
+    }
+
+    // ── DisposeAsync race with in-flight LockAsync waiter ─────────────────────
+
+    [Fact]
+    public async Task LockAsync_WaiterRacingConcurrentDispose_ObservesObjectDisposed()
+    {
+        // Race: a thread calls LockAsync, passes the initial _disposed check, and
+        // blocks inside _gate.WaitAsync. A second thread calls DisposeAsync, flips
+        // _disposed, waits for the gate, disposes the connection, then releases the
+        // gate. Without a re-verify check inside LockAsync, the waiter would wake on
+        // the released gate and hand back a BrainScope wrapping a destroyed
+        // SqliteConnection. The contract: the waiter must throw
+        // ObjectDisposedException rather than return a corrupt scope.
+        var conn = OpenConnection();
+        var brain = new BrainAccess(conn);
+
+        var holderAcquired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var holderRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Holder: acquire the gate so the waiter blocks inside WaitAsync.
+        var holder = Task.Run(async () =>
+        {
+            using var scope = await brain.LockAsync(CancellationToken.None);
+            holderAcquired.SetResult();
+            await holderRelease.Task;
+        });
+        await holderAcquired.Task;
+
+        // Waiter: enter LockAsync — will block on the gate behind the holder.
+        var waiter = Task.Run(() => brain.LockAsync(CancellationToken.None).AsTask());
+        await Task.Delay(50); // give waiter time to enter WaitAsync
+
+        // Disposer: start dispose. It flips _disposed (so the waiter's re-verify
+        // check will trip) and then queues behind the waiter on the gate.
+        var disposer = Task.Run(() => brain.DisposeAsync().AsTask());
+        await Task.Delay(50); // give dispose time to flip _disposed and start its WaitAsync
+
+        // Release the holder. SemaphoreSlim does NOT guarantee FIFO wake order,
+        // so either of two orderings is valid and both must surface
+        // ObjectDisposedException to the LockAsync caller:
+        //   (a) Waiter wakes first → its re-verify check trips on _disposed=1,
+        //       it releases the gate and throws ObjectDisposedException; the
+        //       disposer then acquires the gate and finishes.
+        //   (b) Disposer wakes first → disposes connection, releases and
+        //       disposes the gate; the waiter wakes from a now-disposed
+        //       semaphore (the in-block try/catch swallows the resulting
+        //       SemaphoreSlim ObjectDisposedException) and reaches the
+        //       explicit `throw new ObjectDisposedException(nameof(BrainAccess))`.
+        // The assertion intentionally does not check ObjectName — both
+        // orderings end at the same explicit throw, but tightening the
+        // assertion to ObjectName == "BrainAccess" would be safe only because
+        // of the try/catch in the re-verify block.
+        holderRelease.SetResult();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => waiter);
+        await disposer.WaitAsync(TimeSpan.FromSeconds(5));
+        await holder;
+
+        Assert.Equal(ConnectionState.Closed, conn.State);
     }
 
     // ── BrainScope gate-release on exception ─────────────────────────────────
