@@ -222,7 +222,10 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             brainCreated = false;
             lockHeld = false;
 
-            var session = new VolumeSession(ownedDek, ownedConnection);
+            // Wrap the raw connection in BrainAccess at the ownership-transfer boundary
+            // (Principle 36 — from here, no raw SqliteConnection flows downstream).
+            var brainAccess = new BrainAccess(ownedConnection);
+            var session = new VolumeSession(ownedDek, brainAccess);
             var volume = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
                 streamManager, lifecycle, keyVault, vaultPath, ownedLock!).ConfigureAwait(false);
 
@@ -333,7 +336,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             // captured but unused in §3.5.1 — it is consumed by the §3.5.2 witness
             // handshake call site added later in this folder.
             var backfillResult = await BackfillAndStampOnOpenAsync(
-                session.BrainConnection!, ct).ConfigureAwait(false);
+                session.Brain!, ct).ConfigureAwait(false);
             if (!backfillResult.Success)
             {
                 return Result<FlashSkinkVolume>.Fail(backfillResult.Error!);
@@ -842,29 +845,34 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
         try
         {
-            var connection = _context.BrainConnection;
-            var existing = await connection.QuerySingleOrDefaultAsync<string?>(
-                new CommandDefinition(
-                    "SELECT ProviderID FROM Providers WHERE ProviderID = @ProviderId",
-                    new { ProviderId = providerId },
-                    cancellationToken: ct))
-                .ConfigureAwait(false);
-
-            if (existing is null)
+            // Hold the brain scope across the SELECT + INSERT so the select-then-insert is
+            // atomic against any worker SQL on the shared connection (Principle 36).
+            using (var brainScope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
             {
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "INSERT INTO Providers " +
-                    "(ProviderID, ProviderType, DisplayName, ProviderConfig, HealthStatus, AddedUtc, IsActive) " +
-                    "VALUES (@ProviderId, @ProviderType, @DisplayName, @ProviderConfig, 'Healthy', @AddedUtc, 1)",
-                    new
-                    {
-                        ProviderId = providerId,
-                        ProviderType = providerType,
-                        DisplayName = displayName,
-                        ProviderConfig = providerConfigJson,
-                        AddedUtc = DateTime.UtcNow.ToString("O"),
-                    },
-                    cancellationToken: ct)).ConfigureAwait(false);
+                var connection = brainScope.Connection;
+                var existing = await connection.QuerySingleOrDefaultAsync<string?>(
+                    new CommandDefinition(
+                        "SELECT ProviderID FROM Providers WHERE ProviderID = @ProviderId",
+                        new { ProviderId = providerId },
+                        cancellationToken: ct))
+                    .ConfigureAwait(false);
+
+                if (existing is null)
+                {
+                    await connection.ExecuteAsync(new CommandDefinition(
+                        "INSERT INTO Providers " +
+                        "(ProviderID, ProviderType, DisplayName, ProviderConfig, HealthStatus, AddedUtc, IsActive) " +
+                        "VALUES (@ProviderId, @ProviderType, @DisplayName, @ProviderConfig, 'Healthy', @AddedUtc, 1)",
+                        new
+                        {
+                            ProviderId = providerId,
+                            ProviderType = providerType,
+                            DisplayName = displayName,
+                            ProviderConfig = providerConfigJson,
+                            AddedUtc = DateTime.UtcNow.ToString("O"),
+                        },
+                        cancellationToken: ct)).ConfigureAwait(false);
+                }
             }
 
             // Always register the in-process instance — the in-memory registry is rebuilt
@@ -999,20 +1007,20 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     {
         var loggerFactory = options.LoggerFactory;
         var notificationBus = options.NotificationBus;
-        var connection = session.BrainConnection!;
+        var brain = session.Brain!;
         var dek = new ReadOnlyMemory<byte>(session.Dek);
 
-        var wal = new WalRepository(connection, loggerFactory.CreateLogger<WalRepository>());
-        var blobs = new BlobRepository(connection, loggerFactory.CreateLogger<BlobRepository>());
-        var files = new FileRepository(connection, wal, loggerFactory.CreateLogger<FileRepository>());
-        var activityLog = new ActivityLogRepository(connection, loggerFactory.CreateLogger<ActivityLogRepository>());
+        var wal = new WalRepository(brain, loggerFactory.CreateLogger<WalRepository>());
+        var blobs = new BlobRepository(brain, loggerFactory.CreateLogger<BlobRepository>());
+        var files = new FileRepository(brain, wal, loggerFactory.CreateLogger<FileRepository>());
+        var activityLog = new ActivityLogRepository(brain, loggerFactory.CreateLogger<ActivityLogRepository>());
         var blobWriter = new AtomicBlobWriter(loggerFactory.CreateLogger<AtomicBlobWriter>());
         var crypto = new CryptoPipeline();
         var compression = new CompressionService();
         var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         var context = new VolumeContext(
-            connection, dek, skinkRoot, sha256, crypto, compression,
+            brain, dek, skinkRoot, sha256, crypto, compression,
             blobWriter, streamManager, notificationBus,
             blobs, files, wal, activityLog);
 
@@ -1027,7 +1035,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         var clock = options.Clock ?? SystemClock.Instance;
 
         var uploadQueueRepo = new UploadQueueRepository(
-            connection, loggerFactory.CreateLogger<UploadQueueRepository>());
+            brain, loggerFactory.CreateLogger<UploadQueueRepository>());
         var retryPolicy = new RetryPolicy();
         var rangeUploader = new RangeUploader(
             uploadQueueRepo, clock, retryPolicy,
@@ -1039,11 +1047,11 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             uploadQueueRepo, blobs, files, activityLog,
             registry, netMonitor, notificationBus,
             rangeUploader, retryPolicy, clock, wakeupSignal,
-            connection, skinkRoot,
+            brain, skinkRoot,
             loggerFactory.CreateLogger<UploadQueueService>());
 
         var brainMirrorService = new BrainMirrorService(
-            connection, dek, skinkRoot, registry,
+            brain, dek, skinkRoot, registry,
             notificationBus, clock,
             loggerFactory.CreateLogger<BrainMirrorService>());
 
@@ -1171,7 +1179,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     /// based on the handshake outcome and re-persist the row.
     /// </returns>
     private static async Task<Result<(VolumeState State, long NewEpoch)>> BackfillAndStampOnOpenAsync(
-        SqliteConnection connection,
+        IBrainAccess brain,
         CancellationToken ct)
     {
         try
@@ -1182,6 +1190,11 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var appVersion = GetAppInformationalVersion();
             const string upsert = "INSERT OR REPLACE INTO Settings (Key, Value) VALUES (@Key, @Value)";
 
+            // Hold the scope across the full backfill transaction (Principle 36). Runs during
+            // volume open, before any background service starts — no other thread can contend
+            // for the gate, so this is effectively single-threaded as before.
+            using var brainScope = await brain.LockAsync(ct).ConfigureAwait(false);
+            var connection = brainScope.Connection;
             using var tx = connection.BeginTransaction();
 
             // 1. Backfill VolumeID if a legacy brain lacks it.

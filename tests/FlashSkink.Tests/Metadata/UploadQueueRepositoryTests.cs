@@ -10,6 +10,7 @@ namespace FlashSkink.Tests.Metadata;
 public class UploadQueueRepositoryTests : IAsyncLifetime
 {
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly UploadQueueRepository _sut;
 
     // Constant IDs used as FK targets in every test.
@@ -19,7 +20,8 @@ public class UploadQueueRepositoryTests : IAsyncLifetime
     public UploadQueueRepositoryTests()
     {
         _connection = BrainTestHelper.CreateInMemoryConnection();
-        _sut = new UploadQueueRepository(_connection, NullLogger<UploadQueueRepository>.Instance);
+        _brain = new BrainAccess(_connection);
+        _sut = new UploadQueueRepository(_brain, NullLogger<UploadQueueRepository>.Instance);
     }
 
     public async Task InitializeAsync()

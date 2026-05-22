@@ -3,7 +3,6 @@ using FlashSkink.Core.Abstractions.Notifications;
 using FlashSkink.Core.Crypto;
 using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Storage;
-using Microsoft.Data.Sqlite;
 using Microsoft.IO;
 
 namespace FlashSkink.Core.Engine;
@@ -19,7 +18,7 @@ namespace FlashSkink.Core.Engine;
 /// <list type="bullet">
 ///   <item><see cref="Sha256"/> and <see cref="Compression"/> are owned by this instance and are
 ///   disposed by <see cref="Dispose"/>.</item>
-///   <item><see cref="BrainConnection"/> and <see cref="Dek"/> are <em>borrowed</em> from the
+///   <item><see cref="Brain"/> and <see cref="Dek"/> are <em>borrowed</em> from the
 ///   <c>VolumeSession</c> — they are <em>not</em> disposed here.</item>
 ///   <item>All other properties retain their prior owners.</item>
 /// </list>
@@ -35,8 +34,11 @@ public sealed class VolumeContext : IDisposable
     /// </summary>
     public static readonly long MaxPlaintextBytes = CompressionService.MaxPlaintextBytes;
 
-    /// <summary>Open encrypted brain connection; lifetime owned by <c>VolumeSession</c>, not by this context.</summary>
-    public SqliteConnection BrainConnection { get; }
+    /// <summary>
+    /// Brain access wrapper; lifetime owned by <c>VolumeSession</c>, not by this context.
+    /// All SQL must flow through <see cref="IBrainAccess.LockAsync"/> (Principle 36).
+    /// </summary>
+    public IBrainAccess Brain { get; }
 
     /// <summary>
     /// Borrowed view of the live 32-byte DEK; lifetime owned by <c>VolumeSession</c>.
@@ -95,7 +97,7 @@ public sealed class VolumeContext : IDisposable
     /// disposed by <see cref="Dispose"/>. All other parameters retain their prior owners.
     /// </summary>
     public VolumeContext(
-        SqliteConnection brainConnection,
+        IBrainAccess brain,
         ReadOnlyMemory<byte> dek,
         string skinkRoot,
         IncrementalHash sha256,
@@ -109,7 +111,7 @@ public sealed class VolumeContext : IDisposable
         WalRepository wal,
         ActivityLogRepository activityLog)
     {
-        BrainConnection = brainConnection;
+        Brain = brain;
         Dek = dek;
         SkinkRoot = skinkRoot;
         Sha256 = sha256;
@@ -127,7 +129,7 @@ public sealed class VolumeContext : IDisposable
     /// <summary>
     /// Disposes the volume-scoped <see cref="Sha256"/> and <see cref="Compression"/> instances.
     /// Idempotent — safe to call multiple times. Does not dispose
-    /// <see cref="BrainConnection"/> (owned by <c>VolumeSession</c>).
+    /// <see cref="Brain"/> (owned by <c>VolumeSession</c>).
     /// </summary>
     public void Dispose()
     {

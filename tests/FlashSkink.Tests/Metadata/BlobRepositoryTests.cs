@@ -10,12 +10,14 @@ namespace FlashSkink.Tests.Metadata;
 public class BlobRepositoryTests : IAsyncLifetime
 {
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly BlobRepository _sut;
 
     public BlobRepositoryTests()
     {
         _connection = BrainTestHelper.CreateInMemoryConnection();
-        _sut = new BlobRepository(_connection, NullLogger<BlobRepository>.Instance);
+        _brain = new BrainAccess(_connection);
+        _sut = new BlobRepository(_brain, NullLogger<BlobRepository>.Instance);
     }
 
     public async Task InitializeAsync() => await BrainTestHelper.ApplySchemaAsync(_connection);

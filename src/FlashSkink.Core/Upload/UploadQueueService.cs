@@ -52,7 +52,7 @@ public sealed class UploadQueueService : IAsyncDisposable
     private readonly RetryPolicy _retryPolicy;
     private readonly IClock _clock;
     private readonly UploadWakeupSignal _wakeupSignal;
-    private readonly SqliteConnection _connection;
+    private readonly IBrainAccess _brain;
     private readonly string _skinkRoot;
     private readonly ILogger<UploadQueueService> _logger;
 
@@ -86,7 +86,7 @@ public sealed class UploadQueueService : IAsyncDisposable
     /// <param name="retryPolicy">§21.1 retry ladders (§3.2).</param>
     /// <param name="clock">Time source (§3.2).</param>
     /// <param name="wakeupSignal">Shared wakeup signal — pulsed by <c>WritePipeline</c> post-commit (§3.6).</param>
-    /// <param name="connection">Brain connection — used to open the §15.3 step 7c transactions.</param>
+    /// <param name="brain">Brain access wrapper — used to open the §15.3 step 7c transactions under the universal gate (Principle 36).</param>
     /// <param name="skinkRoot">Absolute path to the skink root; combined with <c>Blobs.BlobPath</c> to locate the local blob.</param>
     /// <param name="logger">Service logger.</param>
     public UploadQueueService(
@@ -101,7 +101,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         RetryPolicy retryPolicy,
         IClock clock,
         UploadWakeupSignal wakeupSignal,
-        SqliteConnection connection,
+        IBrainAccess brain,
         string skinkRoot,
         ILogger<UploadQueueService> logger)
     {
@@ -116,7 +116,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         _retryPolicy = retryPolicy;
         _clock = clock;
         _wakeupSignal = wakeupSignal;
-        _connection = connection;
+        _brain = brain;
         _skinkRoot = skinkRoot;
         _logger = logger;
         _availabilityHandler = OnAvailabilityChanged;
@@ -605,33 +605,57 @@ public sealed class UploadQueueService : IAsyncDisposable
         // The upload has completed — the brain transaction is non-cancellable (Principle 17).
         // Observe cancellation before the critical section; every await inside uses
         // CancellationToken.None so a concurrent DisposeAsync cannot race the commit.
+        // Acquire the brain scope for the full transaction lifetime (Principle 36); the
+        // tx-aware repository overloads below see a non-null transaction and skip their own
+        // gate acquisition.
+        //
+        // The scope MUST be released before any subsequent brain-touching call
+        // (OnTerminalBrainFailureAsync → PublishFailureAsync → PersistenceNotificationHandler
+        // → BackgroundFailures append, or the activity-log append below). The brain gate is
+        // non-reentrant by design (Principle 36), so a nested LockAsync from the same call
+        // path would deadlock. The two phases below — "scoped transaction" then "post-commit
+        // bookkeeping" — exist solely to draw that boundary.
         ct.ThrowIfCancellationRequested();
-        await using (var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(CancellationToken.None)
-            .ConfigureAwait(false))
+        ErrorContext? txFailure = null;
+        string txFailureOp = string.Empty;
+        using (var scope = await _brain.LockAsync(CancellationToken.None).ConfigureAwait(false))
         {
+            await using var tx = (SqliteTransaction)await scope.Connection.BeginTransactionAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+
             var markUploaded = await _uploadQueueRepository
                 .MarkUploadedAsync(row.FileId, row.ProviderId, outcome.RemoteId!, tx, CancellationToken.None)
                 .ConfigureAwait(false);
             if (!markUploaded.Success)
             {
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                return await OnTerminalBrainFailureAsync(
-                    row, file, provider, markUploaded.Error!,
-                    "mark uploaded").ConfigureAwait(false);
+                txFailure = markUploaded.Error!;
+                txFailureOp = "mark uploaded";
             }
-
-            var deleteSession = await _uploadQueueRepository
-                .DeleteSessionAsync(row.FileId, row.ProviderId, tx, CancellationToken.None)
-                .ConfigureAwait(false);
-            if (!deleteSession.Success)
+            else
             {
-                await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                return await OnTerminalBrainFailureAsync(
-                    row, file, provider, deleteSession.Error!,
-                    "delete session").ConfigureAwait(false);
+                var deleteSession = await _uploadQueueRepository
+                    .DeleteSessionAsync(row.FileId, row.ProviderId, tx, CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (!deleteSession.Success)
+                {
+                    await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                    txFailure = deleteSession.Error!;
+                    txFailureOp = "delete session";
+                }
+                else
+                {
+                    await tx.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+                }
             }
+        }
 
-            await tx.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+        if (txFailure is not null)
+        {
+            // Brain scope released — OnTerminalBrainFailureAsync may publish a notification
+            // that routes through PersistenceNotificationHandler which re-acquires the gate.
+            return await OnTerminalBrainFailureAsync(
+                row, file, provider, txFailure, txFailureOp).ConfigureAwait(false);
         }
 
         // Activity log append uses CancellationToken.None — post-commit bookkeeping must not
@@ -712,9 +736,22 @@ public sealed class UploadQueueService : IAsyncDisposable
         string failureMessage = outcome.FailureMessage ?? "Upload failed.";
         string lastError = $"{code}: {failureMessage}";
 
-        await using (var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(ct)
-            .ConfigureAwait(false))
+        // Acquire the brain scope for the full transaction lifetime (Principle 36); the
+        // tx-aware repository overloads below see a non-null transaction and skip their own
+        // gate acquisition.
+        //
+        // The scope MUST be released before PublishFailureAsync and the activity-log append:
+        // both re-acquire the gate (via PersistenceNotificationHandler and ActivityLogRepository
+        // respectively), and the gate is non-reentrant (Principle 36). The two-phase shape
+        // below — "scoped transaction" then "post-commit notify + log" — exists for that
+        // reason.
+        ErrorContext? txFailure = null;
+        string txFailureOp = string.Empty;
+        using (var scope = await _brain.LockAsync(ct).ConfigureAwait(false))
         {
+            await using var tx = (SqliteTransaction)await scope.Connection.BeginTransactionAsync(ct)
+                .ConfigureAwait(false);
+
             // Use the terminal-failure variant which bumps AttemptCount to the §21.1 cycle cap
             // so the DequeueNextBatchAsync filter excludes this row from future cycles.
             var markFailed = await _uploadQueueRepository
@@ -723,23 +760,31 @@ public sealed class UploadQueueService : IAsyncDisposable
             if (!markFailed.Success)
             {
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                return await OnTerminalBrainFailureAsync(
-                    row, file, provider, markFailed.Error!,
-                    "mark terminally failed").ConfigureAwait(false);
+                txFailure = markFailed.Error!;
+                txFailureOp = "mark terminally failed";
             }
-
-            var deleteSession = await _uploadQueueRepository
-                .DeleteSessionAsync(row.FileId, row.ProviderId, tx, ct)
-                .ConfigureAwait(false);
-            if (!deleteSession.Success)
+            else
             {
-                await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                return await OnTerminalBrainFailureAsync(
-                    row, file, provider, deleteSession.Error!,
-                    "delete session (permanent)").ConfigureAwait(false);
+                var deleteSession = await _uploadQueueRepository
+                    .DeleteSessionAsync(row.FileId, row.ProviderId, tx, ct)
+                    .ConfigureAwait(false);
+                if (!deleteSession.Success)
+                {
+                    await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                    txFailure = deleteSession.Error!;
+                    txFailureOp = "delete session (permanent)";
+                }
+                else
+                {
+                    await tx.CommitAsync(ct).ConfigureAwait(false);
+                }
             }
+        }
 
-            await tx.CommitAsync(ct).ConfigureAwait(false);
+        if (txFailure is not null)
+        {
+            return await OnTerminalBrainFailureAsync(
+                row, file, provider, txFailure, txFailureOp).ConfigureAwait(false);
         }
 
         await PublishFailureAsync(file, provider, code, failureMessage,

@@ -37,13 +37,14 @@ public sealed class VolumeContextTests : IAsyncLifetime, IDisposable
         IncrementalHash? sha256 = null,
         CompressionService? compression = null)
     {
-        var wal = new WalRepository(conn, NullLogger<WalRepository>.Instance);
-        var blobs = new BlobRepository(conn, NullLogger<BlobRepository>.Instance);
-        var files = new FileRepository(conn, wal, NullLogger<FileRepository>.Instance);
-        var activity = new ActivityLogRepository(conn, NullLogger<ActivityLogRepository>.Instance);
+        var brain = new BrainAccess(conn);
+        var wal = new WalRepository(brain, NullLogger<WalRepository>.Instance);
+        var blobs = new BlobRepository(brain, NullLogger<BlobRepository>.Instance);
+        var files = new FileRepository(brain, wal, NullLogger<FileRepository>.Instance);
+        var activity = new ActivityLogRepository(brain, NullLogger<ActivityLogRepository>.Instance);
 
         return new VolumeContext(
-            brainConnection: conn,
+            brain: brain,
             dek: new byte[32].AsMemory(),
             skinkRoot: "E:\\",
             sha256: sha256 ?? IncrementalHash.CreateHash(HashAlgorithmName.SHA256),
@@ -70,16 +71,17 @@ public sealed class VolumeContextTests : IAsyncLifetime, IDisposable
         var writer = new AtomicBlobWriter(NullLogger<AtomicBlobWriter>.Instance);
         var sm = new RecyclableMemoryStreamManager();
         var bus = new NullNotificationBus();
-        var wal = new WalRepository(_connection, NullLogger<WalRepository>.Instance);
-        var blobs = new BlobRepository(_connection, NullLogger<BlobRepository>.Instance);
-        var files = new FileRepository(_connection, wal, NullLogger<FileRepository>.Instance);
-        var activity = new ActivityLogRepository(_connection, NullLogger<ActivityLogRepository>.Instance);
+        var brain = new BrainAccess(_connection);
+        var wal = new WalRepository(brain, NullLogger<WalRepository>.Instance);
+        var blobs = new BlobRepository(brain, NullLogger<BlobRepository>.Instance);
+        var files = new FileRepository(brain, wal, NullLogger<FileRepository>.Instance);
+        var activity = new ActivityLogRepository(brain, NullLogger<ActivityLogRepository>.Instance);
 
         using var ctx = new VolumeContext(
-            _connection, dek.AsMemory(), skinkRoot, sha256, crypto, compression,
+            brain, dek.AsMemory(), skinkRoot, sha256, crypto, compression,
             writer, sm, bus, blobs, files, wal, activity);
 
-        Assert.Same(_connection, ctx.BrainConnection);
+        Assert.Same(brain, ctx.Brain);
         Assert.Equal(dek, ctx.Dek.ToArray());
         Assert.Equal(skinkRoot, ctx.SkinkRoot);
         Assert.Same(sha256, ctx.Sha256);

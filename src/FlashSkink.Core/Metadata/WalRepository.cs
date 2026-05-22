@@ -10,21 +10,29 @@ namespace FlashSkink.Core.Metadata;
 /// own transactions by passing the transaction to <see cref="InsertAsync"/>. Compensation
 /// paths call <see cref="TransitionAsync"/> with <see cref="CancellationToken.None"/> (Principle 17).
 /// </summary>
+/// <remarks>
+/// All SQL flows through <see cref="IBrainAccess"/> per Principle 36. Overloads that accept a
+/// <see cref="SqliteTransaction"/> assume the caller already holds a <see cref="BrainScope"/>
+/// for the transaction's lifetime and therefore do not re-acquire the brain gate; the SQL
+/// runs against <see cref="SqliteTransaction.Connection"/>.
+/// </remarks>
 public sealed class WalRepository
 {
-    private readonly SqliteConnection _connection;
+    private readonly IBrainAccess _brain;
     private readonly ILogger<WalRepository> _logger;
 
-    /// <summary>Creates a <see cref="WalRepository"/> bound to the given open brain connection.</summary>
-    public WalRepository(SqliteConnection connection, ILogger<WalRepository> logger)
+    /// <summary>Creates a <see cref="WalRepository"/> bound to the given brain access wrapper.</summary>
+    public WalRepository(IBrainAccess brain, ILogger<WalRepository> logger)
     {
-        _connection = connection;
+        _brain = brain;
         _logger = logger;
     }
 
     /// <summary>
     /// Inserts a WAL row, optionally participating in an existing transaction. When
-    /// <paramref name="transaction"/> is <see langword="null"/> the INSERT auto-commits.
+    /// <paramref name="transaction"/> is <see langword="null"/> this method acquires the brain
+    /// scope itself and the INSERT auto-commits; when non-null the caller must already hold
+    /// the brain scope for the transaction's lifetime.
     /// </summary>
     public async Task<Result> InsertAsync(
         WalRow row,
@@ -48,8 +56,19 @@ public sealed class WalRepository
                 UpdatedUtc = row.UpdatedUtc.ToString("O"),
                 row.Payload,
             };
-            await _connection.ExecuteAsync(new CommandDefinition(sql, param, transaction, cancellationToken: ct))
-                .ConfigureAwait(false);
+            if (transaction is not null)
+            {
+                await transaction.Connection!.ExecuteAsync(
+                    new CommandDefinition(sql, param, transaction, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+                await scope.Connection.ExecuteAsync(
+                    new CommandDefinition(sql, param, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
@@ -72,8 +91,9 @@ public sealed class WalRepository
     /// <summary>
     /// Transitions a WAL row to a new phase. On compensation paths callers must pass
     /// <see cref="CancellationToken.None"/> as a literal (Principle 17). When
-    /// <paramref name="transaction"/> is non-null the UPDATE participates in that transaction;
-    /// when null it auto-commits (existing behaviour).
+    /// <paramref name="transaction"/> is non-null the UPDATE participates in that transaction
+    /// (caller holds the brain scope); when null this method acquires the brain scope and the
+    /// UPDATE auto-commits.
     /// </summary>
     /// <remarks>
     /// The <paramref name="transaction"/> parameter is placed after <paramref name="ct"/> (rather
@@ -92,12 +112,26 @@ public sealed class WalRepository
             ct.ThrowIfCancellationRequested();
             const string sql =
                 "UPDATE WAL SET Phase = @Phase, UpdatedUtc = @UpdatedUtc WHERE WALID = @WalId";
-            var rows = await _connection.ExecuteAsync(new CommandDefinition(sql, new
+            var param = new
             {
                 Phase = newPhase,
                 UpdatedUtc = DateTime.UtcNow.ToString("O"),
                 WalId = walId,
-            }, transaction, cancellationToken: ct)).ConfigureAwait(false);
+            };
+            int rows;
+            if (transaction is not null)
+            {
+                rows = await transaction.Connection!.ExecuteAsync(
+                    new CommandDefinition(sql, param, transaction, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+                rows = await scope.Connection.ExecuteAsync(
+                    new CommandDefinition(sql, param, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
             if (rows == 0)
             {
                 _logger.LogWarning("WAL transition found no row for {WalId}", walId);
@@ -137,7 +171,8 @@ public sealed class WalRepository
                 WHERE Phase NOT IN ('COMMITTED', 'FAILED')
                 ORDER BY StartedUtc ASC
                 """;
-            var rows = await _connection.QueryAsync<dynamic>(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(
                 new CommandDefinition(sql, cancellationToken: ct)).ConfigureAwait(false);
             var result = rows
                 .Select(r => new WalRow(
@@ -175,7 +210,8 @@ public sealed class WalRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(
                 new CommandDefinition("DELETE FROM WAL WHERE WALID = @WalId",
                     new { WalId = walId }, cancellationToken: ct)).ConfigureAwait(false);
             return Result.Ok();

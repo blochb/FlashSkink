@@ -5,6 +5,7 @@ using Dapper;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Crypto;
 using FlashSkink.Core.Engine;
+using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Providers;
 using FlashSkink.Core.Upload;
 using FlashSkink.Tests._TestSupport;
@@ -21,6 +22,7 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
     private readonly string _skinkRoot;
     private readonly string _tailRoot;
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly byte[] _dek;
     private readonly InMemoryProviderRegistry _registry;
     private readonly RecordingNotificationBus _bus;
@@ -45,6 +47,7 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         // as production. Plain-SQLite was insufficient and masked the SQLCipher mismatch
         // until §3.6 surfaced it.
         _connection = CreateKeyedInMemoryConnection(_dek);
+        _brain = new BrainAccess(_connection);
         _registry = new InMemoryProviderRegistry(NullLogger<InMemoryProviderRegistry>.Instance);
         _bus = new RecordingNotificationBus();
         _clock = new FakeClock(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
@@ -100,10 +103,10 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         var logger = NullLogger<BrainMirrorService>.Instance;
         if (maxBytes is null)
         {
-            return new BrainMirrorService(_connection, _dek, _skinkRoot,
+            return new BrainMirrorService(_brain, _dek, _skinkRoot,
                 _registry, _bus, _clock, logger);
         }
-        return new BrainMirrorService(_connection, _dek, _skinkRoot,
+        return new BrainMirrorService(_brain, _dek, _skinkRoot,
             _registry, _bus, _clock, logger, maxBytes.Value);
     }
 

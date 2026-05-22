@@ -15,6 +15,7 @@ namespace FlashSkink.Tests.Storage;
 public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
 {
     private readonly SqliteConnection _connection;
+    private readonly BrainAccess _brain;
     private readonly WalRepository _wal;
     private readonly AtomicBlobWriter _blobWriter;
     private readonly string _skinkRoot;
@@ -22,7 +23,8 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
     public WriteWalScopeTests()
     {
         _connection = BrainTestHelper.CreateInMemoryConnection();
-        _wal = new WalRepository(_connection, NullLogger<WalRepository>.Instance);
+        _brain = new BrainAccess(_connection);
+        _wal = new WalRepository(_brain, NullLogger<WalRepository>.Instance);
         _skinkRoot = Path.Combine(Path.GetTempPath(), "flashskink-wal-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_skinkRoot);
         _blobWriter = new AtomicBlobWriter(NullLogger<AtomicBlobWriter>.Instance);
@@ -101,7 +103,8 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
     {
         // Use a fresh connection without schema applied → WAL table doesn't exist → SqliteException.
         using var badConn = BrainTestHelper.CreateInMemoryConnection();
-        var failingWal = new WalRepository(badConn, NullLogger<WalRepository>.Instance);
+        var failingBrain = new BrainAccess(badConn);
+        var failingWal = new WalRepository(failingBrain, NullLogger<WalRepository>.Instance);
 
         var result = await WriteWalScope.OpenAsync(
             failingWal, _blobWriter, _skinkRoot, MakeFileId(), MakeBlobId(), "/path",

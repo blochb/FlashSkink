@@ -12,15 +12,22 @@ namespace FlashSkink.Core.Metadata;
 /// <see cref="Microsoft.Data.Sqlite.SqliteDataReader"/> hot path (Principle 22); all other
 /// reads use Dapper.
 /// </summary>
+/// <remarks>
+/// All SQL flows through <see cref="IBrainAccess"/> per Principle 36. The iterator holds the
+/// brain scope for the lifetime of the iteration so the open <see cref="SqliteDataReader"/>
+/// cannot race a concurrent command on the connection. Overloads that take a
+/// <see cref="SqliteTransaction"/> do not re-acquire the gate — the caller owns the scope
+/// for the transaction's lifetime.
+/// </remarks>
 public sealed class UploadQueueRepository
 {
-    private readonly SqliteConnection _connection;
+    private readonly IBrainAccess _brain;
     private readonly ILogger<UploadQueueRepository> _logger;
 
-    /// <summary>Creates an <see cref="UploadQueueRepository"/> bound to the given open brain connection.</summary>
-    public UploadQueueRepository(SqliteConnection connection, ILogger<UploadQueueRepository> logger)
+    /// <summary>Creates an <see cref="UploadQueueRepository"/> bound to the given brain access wrapper.</summary>
+    public UploadQueueRepository(IBrainAccess brain, ILogger<UploadQueueRepository> logger)
     {
-        _connection = connection;
+        _brain = brain;
         _logger = logger;
     }
 
@@ -36,7 +43,8 @@ public sealed class UploadQueueRepository
         {
             ct.ThrowIfCancellationRequested();
             var now = DateTime.UtcNow.ToString("O");
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 INSERT INTO TailUploads (FileID, ProviderID, Status, QueuedUtc, AttemptCount)
                 VALUES (@FileId, @ProviderId, 'PENDING', @QueuedUtc, 0)
@@ -78,13 +86,19 @@ public sealed class UploadQueueRepository
     /// (Phase 3 <c>UploadQueueService</c>) per blueprint §9.7 and the CLAUDE.md Principle 1
     /// carve-out for <c>IAsyncEnumerable&lt;readonly record struct&gt;</c> hot-path readers.
     /// </para>
+    /// <para>
+    /// <b>Principle 36.</b> Acquires the brain scope at iterator entry and holds it for the
+    /// full iteration lifetime — including <see cref="SqliteDataReader"/> teardown when the
+    /// consumer's <c>await foreach</c> exits. Disposing the iterator releases the scope.
+    /// </para>
     /// </summary>
     public async IAsyncEnumerable<TailUploadRow> DequeueNextBatchAsync(
         string providerId,
         int batchSize,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        await using var cmd = _connection.CreateCommand();
+        using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+        await using var cmd = scope.Connection.CreateCommand();
         // Filter intent (dev plan §3.4):
         //   PENDING rows are always eligible.
         //   FAILED rows with AttemptCount < 5 are eligible for the §21.1 cycle ladder.
@@ -125,7 +139,8 @@ public sealed class UploadQueueRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 UPDATE TailUploads
                 SET Status = 'UPLOADING', LastAttemptUtc = @Now, AttemptCount = AttemptCount + 1
@@ -161,7 +176,9 @@ public sealed class UploadQueueRepository
     /// Sets a row to <c>UPLOADED</c> and records <c>RemoteId</c> and <c>UploadedUtc</c>, enrolled
     /// in <paramref name="transaction"/>. Used by §3.4 <c>UploadQueueService.ApplyOutcomeAsync</c>
     /// to wrap the status flip and the matching <see cref="DeleteSessionAsync(string,string,SqliteTransaction?,CancellationToken)"/>
-    /// in one transaction per blueprint §15.3 step 7c.
+    /// in one transaction per blueprint §15.3 step 7c. When <paramref name="transaction"/> is
+    /// non-null the caller owns the brain scope (Principle 36); when null this method acquires
+    /// it.
     /// </summary>
     public async Task<Result> MarkUploadedAsync(
         string fileId, string providerId, string remoteId, SqliteTransaction? transaction, CancellationToken ct)
@@ -169,15 +186,26 @@ public sealed class UploadQueueRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            const string sql =
                 """
                 UPDATE TailUploads
                 SET Status = 'UPLOADED', RemoteId = @RemoteId, UploadedUtc = @Now
                 WHERE FileID = @FileId AND ProviderID = @ProviderId
-                """,
-                new { RemoteId = remoteId, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId },
-                transaction: transaction,
-                cancellationToken: ct)).ConfigureAwait(false);
+                """;
+            var param = new { RemoteId = remoteId, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId };
+            if (transaction is not null)
+            {
+                await transaction.Connection!.ExecuteAsync(
+                    new CommandDefinition(sql, param, transaction, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+                await scope.Connection.ExecuteAsync(
+                    new CommandDefinition(sql, param, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
@@ -204,8 +232,8 @@ public sealed class UploadQueueRepository
 
     /// <summary>
     /// Sets a row to <c>FAILED</c> and records <c>LastError</c> and <c>LastAttemptUtc</c>,
-    /// enrolled in <paramref name="transaction"/>. Used by §3.4 <c>UploadQueueService</c> to
-    /// wrap the status flip and the matching session delete in one transaction.
+    /// enrolled in <paramref name="transaction"/>. When <paramref name="transaction"/> is non-null
+    /// the caller owns the brain scope (Principle 36); when null this method acquires it.
     /// </summary>
     public async Task<Result> MarkFailedAsync(
         string fileId, string providerId, string lastError, SqliteTransaction? transaction, CancellationToken ct)
@@ -213,15 +241,26 @@ public sealed class UploadQueueRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            const string sql =
                 """
                 UPDATE TailUploads
                 SET Status = 'FAILED', LastError = @LastError, LastAttemptUtc = @Now
                 WHERE FileID = @FileId AND ProviderID = @ProviderId
-                """,
-                new { LastError = lastError, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId },
-                transaction: transaction,
-                cancellationToken: ct)).ConfigureAwait(false);
+                """;
+            var param = new { LastError = lastError, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId };
+            if (transaction is not null)
+            {
+                await transaction.Connection!.ExecuteAsync(
+                    new CommandDefinition(sql, param, transaction, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+                await scope.Connection.ExecuteAsync(
+                    new CommandDefinition(sql, param, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
@@ -259,7 +298,8 @@ public sealed class UploadQueueRepository
         {
             ct.ThrowIfCancellationRequested();
             var now = DateTime.UtcNow.ToString("O");
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 INSERT OR REPLACE INTO UploadSessions
                     (FileID, ProviderID, SessionUri, SessionExpiresUtc, BytesUploaded, TotalBytes, LastActivityUtc)
@@ -276,7 +316,7 @@ public sealed class UploadQueueRepository
                     Now = now,
                 }, cancellationToken: ct)).ConfigureAwait(false);
 
-            var row = await _connection.QuerySingleOrDefaultAsync<dynamic>(new CommandDefinition(
+            var row = await scope.Connection.QuerySingleOrDefaultAsync<dynamic>(new CommandDefinition(
                 """
                 SELECT FileID, ProviderID, SessionUri, SessionExpiresUtc,
                        BytesUploaded, TotalBytes, LastActivityUtc
@@ -328,7 +368,8 @@ public sealed class UploadQueueRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 UPDATE UploadSessions
                 SET BytesUploaded = @BytesUploaded, LastActivityUtc = @Now
@@ -362,7 +403,8 @@ public sealed class UploadQueueRepository
     /// for failures that should not re-enter the §21.1 cycle ladder
     /// (<see cref="ErrorCode.ProviderAuthFailed"/>, <see cref="ErrorCode.ProviderQuotaExceeded"/>,
     /// <see cref="ErrorCode.TokenRevoked"/>, <see cref="ErrorCode.ChecksumMismatch"/>,
-    /// or any post-5-cycle promotion).
+    /// or any post-5-cycle promotion). When <paramref name="transaction"/> is non-null the caller
+    /// owns the brain scope (Principle 36); when null this method acquires it.
     /// </summary>
     public async Task<Result> MarkTerminallyFailedAsync(
         string fileId, string providerId, string lastError, SqliteTransaction? transaction, CancellationToken ct)
@@ -370,7 +412,7 @@ public sealed class UploadQueueRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            const string sql =
                 """
                 UPDATE TailUploads
                 SET Status = 'FAILED',
@@ -378,10 +420,21 @@ public sealed class UploadQueueRepository
                     LastAttemptUtc = @Now,
                     AttemptCount = MAX(AttemptCount, 5)
                 WHERE FileID = @FileId AND ProviderID = @ProviderId
-                """,
-                new { LastError = lastError, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId },
-                transaction: transaction,
-                cancellationToken: ct)).ConfigureAwait(false);
+                """;
+            var param = new { LastError = lastError, Now = DateTime.UtcNow.ToString("O"), FileId = fileId, ProviderId = providerId };
+            if (transaction is not null)
+            {
+                await transaction.Connection!.ExecuteAsync(
+                    new CommandDefinition(sql, param, transaction, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+                await scope.Connection.ExecuteAsync(
+                    new CommandDefinition(sql, param, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
@@ -408,7 +461,8 @@ public sealed class UploadQueueRepository
     /// <summary>
     /// Deletes the <c>UploadSessions</c> row, enrolled in <paramref name="transaction"/>. Used by
     /// §3.4 <c>UploadQueueService</c> to wrap the session delete with the matching status flip
-    /// in one transaction per blueprint §15.3 step 7c.
+    /// in one transaction per blueprint §15.3 step 7c. When <paramref name="transaction"/> is
+    /// non-null the caller owns the brain scope (Principle 36); when null this method acquires it.
     /// </summary>
     public async Task<Result> DeleteSessionAsync(
         string fileId, string providerId, SqliteTransaction? transaction, CancellationToken ct)
@@ -416,11 +470,21 @@ public sealed class UploadQueueRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM UploadSessions WHERE FileID = @FileId AND ProviderID = @ProviderId",
-                new { FileId = fileId, ProviderId = providerId },
-                transaction: transaction,
-                cancellationToken: ct)).ConfigureAwait(false);
+            const string sql = "DELETE FROM UploadSessions WHERE FileID = @FileId AND ProviderID = @ProviderId";
+            var param = new { FileId = fileId, ProviderId = providerId };
+            if (transaction is not null)
+            {
+                await transaction.Connection!.ExecuteAsync(
+                    new CommandDefinition(sql, param, transaction, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+                await scope.Connection.ExecuteAsync(
+                    new CommandDefinition(sql, param, cancellationToken: ct))
+                    .ConfigureAwait(false);
+            }
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
@@ -454,7 +518,8 @@ public sealed class UploadQueueRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            var row = await _connection.QuerySingleOrDefaultAsync<dynamic>(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var row = await scope.Connection.QuerySingleOrDefaultAsync<dynamic>(new CommandDefinition(
                 """
                 SELECT FileID, ProviderID, SessionUri, SessionExpiresUtc,
                        BytesUploaded, TotalBytes, LastActivityUtc

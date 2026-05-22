@@ -12,13 +12,13 @@ namespace FlashSkink.Core.Metadata;
 /// </summary>
 public sealed class ActivityLogRepository
 {
-    private readonly SqliteConnection _connection;
+    private readonly IBrainAccess _brain;
     private readonly ILogger<ActivityLogRepository> _logger;
 
-    /// <summary>Creates an <see cref="ActivityLogRepository"/> bound to the given open brain connection.</summary>
-    public ActivityLogRepository(SqliteConnection connection, ILogger<ActivityLogRepository> logger)
+    /// <summary>Creates an <see cref="ActivityLogRepository"/> bound to the given brain access wrapper.</summary>
+    public ActivityLogRepository(IBrainAccess brain, ILogger<ActivityLogRepository> logger)
     {
-        _connection = connection;
+        _brain = brain;
         _logger = logger;
     }
 
@@ -38,7 +38,8 @@ public sealed class ActivityLogRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            await _connection.ExecuteAsync(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            await scope.Connection.ExecuteAsync(new CommandDefinition(
                 """
                 INSERT INTO ActivityLog (EntryID, OccurredUtc, Category, Summary, Detail)
                 VALUES (@EntryId, @OccurredUtc, @Category, @Summary, @Detail)
@@ -77,7 +78,8 @@ public sealed class ActivityLogRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            var rows = await _connection.QueryAsync<dynamic>(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(new CommandDefinition(
                 """
                 SELECT EntryID, OccurredUtc, Category, Summary, Detail
                 FROM ActivityLog
@@ -114,7 +116,8 @@ public sealed class ActivityLogRepository
         try
         {
             ct.ThrowIfCancellationRequested();
-            var rows = await _connection.QueryAsync<dynamic>(new CommandDefinition(
+            using var scope = await _brain.LockAsync(ct).ConfigureAwait(false);
+            var rows = await scope.Connection.QueryAsync<dynamic>(new CommandDefinition(
                 """
                 SELECT EntryID, OccurredUtc, Category, Summary, Detail
                 FROM ActivityLog

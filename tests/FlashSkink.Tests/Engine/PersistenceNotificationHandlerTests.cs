@@ -15,6 +15,7 @@ namespace FlashSkink.Tests.Engine;
 public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
 {
     private SqliteConnection _connection = null!;
+    private BrainAccess _brain = null!;
     private BackgroundFailureRepository _repository = null!;
     private RecordingLogger<PersistenceNotificationHandler> _logger = null!;
     private PersistenceNotificationHandler _handler = null!;
@@ -23,7 +24,8 @@ public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
     {
         _connection = BrainTestHelper.CreateInMemoryConnection();
         await BrainTestHelper.ApplySchemaAsync(_connection);
-        _repository = new BackgroundFailureRepository(_connection, NullLogger<BackgroundFailureRepository>.Instance);
+        _brain = new BrainAccess(_connection);
+        _repository = new BackgroundFailureRepository(_brain, NullLogger<BackgroundFailureRepository>.Instance);
         _logger = new RecordingLogger<PersistenceNotificationHandler>();
         _handler = new PersistenceNotificationHandler(_repository, _logger);
     }

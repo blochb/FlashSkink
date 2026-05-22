@@ -80,7 +80,8 @@ public sealed class WriteCrashConsistencyTests
         using var conn = BrainTestHelper.CreateInMemoryConnection();
         BrainTestHelper.ApplySchemaAsync(conn).GetAwaiter().GetResult();
 
-        var wal = new WalRepository(conn, NullLogger<WalRepository>.Instance);
+        var brain = new BrainAccess(conn);
+        var wal = new WalRepository(brain, NullLogger<WalRepository>.Instance);
         var writer = new AtomicBlobWriter(NullLogger<AtomicBlobWriter>.Instance);
         var blobId = Guid.NewGuid().ToString("N");
         var fileId = Guid.NewGuid().ToString("N");
@@ -240,10 +241,11 @@ public sealed class WriteCrashConsistencyTests
         BrainTestHelper.ApplySchemaAsync(conn).GetAwaiter().GetResult();
 
         var loggerFactory = NullLoggerFactory.Instance;
-        var wal = new WalRepository(conn, loggerFactory.CreateLogger<WalRepository>());
-        var blobs = new BlobRepository(conn, loggerFactory.CreateLogger<BlobRepository>());
-        var files = new FileRepository(conn, wal, loggerFactory.CreateLogger<FileRepository>());
-        var activity = new ActivityLogRepository(conn, loggerFactory.CreateLogger<ActivityLogRepository>());
+        var brain = new BrainAccess(conn);
+        var wal = new WalRepository(brain, loggerFactory.CreateLogger<WalRepository>());
+        var blobs = new BlobRepository(brain, loggerFactory.CreateLogger<BlobRepository>());
+        var files = new FileRepository(brain, wal, loggerFactory.CreateLogger<FileRepository>());
+        var activity = new ActivityLogRepository(brain, loggerFactory.CreateLogger<ActivityLogRepository>());
 
         var pipeline = new WritePipeline(
             new FileTypeService(),
@@ -253,7 +255,7 @@ public sealed class WriteCrashConsistencyTests
         byte[] dek = new byte[32]; // all-zeros DEK
 
         using var context = new VolumeContext(
-            brainConnection: conn,
+            brain: brain,
             dek: dek.AsMemory(),
             skinkRoot: skinkRoot,
             sha256: IncrementalHash.CreateHash(HashAlgorithmName.SHA256),
