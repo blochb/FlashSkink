@@ -220,6 +220,40 @@ public sealed class BrainAccessTests
         Assert.Null(ex);
     }
 
+    // ── BrainScope dispose semantics ─────────────────────────────────────────
+
+    [Fact]
+    public void BrainScope_Default_DisposeIsNoOp()
+    {
+        // A default-valued (zero-initialised) BrainScope has a null gate. Dispose must
+        // not throw — the pattern is used in WritePipeline.CommitBrainAsync's
+        // try/finally for the "scope not yet acquired" path.
+        var scope = default(BrainScope);
+
+        var ex = Record.Exception(() => scope.Dispose());
+
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public async Task BrainScope_DoubleDispose_OnNonDefault_ThrowsSemaphoreFull()
+    {
+        // Contract test (XML doc on BrainScope.Dispose): a non-default scope is NOT
+        // idempotent. The struct has no internal dispose tracking, so a second Dispose
+        // calls SemaphoreSlim.Release() twice — exceeding the maxCount=1 — and throws
+        // SemaphoreFullException. The `using var` convention used by every caller in
+        // the codebase guarantees a single dispose. This test exists so a future change
+        // that wraps the struct in a way that disposes twice fails loudly here rather
+        // than corrupting the gate count and breaking the BrainAccess invariant.
+        var conn = OpenConnection();
+        await using var brain = new BrainAccess(conn);
+        var scope = await brain.LockAsync(CancellationToken.None);
+
+        scope.Dispose();
+
+        Assert.Throws<SemaphoreFullException>(() => scope.Dispose());
+    }
+
     // ── BrainScope gate-release on exception ─────────────────────────────────
 
     [Fact]

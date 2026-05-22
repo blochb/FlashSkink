@@ -740,22 +740,30 @@ public sealed class UploadQueueService : IAsyncDisposable
         // tx-aware repository overloads below see a non-null transaction and skip their own
         // gate acquisition.
         //
+        // Principle 17 — the permanent-failure brain commit is compensation: it records the
+        // terminal state so the row is excluded from future cycles. Once the DML succeeds,
+        // cancelling the commit would discard work that was essentially done, leaving the
+        // row at UPLOADING for the WAL recovery sweep to reconcile. Observe cancellation
+        // before the critical section, then run every await inside under
+        // CancellationToken.None as a literal — matches ApplyCompletedAsync.
+        //
         // The scope MUST be released before PublishFailureAsync and the activity-log append:
         // both re-acquire the gate (via PersistenceNotificationHandler and ActivityLogRepository
         // respectively), and the gate is non-reentrant (Principle 36). The two-phase shape
         // below — "scoped transaction" then "post-commit notify + log" — exists for that
         // reason.
+        ct.ThrowIfCancellationRequested();
         ErrorContext? txFailure = null;
         string txFailureOp = string.Empty;
-        using (var scope = await _brain.LockAsync(ct).ConfigureAwait(false))
+        using (var scope = await _brain.LockAsync(CancellationToken.None).ConfigureAwait(false))
         {
-            await using var tx = (SqliteTransaction)await scope.Connection.BeginTransactionAsync(ct)
+            await using var tx = (SqliteTransaction)await scope.Connection.BeginTransactionAsync(CancellationToken.None)
                 .ConfigureAwait(false);
 
             // Use the terminal-failure variant which bumps AttemptCount to the §21.1 cycle cap
             // so the DequeueNextBatchAsync filter excludes this row from future cycles.
             var markFailed = await _uploadQueueRepository
-                .MarkTerminallyFailedAsync(row.FileId, row.ProviderId, lastError, tx, ct)
+                .MarkTerminallyFailedAsync(row.FileId, row.ProviderId, lastError, tx, CancellationToken.None)
                 .ConfigureAwait(false);
             if (!markFailed.Success)
             {
@@ -766,7 +774,7 @@ public sealed class UploadQueueService : IAsyncDisposable
             else
             {
                 var deleteSession = await _uploadQueueRepository
-                    .DeleteSessionAsync(row.FileId, row.ProviderId, tx, ct)
+                    .DeleteSessionAsync(row.FileId, row.ProviderId, tx, CancellationToken.None)
                     .ConfigureAwait(false);
                 if (!deleteSession.Success)
                 {
@@ -776,7 +784,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                 }
                 else
                 {
-                    await tx.CommitAsync(ct).ConfigureAwait(false);
+                    await tx.CommitAsync(CancellationToken.None).ConfigureAwait(false);
                 }
             }
         }

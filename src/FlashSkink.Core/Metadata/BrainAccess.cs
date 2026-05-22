@@ -65,7 +65,14 @@ public readonly struct BrainScope : IDisposable
         _gate = gate;
     }
 
-    /// <summary>Releases the brain gate. Idempotent — calling on a default-valued scope is a no-op.</summary>
+    /// <summary>
+    /// Releases the brain gate. <strong>Not idempotent on a non-default scope</strong> — calling
+    /// <see cref="Dispose"/> a second time would invoke <see cref="SemaphoreSlim.Release()"/>
+    /// twice on a <c>maxCount</c>-1 semaphore and throw
+    /// <see cref="SemaphoreFullException"/>. The <c>using var</c> convention used by every
+    /// caller in this codebase guarantees a single dispose. Calling on a default-valued
+    /// (zero-initialised) scope is a safe no-op.
+    /// </summary>
     public void Dispose()
     {
         _gate?.Release();
