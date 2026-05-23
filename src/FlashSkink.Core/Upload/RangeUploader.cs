@@ -439,9 +439,12 @@ public sealed class RangeUploader
         string remoteId = finalise.Value!;
 
         // §15.7 verification — hash check if the provider supports it; otherwise trust the GCM tag.
+        // CancellationToken.None (Principle 17): FinaliseUploadAsync succeeded — the file is
+        // already at the tail. Verification is post-finalise bookkeeping; observing ct here
+        // would race DisposeAsync and leave the brain row at UPLOADING despite a completed upload.
         if (provider is ISupportsRemoteHashCheck hashCheck)
         {
-            var hashResult = await hashCheck.GetRemoteXxHash64Async(remoteId, ct).ConfigureAwait(false);
+            var hashResult = await hashCheck.GetRemoteXxHash64Async(remoteId, CancellationToken.None).ConfigureAwait(false);
             if (!hashResult.Success)
             {
                 // Verification I/O failure — treat as retryable (the next cycle re-attempts).
