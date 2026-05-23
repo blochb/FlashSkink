@@ -144,6 +144,23 @@ public sealed class UploadQueueService : IAsyncDisposable
             }
 
             _serviceCts = CancellationTokenSource.CreateLinkedTokenSource(volumeToken);
+
+            // Re-verify _disposed: a concurrent DisposeAsync may have flipped it after
+            // our first check and already observed _orchestratorTask == null and
+            // _serviceCts == null. Proceeding past this point would leak a background
+            // orchestrator and a subscribed event handler past DisposeAsync's await.
+            // The _started flag remains 1 so a later Start returns the idempotent Ok —
+            // but the first _disposed check above catches that case first.
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                try { _serviceCts.Dispose(); } catch (ObjectDisposedException) { }
+                _serviceCts = null;
+                _logger.LogWarning(
+                    "UploadQueueService disposed concurrently with Start; aborting.");
+                return Result.Fail(ErrorCode.ObjectDisposed,
+                    "Upload queue service has been disposed.");
+            }
+
             _networkMonitor.AvailabilityChanged += _availabilityHandler;
 
             CancellationToken token = _serviceCts.Token;

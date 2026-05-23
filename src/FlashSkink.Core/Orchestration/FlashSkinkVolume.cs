@@ -395,6 +395,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result<WriteReceipt>.Fail(ErrorCode.Cancelled, "Write cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             var result = await _writePipeline.ExecuteAsync(source, virtualPath, _context, ct).ConfigureAwait(false);
@@ -445,6 +446,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         {
             return Result<BulkWriteReceipt>.Fail(ErrorCode.Cancelled, "Bulk write cancelled.", ex);
         }
+        ThrowIfDisposedAndReleaseGate();
 
         var results = new List<BulkItemResult>(items.Count);
         bool sawSuccess = false;
@@ -509,6 +511,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result.Fail(ErrorCode.Cancelled, "Read cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             return await _readPipeline.ExecuteAsync(virtualPath, destination, _context, ct).ConfigureAwait(false);
@@ -530,6 +533,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result.Fail(ErrorCode.Cancelled, "Delete cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             var lookupResult = await _context.Files.GetByVirtualPathAsync(virtualPath, ct).ConfigureAwait(false);
@@ -573,6 +577,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result<string>.Fail(ErrorCode.Cancelled, "Create folder cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             string parentVirtualPath = string.Empty;
@@ -638,6 +643,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result.Fail(ErrorCode.Cancelled, "Delete folder cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             return await _context.Files.DeleteFolderCascadeAsync(folderId, confirmed, ct).ConfigureAwait(false);
@@ -660,6 +666,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result.Fail(ErrorCode.Cancelled, "Rename folder cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             return await _context.Files.RenameFolderAsync(folderId, newName, ct).ConfigureAwait(false);
@@ -685,6 +692,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result.Fail(ErrorCode.Cancelled, "Move cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             return await _context.Files.MoveAsync(fileId, newParentId, ct).ConfigureAwait(false);
@@ -707,6 +715,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result<IReadOnlyList<VolumeFile>>.Fail(ErrorCode.Cancelled, "List children cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             return await _context.Files.ListChildrenAsync(parentId, ct).ConfigureAwait(false);
@@ -728,6 +737,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result<IReadOnlyList<VolumeFile>>.Fail(ErrorCode.Cancelled, "List files cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             return await _context.Files.ListFilesAsync(virtualPathPrefix, ct).ConfigureAwait(false);
@@ -753,6 +763,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result.Fail(ErrorCode.Cancelled, "Change password cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         byte[]? currentBytes = null;
         byte[]? newBytes = null;
         try
@@ -787,6 +798,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         ThrowIfDisposed();
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex) { return Result.Fail(ErrorCode.Cancelled, "Restore cancelled.", ex); }
+        ThrowIfDisposedAndReleaseGate();
         try
         {
             return await _context.Files.RestoreFromGracePeriodAsync(blobId, virtualPath, ct).ConfigureAwait(false);
@@ -842,6 +854,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         {
             return Result.Fail(ErrorCode.Cancelled, "Register tail cancelled.", ex);
         }
+        ThrowIfDisposedAndReleaseGate();
 
         try
         {
@@ -976,6 +989,27 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     {
         if (_disposed != 0)
         {
+            throw new ObjectDisposedException(nameof(FlashSkinkVolume));
+        }
+    }
+
+    /// <summary>
+    /// Re-verifies <see cref="_disposed"/> after the caller has acquired <see cref="_gate"/>.
+    /// If a concurrent <see cref="DisposeAsync"/> ran completely between the public method's
+    /// initial <see cref="ThrowIfDisposed"/> and its <c>await _gate.WaitAsync(ct)</c>, the
+    /// caller would wake on a healthy gate (which is intentionally not disposed — see
+    /// <see cref="DisposeAsync"/>) but touch <see cref="_context"/>, <see cref="_session"/>,
+    /// <see cref="_writePipeline"/>, etc. — all of which DisposeAsync has just torn down.
+    /// This helper releases the gate and throws so the work body never observes that state.
+    /// Call from every gated public method, immediately after the <c>await _gate.WaitAsync</c>
+    /// (or its <c>catch (OperationCanceledException)</c> branch returns) and before any field
+    /// access.
+    /// </summary>
+    private void ThrowIfDisposedAndReleaseGate()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            _gate.Release();
             throw new ObjectDisposedException(nameof(FlashSkinkVolume));
         }
     }

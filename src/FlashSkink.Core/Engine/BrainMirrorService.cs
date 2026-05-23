@@ -122,6 +122,22 @@ public sealed class BrainMirrorService : IAsyncDisposable
             }
 
             _serviceCts = CancellationTokenSource.CreateLinkedTokenSource(volumeToken);
+
+            // Re-verify _disposed: a concurrent DisposeAsync may have flipped it after
+            // our first check and already observed _timerTask == null and
+            // _debounceTask == null. Proceeding would leak background tasks past
+            // DisposeAsync's await. The _started flag stays 1; the first _disposed
+            // check above catches subsequent Start calls before they re-trip this.
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                try { _serviceCts.Dispose(); } catch (ObjectDisposedException) { }
+                _serviceCts = null;
+                _logger.LogWarning(
+                    "BrainMirrorService disposed concurrently with Start; aborting.");
+                return Result.Fail(ErrorCode.ObjectDisposed,
+                    "Brain mirror service has been disposed.");
+            }
+
             var ct = _serviceCts.Token;
 
             _timerTask = Task.Factory.StartNew(

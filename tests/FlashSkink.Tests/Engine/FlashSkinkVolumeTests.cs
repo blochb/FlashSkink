@@ -673,7 +673,114 @@ public sealed class FlashSkinkVolumeTests : IAsyncLifetime
             () => volume.WriteFileAsync(new MemoryStream([1]), "after-dispose.bin"));
     }
 
+    [Fact]
+    public async Task WriteFileAsync_QueuedBehindGate_RacingDispose_SurfacesObjectDisposed()
+    {
+        // Race orchestration for the post-acquire re-verify guard. Setup:
+        //   - Holder: WriteFileAsync against a stream that blocks at the first ReadAsync,
+        //             holding the volume's _gate inside WritePipeline.ExecuteAsync.
+        //   - Waiter: a second WriteFileAsync that passes ThrowIfDisposed (so _disposed
+        //             is still 0) and queues on _gate.WaitAsync behind the holder.
+        //   - Disposer: DisposeAsync — sets _disposed = 1 then also queues on _gate.
+        // When the holder releases, the gate has two waiters; SemaphoreSlim does not
+        // guarantee FIFO wake order. With the re-verify guard, BOTH orderings produce
+        // ObjectDisposedException at the waiter (either the guard trips on waiter-wakes-first,
+        // or the disposer tears down _context and then the waiter wakes and the guard trips).
+        // Without the guard, the disposer-wakes-first ordering would let the waiter touch
+        // a destroyed _context and crash with NullReferenceException.
+        var volume = (await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, DefaultOptions)).Value!.Volume;
+        bool ownsVolume = true;
+        try
+        {
+            var firstReadReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var holderRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var holderStream = new BlockingFirstReadStream(firstReadReached, holderRelease.Task);
+
+            var holderTask = volume.WriteFileAsync(holderStream, "holder.bin");
+            await firstReadReached.Task; // ReadAsync entered — _gate held
+
+            // Queue the waiter — it passes ThrowIfDisposed (still 0) and blocks on _gate.
+            var waiterTask = volume.WriteFileAsync(new MemoryStream([1, 2, 3]), "waiter.bin");
+            await Task.Delay(50);
+
+            // Start dispose — flips _disposed = 1 and also blocks on _gate.
+            var disposeTask = volume.DisposeAsync().AsTask();
+            ownsVolume = false;
+            await Task.Delay(50);
+
+            // Release the holder. Gate is now contested between waiter and disposer.
+            holderRelease.SetResult();
+
+            // The waiter's contract is ObjectDisposedException, period. The fix ensures
+            // this regardless of which thread SemaphoreSlim wakes first.
+            var waiterException = await Record.ExceptionAsync(() => waiterTask);
+            Assert.IsType<ObjectDisposedException>(waiterException);
+
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(10));
+            // Holder outcome is not asserted — depending on the race it may have succeeded
+            // (its ReadAsync returned EOF, pipeline finished) or failed (cancellation observed
+            // mid-pipeline). Either is consistent with the contract.
+            _ = await holderTask;
+        }
+        finally
+        {
+            if (ownsVolume)
+            {
+                await volume.DisposeAsync();
+            }
+        }
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Test stream that blocks the first <see cref="ReadAsync(byte[], int, int, CancellationToken)"/>
+    /// call on a signal, then returns EOF (0 bytes) on every subsequent read. Used to hold the
+    /// volume's serialisation gate while a concurrent caller queues behind it.
+    /// </summary>
+    private sealed class BlockingFirstReadStream : Stream
+    {
+        private readonly TaskCompletionSource _firstReadReached;
+        private readonly Task _release;
+        private int _firstReadFired;
+
+        internal BlockingFirstReadStream(TaskCompletionSource firstReadReached, Task release)
+        {
+            _firstReadReached = firstReadReached;
+            _release = release;
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            if (Interlocked.Exchange(ref _firstReadFired, 1) == 0)
+            {
+                _firstReadReached.TrySetResult();
+                await _release.WaitAsync(ct).ConfigureAwait(false);
+            }
+            return 0;
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (Interlocked.Exchange(ref _firstReadFired, 1) == 0)
+            {
+                _firstReadReached.TrySetResult();
+                await _release.WaitAsync(ct).ConfigureAwait(false);
+            }
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => 0;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 
     private async Task<string?> ReadBrainSettingAsync(string key)
     {

@@ -20,6 +20,29 @@ public sealed class VolumeSession : IAsyncDisposable
     /// <summary>
     /// The live 32-byte data-encryption key. Do not zero; <see cref="DisposeAsync"/> owns it.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Lifetime contract.</strong> Callers MUST hold a strong reference to the owning
+    /// <see cref="VolumeSession"/> for the entire duration of any read of the returned array.
+    /// <see cref="DisposeAsync"/> zeroes the backing byte[] in place — a reference grabbed
+    /// before dispose still points to the same array after dispose, but its contents will have
+    /// been overwritten with zeros. There is no defensive copy: the caller would have no way
+    /// to zero the copy, and copying defeats the zero-on-dispose guarantee.
+    /// </para>
+    /// <para>
+    /// <strong>Ordering responsibility belongs to the volume orchestrator.</strong>
+    /// <c>FlashSkinkVolume.DisposeAsync</c> holds the volume-wide single-writer gate when it
+    /// invokes <see cref="DisposeAsync"/> on the session, which serialises this method with
+    /// every public crypto-using operation. Components that read <see cref="Dek"/> outside that
+    /// gate (e.g. background services) are themselves drained before
+    /// <see cref="VolumeSession.DisposeAsync"/> runs.
+    /// </para>
+    /// <para>
+    /// The <see cref="ObjectDisposedException"/> below is a best-effort guard for the
+    /// "dispose has already finished" case — it does <em>not</em> prevent the
+    /// dispose-mid-read race the lifetime contract above is designed to exclude.
+    /// </para>
+    /// </remarks>
     /// <exception cref="ObjectDisposedException">Thrown if the session has been disposed.</exception>
     public byte[] Dek
     {
