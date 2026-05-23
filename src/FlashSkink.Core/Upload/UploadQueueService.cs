@@ -607,32 +607,24 @@ public sealed class UploadQueueService : IAsyncDisposable
         UploadOutcome outcome, CancellationToken ct) => outcome.Status switch
         {
             UploadOutcomeStatus.Completed =>
-                ApplyCompletedAsync(row, file, provider, outcome, ct),
+                ApplyCompletedAsync(row, file, provider, outcome),
             UploadOutcomeStatus.RetryableFailure =>
                 ApplyRetryableAsync(row, file, provider, outcome, ct),
             UploadOutcomeStatus.PermanentFailure =>
-                ApplyPermanentAsync(row, file, provider, outcome, ct),
+                ApplyPermanentAsync(row, file, provider, outcome),
             _ => Task.FromResult(Result.Ok()),
         };
 
     private async Task<Result> ApplyCompletedAsync(
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
-        UploadOutcome outcome, CancellationToken ct)
+        UploadOutcome outcome)
     {
-        // The upload has completed — the brain transaction is non-cancellable (Principle 17).
-        // Observe cancellation before the critical section; every await inside uses
-        // CancellationToken.None so a concurrent DisposeAsync cannot race the commit.
-        // Acquire the brain scope for the full transaction lifetime (Principle 36); the
-        // tx-aware repository overloads below see a non-null transaction and skip their own
-        // gate acquisition.
-        //
-        // The scope MUST be released before any subsequent brain-touching call
-        // (OnTerminalBrainFailureAsync → PublishFailureAsync → PersistenceNotificationHandler
-        // → BackgroundFailures append, or the activity-log append below). The brain gate is
-        // non-reentrant by design (Principle 36), so a nested LockAsync from the same call
-        // path would deadlock. The two phases below — "scoped transaction" then "post-commit
-        // bookkeeping" — exist solely to draw that boundary.
-        ct.ThrowIfCancellationRequested();
+        // Principle 17 — no ct parameter: the blob is already on the tail; the brain commit
+        // must complete regardless of concurrent DisposeAsync. All internal awaits use
+        // CancellationToken.None as a literal.
+        // Principle 36 — scope held for the full transaction; released before the post-commit
+        // bookkeeping calls that re-acquire the gate (OnTerminalBrainFailureAsync,
+        // activity-log append).
         ErrorContext? txFailure = null;
         string txFailureOp = string.Empty;
         using (var scope = await _brain.LockAsync(CancellationToken.None).ConfigureAwait(false))
@@ -747,29 +739,17 @@ public sealed class UploadQueueService : IAsyncDisposable
 
     private async Task<Result> ApplyPermanentAsync(
         TailUploadRow row, VolumeFile file, IStorageProvider provider,
-        UploadOutcome outcome, CancellationToken ct)
+        UploadOutcome outcome)
     {
         ErrorCode code = outcome.FailureCode ?? ErrorCode.UploadFailed;
         string failureMessage = outcome.FailureMessage ?? "Upload failed.";
         string lastError = $"{code}: {failureMessage}";
 
-        // Acquire the brain scope for the full transaction lifetime (Principle 36); the
-        // tx-aware repository overloads below see a non-null transaction and skip their own
-        // gate acquisition.
-        //
-        // Principle 17 — the permanent-failure brain commit is compensation: it records the
-        // terminal state so the row is excluded from future cycles. Once the DML succeeds,
-        // cancelling the commit would discard work that was essentially done, leaving the
-        // row at UPLOADING for the WAL recovery sweep to reconcile. Observe cancellation
-        // before the critical section, then run every await inside under
-        // CancellationToken.None as a literal — matches ApplyCompletedAsync.
-        //
-        // The scope MUST be released before PublishFailureAsync and the activity-log append:
-        // both re-acquire the gate (via PersistenceNotificationHandler and ActivityLogRepository
-        // respectively), and the gate is non-reentrant (Principle 36). The two-phase shape
-        // below — "scoped transaction" then "post-commit notify + log" — exists for that
-        // reason.
-        ct.ThrowIfCancellationRequested();
+        // Principle 17 — no ct parameter: the row is at UPLOADING; the brain commit must
+        // record the terminal state regardless of concurrent DisposeAsync. All internal
+        // awaits use CancellationToken.None as a literal.
+        // Principle 36 — scope held for the full transaction; released before
+        // PublishFailureAsync and the activity-log append that re-acquire the gate.
         ErrorContext? txFailure = null;
         string txFailureOp = string.Empty;
         using (var scope = await _brain.LockAsync(CancellationToken.None).ConfigureAwait(false))
