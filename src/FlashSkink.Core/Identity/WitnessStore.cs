@@ -44,15 +44,16 @@ internal sealed class WitnessStore
     internal const string WitnessRemoteName = "_witness/current.enc";
 
     /// <summary>The <see cref="IStorageProvider.ListAsync"/> prefix used by <see cref="TryReadAsync"/>.</summary>
-    private const string WitnessRemotePrefix = "_witness/";
+    internal const string WitnessRemotePrefix = "_witness/";
 
     /// <summary>
     /// The set of provider-side error codes that <see cref="TryReadAsync"/> treats as
     /// "tail offline, no information available" rather than propagating up. The same set
     /// applies to both the list and the download step — a tail that goes offline between
-    /// the two steps is handled identically.
+    /// the two steps is handled identically. <see cref="WitnessHandshake.RunAsync"/> reads
+    /// the same set to probe reachability before incrementing <c>TailsRead</c>.
     /// </summary>
-    private static readonly HashSet<ErrorCode> OfflineErrorCodes =
+    internal static readonly HashSet<ErrorCode> OfflineErrorCodes =
     [
         ErrorCode.ProviderUnreachable,
         ErrorCode.ProviderAuthFailed,

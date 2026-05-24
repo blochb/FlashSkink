@@ -108,7 +108,8 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         return new UploadQueueService(
             _queueRepo, _blobRepo, _fileRepo, _activityRepo,
             _registry, _network, _bus, _rangeUploader, RetryPolicy.Default,
-            _clock, _signal, brain ?? _brain, _skinkRoot, _serviceLogger);
+            _clock, _signal, brain ?? _brain, _skinkRoot,
+            initiallyFenced: false, _serviceLogger);
     }
 
     private async Task<(string BlobId, byte[] Bytes)> CreateLocalBlobAsync(int sizeBytes)
