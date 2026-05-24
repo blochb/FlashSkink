@@ -136,7 +136,7 @@ public sealed class WitnessEdgeCaseTests : IDisposable
     // ── Meta-plan item 15 — same recovery phrase, separate init ──────────────
 
     [Fact]
-    public async Task SamePhraseSeperateInit_DifferentVolumeIds_NoWitnessInteraction()
+    public async Task SamePhraseSeparateInit_DifferentVolumeIds_NoWitnessInteraction()
     {
         var tail = NewTail("tail-1");
         // A "foreign" volume's witness — different VolumeId on the same physical tail (a shared

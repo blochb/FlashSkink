@@ -664,14 +664,14 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
         await using var v2 = await ReopenAsync();
         Assert.Equal(VolumeState.Fenced, v2.State);
 
-        // Manually delete the witness file between reopen and PromoteAsync. The directory may
-        // still exist; the file does not. PromoteAsync's WriteAsync to this tail will overwrite
-        // (or write fresh); the local-state clear must succeed regardless.
-        var witnessPath = Path.Combine(_tailRoot, "_witness", "current.enc");
-        if (File.Exists(witnessPath))
-        {
-            File.Delete(witnessPath);
-        }
+        // Swap the registry's adapter for a faulty wrapper that fails the next BeginUploadAsync
+        // — this is the actual "offline tail" code path inside PromoteAsync (the per-tail
+        // witness write fails and is logged at Warning; the local-state clear continues).
+        // PromoteAsync resolves providers via _providerRegistry.GetAsync on every call, so the
+        // post-reopen swap is observed at the next promote.
+        var faulty = new FaultInjectingStorageProvider(CreateFsProvider());
+        faulty.FailNextBeginWith(ErrorCode.ProviderUnreachable);
+        _registry.Register(ProviderId, faulty);
 
         var promote = await v2.PromoteAsync();
         Assert.True(promote.Success, promote.Error?.Message);
