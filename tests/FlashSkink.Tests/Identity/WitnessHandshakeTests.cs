@@ -286,9 +286,11 @@ public sealed class WitnessHandshakeTests : IDisposable
 
         Assert.True(result.Success);
         Assert.False(result.Value.ConflictDetected);
+        // Unreachable tail does not count toward TailsRead AND is skipped by the write phase
+        // so we don't emit a noisy "witness write failed" warning that would be indistinguishable
+        // from a real upload problem.
         Assert.Equal(0, result.Value.TailsRead);
-        // Write phase fires regardless — the inner provider accepts it.
-        Assert.Equal(1, result.Value.TailsWritten);
+        Assert.Equal(0, result.Value.TailsWritten);
     }
 
     [Fact]
@@ -391,7 +393,11 @@ public sealed class WitnessHandshakeTests : IDisposable
 
         Assert.True(result.Success);
         Assert.False(result.Value.ConflictDetected);
-        Assert.Equal(1, result.Value.TailsRead);
+        // Mismatched-VolumeId witness is NOT evidence about THIS volume; do not count toward
+        // TailsRead so the auto-downgrade gate cannot use it as confirmation. The write phase
+        // still runs (the tail is reachable, just carrying the wrong volume's witness) and
+        // rewrites the witness with the correct VolumeId.
+        Assert.Equal(0, result.Value.TailsRead);
         Assert.Equal(1, result.Value.TailsWritten);
 
         // The rewritten witness now carries the handshake's volumeId.

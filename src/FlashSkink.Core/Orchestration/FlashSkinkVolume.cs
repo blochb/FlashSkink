@@ -1304,6 +1304,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         CancellationToken ct)
     {
         var logger = options.LoggerFactory.CreateLogger(typeof(FlashSkinkVolume));
+        // Mirror BuildVolumeFromSessionAsync's IClock fallback so tests that pass a FakeClock
+        // see deterministic timestamps on notifications and BackgroundFailures rows.
+        var clock = options.Clock ?? SystemClock.Instance;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -1403,7 +1406,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                             : $"Conflict detected on tail '{outcome.ConflictingProviderId}'.",
                         Metadata = metadata,
                     },
-                    OccurredUtc = DateTime.UtcNow,
+                    OccurredUtc = clock.UtcNow,
                     RequiresUserAction = true,
                 }, CancellationToken.None).ConfigureAwait(false);
 
@@ -1413,7 +1416,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 var bgResult = await backgroundFailures.AppendAsync(new BackgroundFailure
                 {
                     FailureId = Guid.NewGuid().ToString(),
-                    OccurredUtc = DateTime.UtcNow,
+                    OccurredUtc = clock.UtcNow,
                     Source = nameof(FlashSkinkVolume),
                     ErrorCode = nameof(ErrorCode.SplitBrainDetected),
                     Message = fencedUserMessage,
@@ -1457,7 +1460,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                         Severity = NotificationSeverity.Info,
                         Title = "Conflict resolved",
                         Message = "FlashSkink finished resolving a prior conflict; uploads are resuming.",
-                        OccurredUtc = DateTime.UtcNow,
+                        OccurredUtc = clock.UtcNow,
                         RequiresUserAction = false,
                     }, CancellationToken.None).ConfigureAwait(false);
                     return Result<VolumeState>.Ok(VolumeState.Normal);

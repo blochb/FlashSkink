@@ -15,6 +15,7 @@ using FlashSkink.Tests.Providers;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace FlashSkink.Tests.Upload;
@@ -778,5 +779,60 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
 
         await WaitForUploadedAsync();
         Assert.True(_serviceLogger.HasEntry(LogLevel.Information, "Worker started"));
+    }
+
+    // ── Fenced state (dev plan §3.5.2) ───────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task InitiallyFenced_Orchestrator_DoesNotQueryProviderRegistry()
+    {
+        // Wrap the registry with a Moq so we can verify ListActiveProviderIdsAsync was NEVER
+        // called — the fenced guard sits at the very top of OrchestratorAsync's active body,
+        // BEFORE the registry call. If the guard works, the call count stays at zero even
+        // after the orchestrator has had wall-clock time to tick.
+        _registry.Register(ProviderId, _fsProvider);
+        var registryMock = new Mock<IProviderRegistry>(MockBehavior.Strict);
+        registryMock.Setup(r => r.ListActiveProviderIdsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyList<string>>.Ok(new List<string> { ProviderId }));
+        registryMock.Setup(r => r.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IStorageProvider>.Ok(_fsProvider));
+
+        // Enqueue work so a worker WOULD spawn if the guard weren't present.
+        await CreateLocalBlobAsync(DefaultBlobSizeBytes);
+        await EnqueueAsync();
+
+        await using var sut = new UploadQueueService(
+            _queueRepo, _blobRepo, _fileRepo, _activityRepo,
+            registryMock.Object, _network, _bus, _rangeUploader, RetryPolicy.Default,
+            _clock, _signal, _brain, _skinkRoot,
+            initiallyFenced: true, _serviceLogger);
+        sut.Start(CancellationToken.None);
+
+        // Give the orchestrator wall-clock time to tick at least once. The fenced guard
+        // checks _fenced before any provider call, so the registry must remain untouched.
+        await Task.Delay(250);
+
+        registryMock.Verify(
+            r => r.ListActiveProviderIdsAsync(It.IsAny<CancellationToken>()),
+            Times.Never,
+            "Fenced volume's orchestrator must not query the provider registry — the guard sits before the registry call.");
+        registryMock.Verify(
+            r => r.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "Fenced volume must not resolve providers — no worker should spawn.");
+        Assert.Equal("PENDING", await ReadStatusAsync());
+    }
+
+    [Fact]
+    public async Task Constructor_InitiallyFencedTrue_DoesNotThrow()
+    {
+        // Smoke-level — construction with the new parameter is allowed; dispose returns cleanly
+        // even before Start.
+        var sut = new UploadQueueService(
+            _queueRepo, _blobRepo, _fileRepo, _activityRepo,
+            _registry, _network, _bus, _rangeUploader, RetryPolicy.Default,
+            _clock, _signal, _brain, _skinkRoot,
+            initiallyFenced: true, _serviceLogger);
+        await sut.DisposeAsync();
     }
 }

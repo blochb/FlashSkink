@@ -150,6 +150,10 @@ internal sealed class WitnessHandshake
             string? conflictingProviderId = null;
             WitnessPayload? conflictWitness = null;
             int tailsRead = 0;
+            // Tails the read-phase probe proved unreachable. The write phase consults this
+            // set to skip the doomed write — without it, every unreachable tail would emit
+            // a "witness write failed" warning indistinguishable from a real upload problem.
+            var unreachableTails = new HashSet<string>(StringComparer.Ordinal);
 
             // ── Read phase ────────────────────────────────────────────────────
             foreach (var (providerId, provider) in tails)
@@ -167,6 +171,7 @@ internal sealed class WitnessHandshake
                     _logger.LogDebug(
                         "Tail {ProviderId} unreachable for handshake probe ({Code}); skipping read, not counting toward TailsRead.",
                         providerId, probe.Error.Code);
+                    unreachableTails.Add(providerId);
                     continue;
                 }
 
@@ -186,18 +191,21 @@ internal sealed class WitnessHandshake
                     continue;
                 }
 
-                tailsRead++;
                 var payload = readResult.Value;
                 if (payload is null)
                 {
-                    // No witness on this tail (offline, absent, corrupted, wrong DEK, unparseable).
-                    // Provides no conflict signal; continue.
+                    // The probe succeeded, so the tail is genuinely reachable; it just has no
+                    // (parseable) witness yet. This IS positive evidence for the auto-downgrade
+                    // gate ("we reached this tail and confirmed no conflict signal lives here").
+                    tailsRead++;
                     continue;
                 }
 
                 // Volume-ID validation. The DEK-binding guarantee makes a mismatch
                 // near-impossible (a wrong DEK would have failed decrypt at the store layer),
                 // but defensive per Blueprint §19.6 — treated as no information from this tail.
+                // A mismatched-VolumeId witness is NOT evidence about this volume; do not
+                // increment tailsRead, so the auto-downgrade gate cannot use it as confirmation.
                 if (!string.Equals(payload.Value.VolumeId, volumeId, StringComparison.Ordinal))
                 {
                     _logger.LogWarning(
@@ -205,6 +213,10 @@ internal sealed class WitnessHandshake
                         providerId, payload.Value.VolumeId, volumeId);
                     continue;
                 }
+
+                // Tail is reachable AND carries a witness bound to THIS volume — positive
+                // evidence regardless of whether a trigger fires below.
+                tailsRead++;
 
                 // Trigger A — epoch comparison.
                 if (payload.Value.Epoch >= newEpoch && !conflictDetected)
@@ -236,6 +248,13 @@ internal sealed class WitnessHandshake
             int tailsWritten = 0;
             foreach (var (providerId, provider) in tails)
             {
+                if (unreachableTails.Contains(providerId))
+                {
+                    // Probe already proved this tail offline; a write attempt would re-fail
+                    // and emit a noisy warning. The next session-begin handshake retries.
+                    continue;
+                }
+
                 var writeResult = await _store.WriteAsync(
                     provider, dek, newPayload, CancellationToken.None).ConfigureAwait(false);
                 if (writeResult.Success)
@@ -244,9 +263,9 @@ internal sealed class WitnessHandshake
                 }
                 else
                 {
-                    // A write failure is not a split-brain — it is an upload problem (normal
-                    // tail-availability degradation). Logged and counted separately; the
-                    // handshake proceeds.
+                    // A write failure on a tail that was reachable at probe time is a genuine
+                    // upload problem (transient blip after the probe, quota, perms) — logged
+                    // and counted separately; the handshake proceeds.
                     _logger.LogWarning(
                         "Witness write failed on tail {ProviderId}: {Code}.",
                         providerId, writeResult.Error!.Code);
