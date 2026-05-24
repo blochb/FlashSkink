@@ -1006,6 +1006,169 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         }
     }
 
+    // ── Conflict resolution ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Resolves a split-brain conflict by declaring this skink canonical. Clears the fenced
+    /// state (<c>Settings["VolumeState"] = "Normal"</c>), writes a fresh witness with
+    /// <c>ConflictObserved = false</c> to every accessible tail, unfences
+    /// <see cref="UploadQueueService"/> so Phase 2 uploads resume, and pulses the wakeup
+    /// signal so workers exit their fenced-idle wait promptly. Idempotent — safe to call on
+    /// an unfenced volume (returns <see cref="Result.Ok"/> immediately).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The demoted skink (the one not promoted) retains its <c>Settings["VolumeState"] = "Fenced"</c>
+    /// and will see <c>ConflictObserved = false</c> in the fresh witness on its next session
+    /// open. A fenced volume that opens and reads <c>ConflictObserved = false</c> with an
+    /// epoch it recognises as ahead of its own knows the winner has promoted: the demoted
+    /// skink should display a user message recommending recovery via a tail rather than
+    /// attempting to promote itself (this guidance is surfaced as a notification; the volume
+    /// still works for Phase 1 and reads).
+    /// </para>
+    /// <para>
+    /// <strong>Idempotency vs. stale-tail repair.</strong> An offline tail at the time of a
+    /// prior promote retains its old <c>ConflictObserved = true</c> witness.
+    /// <see cref="PromoteAsync"/> does NOT re-attempt the write — that repair is performed
+    /// automatically by the next <see cref="OpenAsync"/>'s handshake: with
+    /// <c>alreadyFenced=false</c> post-promote, the handshake writes a fresh
+    /// <c>ConflictObserved = false</c> witness to every accessible tail (including the
+    /// previously-offline one if it is now reachable). This keeps <see cref="PromoteAsync"/>
+    /// cheap and lets the recurring session-open handshake act as the eventual-consistency
+    /// repair loop.
+    /// </para>
+    /// <para>
+    /// <strong>Crash-safety.</strong> The sequence is: write fresh witnesses to all accessible
+    /// tails, then upsert <c>Settings["VolumeState"] = "Normal"</c>, then flip the in-memory
+    /// flag, then notify. If the process crashes after the witness writes succeed but before
+    /// the brain write, the next open observes brain-says-Fenced but witnesses-say-clean and
+    /// auto-downgrades (dev plan §3.5.2's <c>RunWitnessHandshakeAsync</c> transition table;
+    /// Blueprint §19.7). No brain-side journal is required. (Blueprint §19.8.)
+    /// </para>
+    /// </remarks>
+    public async Task<Result> PromoteAsync(CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+
+        try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException ex)
+        {
+            return Result.Fail(ErrorCode.Cancelled, "Promote cancelled.", ex);
+        }
+        ThrowIfDisposedAndReleaseGate();
+
+        try
+        {
+            // Idempotent fast-path. Already-Normal volumes return immediately — no log, no
+            // notification, no tail writes, no brain write. The second invocation in a
+            // PromoteAsync_IsIdempotent test hits this path.
+            if (State == VolumeState.Normal)
+            {
+                return Result.Ok();
+            }
+
+            _logger.LogInformation(
+                "User-initiated promote — clearing fenced state and writing fresh witnesses to all accessible tails.");
+
+            // ── Read VolumeID, VolumeEpoch, and active providers from the brain ─
+            string volumeId;
+            long currentEpoch;
+            IReadOnlyList<string> activeProviderIds;
+            using (var scope = await _session.Brain!.LockAsync(ct).ConfigureAwait(false))
+            {
+                volumeId = await scope.Connection.QuerySingleAsync<string>(
+                    new CommandDefinition(
+                        "SELECT Value FROM Settings WHERE Key = 'VolumeID'",
+                        cancellationToken: ct)).ConfigureAwait(false);
+                var epochRaw = await scope.Connection.QuerySingleAsync<string>(
+                    new CommandDefinition(
+                        "SELECT Value FROM Settings WHERE Key = 'VolumeEpoch'",
+                        cancellationToken: ct)).ConfigureAwait(false);
+                currentEpoch = long.Parse(epochRaw, CultureInfo.InvariantCulture);
+                var ids = await scope.Connection.QueryAsync<string>(
+                    new CommandDefinition(
+                        "SELECT ProviderID FROM Providers WHERE IsActive = 1",
+                        cancellationToken: ct)).ConfigureAwait(false);
+                activeProviderIds = ids.AsList();
+            }
+
+            // ── Build the fresh witness payload (ConflictObserved = false by default) ─
+            var payload = WitnessPayload.ForNewSession(
+                volumeId, currentEpoch, GetAppInformationalVersion());
+
+            // ── Write the fresh witness to every accessible tail ────────────────
+            // Principle 17: every write site below uses CancellationToken.None as a literal —
+            // once we have decided to clear the fence, cancellation mid-promote-write would
+            // leave half the tails carrying ConflictObserved=true and the other half
+            // carrying ConflictObserved=false, defeating the resolution-on-next-handshake
+            // guarantee for the demoted skink. A per-tail failure is logged at Warning and
+            // does NOT fail the overall operation — the next session-begin handshake retries
+            // as part of its normal read-then-write loop (eventual-consistency repair).
+            foreach (var providerId in activeProviderIds)
+            {
+                var resolved = await _providerRegistry.GetAsync(providerId, ct).ConfigureAwait(false);
+                if (!resolved.Success)
+                {
+                    _logger.LogDebug(
+                        "Provider {ProviderId} not resolvable from registry ({Code}); skipping in promote.",
+                        providerId, resolved.Error!.Code);
+                    continue;
+                }
+
+                var writeResult = await _witnessStore.WriteAsync(
+                    resolved.Value!, _session.Dek, payload, CancellationToken.None).ConfigureAwait(false);
+                if (!writeResult.Success)
+                {
+                    _logger.LogWarning(
+                        "Witness write to tail {ProviderId} during promote failed ({Code}); the next session-begin handshake will retry.",
+                        providerId, writeResult.Error!.Code);
+                }
+            }
+
+            // ── Persist Settings["VolumeState"] = "Normal" ──────────────────────
+            // Reuses the §3.5.2 helper which already runs the upsert under
+            // CancellationToken.None (Principle 17). Identical brain-write semantics to the
+            // auto-downgrade path means the two terminal states are byte-equivalent.
+            await PersistVolumeStateAsync(_session.Brain!, VolumeState.Normal).ConfigureAwait(false);
+
+            // ── Unfence the upload queue + wake workers ─────────────────────────
+            _uploadQueueService.SetFenced(false);
+            State = VolumeState.Normal;
+            _wakeupSignal.Pulse();
+
+            // ── Publish the resolution notification (Principle 25 vocabulary) ───
+            await _context.NotificationBus.PublishAsync(new Notification
+            {
+                Source = nameof(FlashSkinkVolume),
+                Severity = NotificationSeverity.Info,
+                Title = "Conflict resolved",
+                Message = "FlashSkink will now resume uploading to your tails.",
+                OccurredUtc = _clock.UtcNow,
+                RequiresUserAction = false,
+            }, CancellationToken.None).ConfigureAwait(false);
+
+            return Result.Ok();
+        }
+        catch (OperationCanceledException ex)
+        {
+            return Result.Fail(ErrorCode.Cancelled, "Promote cancelled.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            return Result.Fail(ErrorCode.DatabaseWriteFailed,
+                "Failed to persist volume state during promote.", ex);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Unexpected error during promote.");
+            return Result.Fail(ErrorCode.Unknown, "Unexpected error during promote.", ex);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     // ── Disposal ─────────────────────────────────────────────────────────────
 
     /// <summary>
