@@ -420,19 +420,19 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         Assert.Equal(0, sessionCount);
     }
 
-    // ── Spike: stress reproducer for the FiveWrites_AllUploaded_SessionsEmpty flake ─────────
+    // ── Stress reproducer for the FiveWrites_AllUploaded_SessionsEmpty flake ────────────────
     //
-    // Hypothesis: ApplyCompletedAsync in UploadQueueService calls
-    // ct.ThrowIfCancellationRequested() AFTER the blob has already landed at the tail
-    // (RangeUploader returned success) but BEFORE the brain transaction marks the row UPLOADED.
-    // The test's WaitForBlobAtTailAsync returns the moment the file exists on disk; the very
-    // next line is volume.DisposeAsync(), which cancels the worker CTS. If the worker is in
-    // that gap when cancellation arrives, the brain commit is skipped and the test sees
-    // UPLOADED < 5.
+    // Root cause (two separate races, both fixed):
+    //   1. ApplyCompletedAsync called ct.ThrowIfCancellationRequested() before its brain
+    //      transaction; fixed in #81 by dropping ct from compensation methods.
+    //   2. RangeUploader.FinaliseAndVerifyAsync passed the worker ct to
+    //      GetRemoteXxHash64Async AFTER FinaliseUploadAsync.File.Move landed the file at
+    //      the tail. DisposeAsync cancelling the worker CTS in that window caused OCE to
+    //      propagate up as Cancelled, skipping ApplyCompletedAsync entirely; fixed here by
+    //      using CancellationToken.None for the post-finalise hash check (Principle 17).
     //
-    // Strategy: re-run the scenario N times in a single test, with fresh skink/tail roots per
-    // iteration, and record any iteration that fails. We expect at least one mismatch on
-    // Windows. This test is intentionally slow and lives in this spike branch only.
+    // Strategy: re-run the scenario N times in a single test to reproduce the race.
+    // 50 iterations, fresh roots per iteration. Should be 0 failures after both fixes.
     [Fact(Skip = "Manual regression harness — remove Skip locally to run. " +
                  "Confirmed flaky before fix (1-2/50 iterations: uploaded=4 sessions=1). " +
                  "Root cause: ct.ThrowIfCancellationRequested() in ApplyCompletedAsync raced " +
