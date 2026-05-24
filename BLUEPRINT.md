@@ -2290,6 +2290,36 @@ Both triggers are evaluated against every tail. The first triggering tail wins f
 
 **User vocabulary discipline (Principle 25).** Every user-facing string surrounding fenced state uses skink / tail / copy / conflict / resolve / paused / resume vocabulary only. The internal vocabulary — "witness", "epoch", "split-brain", "fenced", "volume" — never appears in `Notification.Title`, `Notification.Message`, or `BackgroundFailure.Message`. The `ErrorCode.SplitBrainDetected` enum *value* is internal and acceptable; it never appears in user-visible text.
 
+### 19.8 Resolution Flow
+
+**`PromoteAsync` — canonical declaration, not a merge.** When the user resolves a split-brain by declaring one skink canonical, `FlashSkinkVolume.PromoteAsync` clears the fenced state on the local volume, writes a fresh witness with `ConflictObserved = false` to every accessible tail, unfences the upload queue, and pulses the wakeup signal so Phase 2 uploads resume promptly. Idempotent on an unfenced volume. (Dev plan §3.5.3.)
+
+The promoted skink keeps its local writes and resumes uploads. The demoted skink keeps its local writes too, but on its next open the session-begin handshake reads the winner's fresh witness from the tail. Two outcomes are possible — and the difference between them is the basis for the CLI choice in Phase 4:
+
+1. The demoted skink's local epoch is BELOW the witness epoch (the winner has run sessions since the divergence): Trigger A fires; the demoted skink remains Fenced.
+2. The demoted skink's local epoch is ABOVE the witness epoch (the demoted skink has advanced further since the divergence): Trigger B fires only if the witness still carries `ConflictObserved = true` (it does not after a promote); Trigger A does not fire. The demoted skink would auto-downgrade to Normal. Operationally this means the demoted skink "wins" by virtue of being further ahead — which is wrong if the user already promoted the other side.
+
+To handle case 2 cleanly, the demoted skink's user-facing guidance after observing `ConflictObserved = false` from the winner is presented as a notification recommending recovery via a tail (Phase 5). The volume still works for Phase 1 and reads regardless.
+
+**The re-promote vs. recover choice.** The CLI in Phase 4 must surface this choice explicitly when a user opens a previously-demoted skink:
+
+- *Re-promote* — override the prior decision; the local writes win, the previous winner is demoted. The CLI calls `PromoteAsync` on the local volume. The next open of the previously-winning skink sees the new marker and fences itself.
+- *Recover from a tail* — discard the local writes and adopt the winner's state. The CLI invokes the Phase 5 recovery flow against any reachable tail. The local skink is effectively re-initialised from the recovered brain mirror.
+
+These are fundamentally different actions — re-promote keeps local writes and discards the winner's; recovery discards local writes and adopts the winner's. The choice is the user's; this section documents the semantics, not the UX.
+
+**Crash-safety reference.** `PromoteAsync` writes fresh witnesses to all tails before persisting `Settings["VolumeState"] = "Normal"`. The §3.5.2 auto-downgrade path in `RunWitnessHandshakeAsync` (§19.7) heals the brain row when the witnesses show no conflict and at least one tail was reachable. This makes `PromoteAsync` crash-safe without a brain-side journal.
+
+**Eventual-consistency tail repair.** An offline tail at the time of the promote retains its old `ConflictObserved = true` witness. `PromoteAsync` does NOT re-attempt the write on a subsequent call. The next session-begin handshake on a normal-state volume writes a fresh `ConflictObserved = false` witness to every accessible tail (§19.6 handshake write phase). The recurring handshake is the eventual-consistency repair loop.
+
+**By-design cases (no special handling required).**
+
+- *Same recovery phrase, separate init* — two volumes created from the same recovery phrase have different `VolumeID`s (Principle 33) and therefore distinct tail-path prefixes on any shared provider account. No witness interaction; no conflict.
+- *Restore from image* — structurally identical to a USB clone (same `VolumeID`, same epoch). Detected by the standard epoch comparison the first time either copy advances.
+- *Clock skew* — timestamps in the witness are informational. The epoch counter is the authoritative signal; clock skew (arbitrary, in either direction) cannot cause false positives or false negatives.
+
+**The "no merge" rule.** `PromoteAsync` does NOT reconcile differing file contents between the two skinks. Files written only on the demoted skink remain only on the demoted skink (and on whatever tails received them before fencing took effect). The product surface for "bring the demoted writes forward" is Phase 5 recovery, not a witness-protocol feature.
+
 ---
 
 ## 20. Integrity and Self-Healing

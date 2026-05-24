@@ -172,6 +172,11 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
             n.Severity == NotificationSeverity.Critical &&
             n.Error?.Code == ErrorCode.SplitBrainDetected);
 
+    private int CountInfoFromVolume() =>
+        _bus.Published.Count(n =>
+            n.Severity == NotificationSeverity.Info &&
+            n.Source == nameof(FlashSkinkVolume));
+
     // ── RegisterTailAsync writes the initial witness ─────────────────────────
 
     [Fact]
@@ -531,5 +536,229 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
         var ids = await _registry.ListActiveProviderIdsAsync(CancellationToken.None);
         Assert.True(ids.Success);
         Assert.Contains(ProviderId, ids.Value!);
+    }
+
+    // ── PromoteAsync — §3.5.3 ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task PromoteAsync_ClearsFencedState_ReturnsNormal()
+    {
+        var v1 = await CreateAndRegisterAsync();
+        await v1.DisposeAsync();
+        await ManuallyWriteWitnessAsync(epoch: 99L, conflictObserved: false);
+
+        await using var v2 = await ReopenAsync();
+        Assert.Equal(VolumeState.Fenced, v2.State);
+
+        var promote = await v2.PromoteAsync();
+        Assert.True(promote.Success, promote.Error?.Message);
+        Assert.Equal(VolumeState.Normal, v2.State);
+
+        var persisted = await OrchestrationTestHelper.ReadSettingAsync(
+            _skinkRoot, Password, "VolumeState");
+        Assert.Equal("Normal", persisted);
+    }
+
+    [Fact]
+    public async Task PromoteAsync_WritesFreshWitnessWithNoConflictMarker()
+    {
+        var v1 = await CreateAndRegisterAsync();
+        await v1.DisposeAsync();
+        await ManuallyWriteWitnessAsync(epoch: 99L, conflictObserved: false);
+
+        await using var v2 = await ReopenAsync();
+        Assert.Equal(VolumeState.Fenced, v2.State);
+
+        var promote = await v2.PromoteAsync();
+        Assert.True(promote.Success, promote.Error?.Message);
+
+        var witness = await ManuallyReadWitnessAsync();
+        Assert.NotNull(witness);
+        Assert.False(witness!.Value.ConflictObserved);
+    }
+
+    [Fact]
+    public async Task PromoteAsync_ResumesUploads()
+    {
+        var v1 = await CreateAndRegisterAsync();
+        await v1.DisposeAsync();
+        await ManuallyWriteWitnessAsync(epoch: 99L, conflictObserved: false);
+
+        await using var v2 = await ReopenAsync();
+        Assert.Equal(VolumeState.Fenced, v2.State);
+
+        // Queue a write while fenced — uploads should NOT progress yet.
+        var w = await v2.WriteFileAsync(new MemoryStream(RandomBytes(8 * 1024)), "resume.bin");
+        Assert.True(w.Success, w.Error?.Message);
+
+        var promote = await v2.PromoteAsync();
+        Assert.True(promote.Success, promote.Error?.Message);
+
+        // Poll for a blob file under TailBlobsDir() up to ~5 seconds.
+        var sw = Stopwatch.StartNew();
+        var deadline = TimeSpan.FromSeconds(5);
+        bool found = false;
+        while (sw.Elapsed < deadline)
+        {
+            if (Directory.Exists(TailBlobsDir()))
+            {
+                var blobFiles = Directory.GetFiles(TailBlobsDir(), "*.bin", SearchOption.AllDirectories);
+                if (blobFiles.Length > 0)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            await Task.Delay(50);
+        }
+        Assert.True(found,
+            "Expected at least one blob to land at the tail after PromoteAsync unfenced uploads.");
+    }
+
+    [Fact]
+    public async Task PromoteAsync_OnUnfencedVolume_ReturnsOk()
+    {
+        await using var volume = await CreateAndRegisterAsync();
+        Assert.Equal(VolumeState.Normal, volume.State);
+
+        int beforeInfo = CountInfoFromVolume();
+        var promote = await volume.PromoteAsync();
+        Assert.True(promote.Success, promote.Error?.Message);
+        Assert.Equal(VolumeState.Normal, volume.State);
+
+        // Fast-path: no Info notification published.
+        Assert.Equal(beforeInfo, CountInfoFromVolume());
+    }
+
+    [Fact]
+    public async Task PromoteAsync_IsIdempotent()
+    {
+        var v1 = await CreateAndRegisterAsync();
+        await v1.DisposeAsync();
+        await ManuallyWriteWitnessAsync(epoch: 99L, conflictObserved: false);
+
+        await using var v2 = await ReopenAsync();
+        Assert.Equal(VolumeState.Fenced, v2.State);
+
+        int beforeInfo = CountInfoFromVolume();
+
+        var first = await v2.PromoteAsync();
+        Assert.True(first.Success, first.Error?.Message);
+        Assert.Equal(VolumeState.Normal, v2.State);
+
+        var second = await v2.PromoteAsync();
+        Assert.True(second.Success, second.Error?.Message);
+        Assert.Equal(VolumeState.Normal, v2.State);
+
+        // Exactly one Info notification across the two calls (second hit the fast-path).
+        Assert.Equal(beforeInfo + 1, CountInfoFromVolume());
+    }
+
+    [Fact]
+    public async Task PromoteAsync_OfflineTails_StillClearsLocalState()
+    {
+        var v1 = await CreateAndRegisterAsync();
+        await v1.DisposeAsync();
+        await ManuallyWriteWitnessAsync(epoch: 99L, conflictObserved: false);
+
+        await using var v2 = await ReopenAsync();
+        Assert.Equal(VolumeState.Fenced, v2.State);
+
+        // Swap the registry's adapter for a faulty wrapper that fails the next BeginUploadAsync
+        // — this is the actual "offline tail" code path inside PromoteAsync (the per-tail
+        // witness write fails and is logged at Warning; the local-state clear continues).
+        // PromoteAsync resolves providers via _providerRegistry.GetAsync on every call, so the
+        // post-reopen swap is observed at the next promote.
+        var faulty = new FaultInjectingStorageProvider(CreateFsProvider());
+        faulty.FailNextBeginWith(ErrorCode.ProviderUnreachable);
+        _registry.Register(ProviderId, faulty);
+
+        var promote = await v2.PromoteAsync();
+        Assert.True(promote.Success, promote.Error?.Message);
+        Assert.Equal(VolumeState.Normal, v2.State);
+
+        var persisted = await OrchestrationTestHelper.ReadSettingAsync(
+            _skinkRoot, Password, "VolumeState");
+        Assert.Equal("Normal", persisted);
+    }
+
+    [Fact]
+    public async Task OpenAsync_AfterPromote_HandshakeKeepsVolumeNormal()
+    {
+        var v1 = await CreateAndRegisterAsync();
+        await v1.DisposeAsync();
+        await ManuallyWriteWitnessAsync(epoch: 99L, conflictObserved: false);
+
+        var v2 = await ReopenAsync();
+        Assert.Equal(VolumeState.Fenced, v2.State);
+        var promote = await v2.PromoteAsync();
+        Assert.True(promote.Success, promote.Error?.Message);
+        await v2.DisposeAsync();
+
+        // Reopen — the session-begin handshake should keep us Normal and write a clean witness.
+        await using var v3 = await ReopenAsync();
+        Assert.Equal(VolumeState.Normal, v3.State);
+
+        var witness = await ManuallyReadWitnessAsync();
+        Assert.NotNull(witness);
+        Assert.False(witness!.Value.ConflictObserved);
+    }
+
+    [Fact]
+    public async Task PromoteAsync_ThenSimulatedCrash_NextOpenAutoDowngrades()
+    {
+        var v1 = await CreateAndRegisterAsync();
+        await v1.DisposeAsync();
+        await ManuallyWriteWitnessAsync(epoch: 99L, conflictObserved: false);
+
+        var v2 = await ReopenAsync();
+        Assert.Equal(VolumeState.Fenced, v2.State);
+        var promote = await v2.PromoteAsync();
+        Assert.True(promote.Success, promote.Error?.Message);
+        await v2.DisposeAsync();
+
+        // Simulate a crash AFTER witnesses were written but BEFORE the brain row landed: re-mark
+        // the brain as Fenced while leaving the now-clean witness in place.
+        await OrchestrationTestHelper.UpsertSettingAsync(
+            _skinkRoot, Password, "VolumeState", "Fenced");
+
+        await using var v3 = await ReopenAsync();
+        Assert.Equal(VolumeState.Normal, v3.State);
+
+        var persisted = await OrchestrationTestHelper.ReadSettingAsync(
+            _skinkRoot, Password, "VolumeState");
+        Assert.Equal("Normal", persisted);
+    }
+
+    [Fact]
+    public async Task PromoteAsync_Notification_UsesUserVocabularyOnly()
+    {
+        var v1 = await CreateAndRegisterAsync();
+        await v1.DisposeAsync();
+        await ManuallyWriteWitnessAsync(epoch: 99L, conflictObserved: false);
+
+        await using var v2 = await ReopenAsync();
+        Assert.Equal(VolumeState.Fenced, v2.State);
+
+        var promote = await v2.PromoteAsync();
+        Assert.True(promote.Success, promote.Error?.Message);
+
+        var info = _bus.Published.Single(n =>
+            n.Severity == NotificationSeverity.Info &&
+            n.Source == nameof(FlashSkinkVolume) &&
+            string.Equals(n.Title, "Conflict resolved", StringComparison.Ordinal));
+
+        string blob = (info.Title + " " + info.Message).ToLowerInvariant();
+        Assert.True(
+            blob.Contains("skink") || blob.Contains("tail") || blob.Contains("copy")
+                || blob.Contains("flashskink"),
+            $"User-vocabulary anchor missing from notification: {blob}");
+        foreach (var forbidden in new[] {
+            "epoch", "witness", "split-brain", "split brain", "fence", "fenced",
+            "wal", "stripe", "dek", "aad", "blob",
+        })
+        {
+            Assert.DoesNotContain(forbidden, blob, StringComparison.OrdinalIgnoreCase);
+        }
     }
 }
