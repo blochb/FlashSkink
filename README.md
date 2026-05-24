@@ -31,7 +31,8 @@ For the architecture and design rationale, see [`BLUEPRINT.md`](BLUEPRINT.md).
 | Phase 0 — Foundation (scaffolding, CI, docs) | ✅ Complete |
 | Phase 1 — Crypto and brain | ✅ Complete |
 | Phase 2 — Write pipeline and Phase 1 commit | ✅ Complete |
-| Phase 3 — Upload queue and resumable uploads | 🚧 In progress |
+| Phase 3 — Upload queue and resumable uploads | ✅ Complete |
+| Phase 3.5 — Volume identity and clone safety | ✅ Complete |
 | Phase 4 — Providers (FileSystem, Google Drive, Dropbox, OneDrive) | Not started |
 | Phase 5 — Recovery, healing, verification | Not started |
 | Phase 6 — CLI surface (file ops, daemon, status, logs) | Not started |
