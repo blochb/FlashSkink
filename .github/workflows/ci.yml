@@ -71,7 +71,10 @@ jobs:
           BRANCH="${{ github.head_ref }}"
           echo "Branch: $BRANCH"
 
-          if [[ "$BRANCH" =~ ^pr/([0-9]+\.[0-9]+)- ]]; then
+          # Match pr/X.Y- and pr/X.Y.Z- (and deeper). The dot-group is repeatable so
+          # three-part section numbers from Phase 3.5 onward (§3.5.2, §3.5.3, …) resolve
+          # to .claude/plans/pr-3.5.2.md etc., not the prior two-part-only behaviour.
+          if [[ "$BRANCH" =~ ^pr/([0-9]+(\.[0-9]+)+)- ]]; then
             SECTION="${BASH_REMATCH[1]}"
             PLAN_FILE=".claude/plans/pr-${SECTION}.md"
             echo "plan_file=$PLAN_FILE" >> "$GITHUB_OUTPUT"
