@@ -2216,6 +2216,80 @@ The two-file split is forced by the fact that the only reliably-exclusive `FileS
 
 `--force` must not bypass a *live* lock — and the obvious "delete the file before acquiring" implementation does exactly that on Linux/macOS, where `unlink(2)` succeeds on an `flock`-held file: it removes the directory entry without affecting the holder's lock on the underlying inode, after which a fresh `OpenOrCreate` creates a *different* inode at the same path and acquires its *own* `flock` — both processes then believe they hold the exclusive lock. To prevent that, `InstanceLock.AcquireAsync` probes the file with `FileShare.None` before any delete: if the probe fails, the lock is genuinely held and the force is refused with `SingleInstanceLockHeld`; if the probe succeeds, the lock is stale and the delete proceeds. The probe makes `--force` behave identically on every platform.
 
+### 19.6 Witness Protocol
+
+**Purpose.** Detect a diverged clone of the skink — same vault key material, different volume identity, sessions performed independently — before any upload activity for the new session begins. The witness file is the tail-side dual of the brain-side `VolumeEpoch`: every reachable tail carries a small encrypted record stamped by the most recent writer, and a mismatch between what the local brain knows and what a tail's witness says triggers fenced state (§19.7).
+
+The protocol's primary threat model is *sequential* clone use — clone made in one place, used in another, plugged back in. The simultaneous-cross-host case (two skinks opening the same network-mounted USB at the same instant) is a documented known limitation; see "known limitation" below.
+
+**Two-file design analogy.** The witness sits beside the brain's `VolumeEpoch` in the same way that `instance.manifest` sits beside `instance.lock` (§19.5): the brain row is the authoritative local counter; the witness is the per-tail external view of the most recent writer's claim. Either side can be lost or stale; the protocol resolves divergence by comparing them.
+
+**Witness path.** `_witness/current.enc` on each tail. The `_` prefix groups infrastructure objects with the `_brain/` mirror; the path is invisible to the user's virtual filesystem.
+
+**Witness encryption.** AES-256-GCM with the DEK, binary envelope: `[1 byte version][12 byte nonce][N byte ciphertext][16 byte tag]`. The version byte (currently `0x01`) reserves room for a future re-key or format change. Encryption uses `WitnessCrypto.Encrypt` directly rather than the full `CryptoPipeline` — the witness is ~250 bytes encrypted and does not benefit from compression, per-blob hashing, or the pipeline's larger envelope.
+
+**Witness payload.** A compact JSON document with seven fields:
+
+| Field | Purpose |
+|---|---|
+| `volumeId` | The writer's `Settings["VolumeID"]`. Validated against the local volume's id on read; mismatch treated as "no information from this tail" (same as absent / corrupted). |
+| `epoch` | The writer's `Settings["VolumeEpoch"]` at the time of the write. The authoritative conflict signal. |
+| `sessionId` | A fresh Guid per write. Diagnostic context only; not used in conflict logic. |
+| `committedAtUtc` | Wall-clock timestamp at write. Diagnostic only — clock skew cannot affect conflict detection (epoch is the comparison key). |
+| `host` | `Environment.MachineName` of the writer. Diagnostic. |
+| `appVersion` | The writer's app-version string (from `AssemblyInformationalVersionAttribute`). Diagnostic. |
+| `conflictObserved` | The two-sided fence marker. Set by the *winner* — the skink that detected a conflict against a peer — so the *lagger* learns it is the lagger on its next open even if the lagger's own epoch is now ahead. |
+
+**`VolumeEpoch`.** One increment per `OpenAsync`, written inside the same brain transaction that updates `AppVersionLastOpened`. `CreateAsync` seeds the epoch at `1` directly (it does not invoke the open-time backfill). The epoch is the conflict signal: wall-clock timestamps are informational only and cannot cause false positives or false negatives even under arbitrary clock skew.
+
+**Handshake flow.** Every `OpenAsync` runs the handshake after `BackfillAndStampOnOpenAsync` increments the epoch and before `BuildVolumeFromSessionAsync` starts the background services. Sequence per tail (sequential iteration; no parallel I/O):
+
+1. `WitnessStore.TryReadAsync(provider, dek, ct)` — list `_witness/`, download the file, decrypt, parse.
+2. **Volume-Id validation.** A witness whose `volumeId` field differs from the local `Settings["VolumeID"]` is treated as "no information from this tail" (same as absent or corrupted). The DEK-binding guarantee makes a real mismatch near-impossible — a wrong DEK fails decrypt at the store layer — so this is a defensive check, not a primary code path.
+3. **Conflict evaluation** (both triggers in §19.7).
+4. **Write phase.** After all tails are read, a fresh witness is built and written to every accessible tail. The write uses `CancellationToken.None` at every await site (Principle 17): once the handshake has decided the new payload, cancellation mid-write would leave half the tails carrying the new marker and the other half carrying the stale one, defeating the "any tail surfaces it" guarantee of the two-sided fence.
+
+**Offline tails — silence is the safe default.** A tail that returns `ProviderUnreachable`, `TokenExpired`, or any other transport / auth failure during `ListAsync` or `DownloadAsync` is skipped silently (logged at Debug; the open continues). An offline tail can neither confirm nor deny a split-brain, so the optimistic interpretation — the network is down, not that the user cloned the skink — is the only one that does not falsely fence on a routine connectivity blip. This matches the existing `UploadQueueService` posture toward unreachable tails.
+
+**Tail registration writes an initial witness.** `RegisterTailAsync` writes a witness immediately after committing the `Providers` brain row and registering the in-process adapter. Without this, the tail would carry blobs and brain mirrors but no witness until the *next* `OpenAsync` — and a clone made and used during that window would see "no witness" and silently proceed without conflict detection. A failure of this initial write is logged at Warning but does not fail registration; the next session-begin handshake will reseed the witness as part of its normal read-then-write algorithm.
+
+**Cost model.** N tails per session open performs at most: N × `ListAsync("_witness/")`, plus up to N × `DownloadAsync` (when a witness exists), plus N × the upload-session triplet (`BeginUploadAsync`/`UploadRangeAsync`/`FinaliseUploadAsync`) when writing the new witness. For `FileSystemProvider` this is sub-millisecond per tail; for cloud providers (Phase 4) this is one extra HTTPS round-trip per tail at session open. The cost is paid once per session open, never per file write.
+
+**Known limitation — simultaneous cross-host opens at the same prior epoch are undetectable.** If two skinks share the same `oldEpoch = N` and open *at the exact same moment* on different hosts (the single-instance lock from §19.5 prevents this within a host but not across hosts when the USB is mounted via a network share), the following race is possible:
+
+1. Skink A reads the witness (epoch N or earlier — no conflict signal).
+2. Skink B reads the witness (epoch N or earlier — no conflict signal).
+3. Skink A writes witness with epoch N+1 and its own `sessionId`.
+4. Skink B writes witness with epoch N+1 and a *different* `sessionId` — overwriting A's witness.
+5. Neither detects a conflict on this open; both believe they wrote the canonical epoch N+1.
+6. On A's next open (say to epoch N+2), it reads the witness and sees epoch N+1 with B's `sessionId` — but the algorithm doesn't compare `sessionId`s, only epochs, and `N+1 < N+2` looks fine.
+
+This race requires (a) network-mounted USB, (b) literal simultaneous opens, and (c) the per-host single-instance lock not catching it. Operational guidance: do not mount a FlashSkink USB via a network share. A future enhancement could store per-tail `LastWitnessSessionId` in the brain to detect this case, but the complication is deferred until empirical evidence shows network-mounted USB use common enough to warrant it.
+
+### 19.7 Fenced State
+
+**Two parallel conflict triggers, both evaluated on every handshake.**
+
+1. **Epoch comparison (Trigger A):** any reachable tail's `witness.Epoch >= localNewEpoch`. The peer has advanced the epoch to a value at or beyond ours — either ran sessions after our common ancestor (`>`), or both peers just advanced from the same prior epoch independently (`==`, the collision case).
+2. **Conflict marker (Trigger B):** any reachable tail's `witness.Epoch < localNewEpoch` AND `witness.ConflictObserved == true`. The other skink — the winner — detected a conflict against us in a prior session and stamped the marker so we (the lagger) learn about it even though our own epoch is now ahead.
+
+Both triggers are evaluated against every tail. The first triggering tail wins for diagnostic attribution (`ConflictingProviderId`, `ConflictWitness`); the loop does not short-circuit, because the auto-downgrade gate (below) needs the full count of tails actually read.
+
+**What fencing means.** When fenced:
+
+- **Phase 2 uploads are blocked on ALL tails**, not just the conflicting one. `UploadQueueService` exposes an `internal SetFenced(bool)` method that flips a `volatile int _fenced` field; both the orchestrator and every per-tail worker check the flag at the top of each tick (after the network-availability check, before any brain or provider work) and idle when the flag is set. Idling uses the wakeup signal so `PromoteAsync` (§19.8) can resume workers promptly.
+- **Phase 1 writes and reads continue normally.** The skink is authoritative (Principle 3); a fenced volume is still fully usable for local file operations. Only the cross-tail replication is paused.
+
+**Persistence.** `Settings["VolumeState"] = "Fenced"` survives close/reopen. `BackfillAndStampOnOpenAsync` reads the row and returns it; `RunWitnessHandshakeAsync` consumes it as the `alreadyFenced` input to the handshake's write decision.
+
+**Two-sided fence — perpetual marker writes.** Whenever the volume is fenced (whether from a fresh detection on this handshake OR from the persisted `Settings` row), every reachable tail's new witness is written with `ConflictObserved = true`. This ensures the *other* skink — whether it is the original conflict-source or a yet-unaware peer that touches a shared tail later — picks up the marker on its next handshake from any tail it can reach. The marker stays in place until `PromoteAsync` (§19.8) resets the local state and writes fresh witnesses with `ConflictObserved = false`.
+
+**User visibility — first detection only.** On the initial transition from Normal to Fenced, a `Critical` notification is published to `INotificationBus` and a row is written to `BackgroundFailures` (Principle 24). Subsequent re-detections while already Fenced do NOT re-publish — the user has been told once, and a re-detection per session open would be notification spam. Auto-downgrade (below) publishes an `Info` notification (not persisted per §8.5). The CLI surfaces fenced state at the next prompt in Phase 4.
+
+**Auto-downgrade — crash recovery for `PromoteAsync`.** `PromoteAsync` (§19.8) writes fresh witnesses to all tails before persisting `Settings["VolumeState"] = "Normal"`. If a crash interrupts that sequence between the tail writes and the brain write, the next open observes: brain says Fenced, but every reachable tail's witness is clean. The handshake treats this as a stale Fenced row and downgrades to Normal, *provided* at least one tail was actually read (`outcome.TailsRead > 0`). Absence of reachable tails keeps the Fenced state — auto-downgrade requires positive evidence, not absence of evidence. The downgrade is logged at Information and surfaces an `Info` notification ("FlashSkink finished resolving a prior conflict; uploads are resuming.").
+
+**User vocabulary discipline (Principle 25).** Every user-facing string surrounding fenced state uses skink / tail / copy / conflict / resolve / paused / resume vocabulary only. The internal vocabulary — "witness", "epoch", "split-brain", "fenced", "volume" — never appears in `Notification.Title`, `Notification.Message`, or `BackgroundFailure.Message`. The `ErrorCode.SplitBrainDetected` enum *value* is internal and acceptable; it never appears in user-visible text.
+
 ---
 
 ## 20. Integrity and Self-Healing
