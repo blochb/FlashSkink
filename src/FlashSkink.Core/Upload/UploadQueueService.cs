@@ -62,6 +62,11 @@ public sealed class UploadQueueService : IAsyncDisposable
 
     private int _started;
     private int _disposed;
+    // Volatile int (not bool) so Interlocked.Exchange can update it atomically from
+    // SetFenced without a lock. 0 = Normal, 1 = Fenced. Read in the worker hot loop without
+    // a brain query (Principle 22) — the value source-of-truth is Settings["VolumeState"]
+    // but the worker tick must not read from the brain just to gate.
+    private volatile int _fenced;
     private CancellationTokenSource? _serviceCts;
     private Task? _orchestratorTask;
 
@@ -88,6 +93,12 @@ public sealed class UploadQueueService : IAsyncDisposable
     /// <param name="wakeupSignal">Shared wakeup signal — pulsed by <c>WritePipeline</c> post-commit (§3.6).</param>
     /// <param name="brain">Brain access wrapper — used to open the §15.3 step 7c transactions under the universal gate (Principle 36).</param>
     /// <param name="skinkRoot">Absolute path to the skink root; combined with <c>Blobs.BlobPath</c> to locate the local blob.</param>
+    /// <param name="initiallyFenced">
+    /// Whether the volume opens in <c>VolumeState.Fenced</c>. Sourced from <c>Settings["VolumeState"]</c>
+    /// at open time by <c>FlashSkinkVolume.RunWitnessHandshakeAsync</c> (dev plan §3.5.2). When
+    /// <see langword="true"/>, both the orchestrator and every worker idle until
+    /// <see cref="SetFenced"/> clears the flag.
+    /// </param>
     /// <param name="logger">Service logger.</param>
     public UploadQueueService(
         UploadQueueRepository uploadQueueRepository,
@@ -103,6 +114,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         UploadWakeupSignal wakeupSignal,
         IBrainAccess brain,
         string skinkRoot,
+        bool initiallyFenced,
         ILogger<UploadQueueService> logger)
     {
         _uploadQueueRepository = uploadQueueRepository;
@@ -118,9 +130,21 @@ public sealed class UploadQueueService : IAsyncDisposable
         _wakeupSignal = wakeupSignal;
         _brain = brain;
         _skinkRoot = skinkRoot;
+        _fenced = initiallyFenced ? 1 : 0;
         _logger = logger;
         _availabilityHandler = OnAvailabilityChanged;
     }
+
+    /// <summary>
+    /// Enables or disables the fenced-state guard for Phase 2 uploads. When fenced, both the
+    /// orchestrator and every worker idle until unfenced. Called by
+    /// <c>FlashSkinkVolume.RunWitnessHandshakeAsync</c> on split-brain detection and (in
+    /// dev plan §3.5.3) by <c>FlashSkinkVolume.PromoteAsync</c> on resolution. Thread-safe;
+    /// updates the underlying flag atomically via <see cref="Interlocked.Exchange(ref int, int)"/>.
+    /// (Blueprint §19.7.)
+    /// </summary>
+    internal void SetFenced(bool fenced)
+        => Interlocked.Exchange(ref _fenced, fenced ? 1 : 0);
 
     /// <summary>
     /// Starts the orchestrator background task linked to <paramref name="volumeToken"/>. Idempotent:
@@ -289,6 +313,17 @@ public sealed class UploadQueueService : IAsyncDisposable
                     continue;
                 }
 
+                if (_fenced != 0)
+                {
+                    // Volume is fenced — skip all upload activity until PromoteAsync (§3.5.3)
+                    // calls SetFenced(false). No notification per tick; the initial fenced
+                    // notification was published on the session open that detected the
+                    // conflict (Principle 24). PromoteAsync pulses the wakeup signal so we
+                    // exit IdleAsync promptly when the fence clears.
+                    await IdleAsync(OrchestratorIdle, ct).ConfigureAwait(false);
+                    continue;
+                }
+
                 var activeListResult = await _providerRegistry
                     .ListActiveProviderIdsAsync(ct).ConfigureAwait(false);
                 if (!activeListResult.Success)
@@ -418,6 +453,15 @@ public sealed class UploadQueueService : IAsyncDisposable
             {
                 if (!_networkMonitor.IsAvailable)
                 {
+                    await IdleAsync(WorkerIdle, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (_fenced != 0)
+                {
+                    // Volume is fenced — skip all upload activity until PromoteAsync (§3.5.3)
+                    // clears the flag. See the matching guard in OrchestratorAsync for the
+                    // full rationale.
                     await IdleAsync(WorkerIdle, ct).ConfigureAwait(false);
                     continue;
                 }

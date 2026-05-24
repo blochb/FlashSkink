@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -45,6 +46,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     private readonly BrainMirrorService _brainMirrorService;
     private readonly CancellationTokenSource _volumeCts;
     private readonly InstanceLock _instanceLock;
+    private readonly WitnessStore _witnessStore;
+    private readonly ILogger<FlashSkinkVolume> _logger;
     private int _disposed;
 
     // ── Events (declared; raisers arrive in later phases) ────────────────────
@@ -73,6 +76,16 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
 #pragma warning restore CS0067
 
+    /// <summary>
+    /// The current operational state of this volume. <see cref="VolumeState.Fenced"/> indicates
+    /// that a split-brain conflict was detected during the session-begin handshake; Phase 2
+    /// uploads are blocked until resolved by <c>PromoteAsync</c> (dev plan §3.5.3). Read-only
+    /// to callers; transitions to <see cref="VolumeState.Fenced"/> happen inside
+    /// <see cref="OpenAsync"/> when the handshake detects a fresh conflict, and the value
+    /// persists across close/reopen via <c>Settings["VolumeState"]</c>. (Blueprint §19.7.)
+    /// </summary>
+    public VolumeState State { get; private set; }
+
     // ── Private constructor ──────────────────────────────────────────────────
 
     private FlashSkinkVolume(
@@ -90,7 +103,10 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         UploadQueueService uploadQueueService,
         BrainMirrorService brainMirrorService,
         CancellationTokenSource volumeCts,
-        InstanceLock instanceLock)
+        InstanceLock instanceLock,
+        WitnessStore witnessStore,
+        VolumeState initialState,
+        ILogger<FlashSkinkVolume> logger)
     {
         _session = session;
         _context = context;
@@ -107,6 +123,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         _brainMirrorService = brainMirrorService;
         _volumeCts = volumeCts;
         _instanceLock = instanceLock;
+        _witnessStore = witnessStore;
+        State = initialState;
+        _logger = logger;
     }
 
     // ── Static factory methods ───────────────────────────────────────────────
@@ -226,8 +245,12 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             // (Principle 36 — from here, no raw SqliteConnection flows downstream).
             var brainAccess = new BrainAccess(ownedConnection);
             var session = new VolumeSession(ownedDek, brainAccess);
+            // A brand-new volume has no registered tails, so no witness handshake can fire
+            // and the initial state is always Normal. RegisterTailAsync will write the first
+            // witness to each tail as it is registered (dev plan §3.5.2 Change 3).
             var volume = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
-                streamManager, lifecycle, keyVault, vaultPath, ownedLock!).ConfigureAwait(false);
+                streamManager, lifecycle, keyVault, vaultPath, ownedLock!,
+                VolumeState.Normal).ConfigureAwait(false);
 
             // Ownership of the phrase transfers to the receipt; the caller will dispose it.
             phraseOwned = false;
@@ -341,7 +364,20 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             {
                 return Result<FlashSkinkVolume>.Fail(backfillResult.Error!);
             }
-            _ = backfillResult.Value; // (volumeState, newEpoch) — consumed by §3.5.2 handshake.
+            var (preHandshakeState, newEpoch) = backfillResult.Value;
+
+            // Session-begin witness handshake (Blueprint §19.6, Principle 35). At this
+            // point the single-instance lock is held, the brain is open and migrated, the
+            // epoch has been incremented, and ownership has NOT yet transferred to
+            // BuildVolumeFromSessionAsync. A handshake failure leaves `session` non-null and
+            // the finally block disposes session and lock cleanly.
+            var handshakeResult = await RunWitnessHandshakeAsync(
+                session, options, newEpoch, preHandshakeState, ct).ConfigureAwait(false);
+            if (!handshakeResult.Success)
+            {
+                return Result<FlashSkinkVolume>.Fail(handshakeResult.Error!);
+            }
+            var postHandshakeState = handshakeResult.Value;
 
             // Take ownership so the finally block does not dispose the session or lock.
             var ownedSession = session;
@@ -350,7 +386,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             lockHeld = false;
 
             var volume = await BuildVolumeFromSessionAsync(ownedSession, skinkRoot, options,
-                streamManager, lifecycle, keyVault, vaultPath, ownedLock!).ConfigureAwait(false);
+                streamManager, lifecycle, keyVault, vaultPath, ownedLock!,
+                postHandshakeState).ConfigureAwait(false);
             return Result<FlashSkinkVolume>.Ok(volume);
         }
         catch (OperationCanceledException ex)
@@ -891,6 +928,56 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             // Always register the in-process instance — the in-memory registry is rebuilt
             // every volume open, so even an idempotent re-registration must put the adapter back.
             inMem.Register(providerId, provider);
+
+            // Write an initial witness to the freshly-registered tail. Without this, a clone
+            // of the USB opened between this RegisterTailAsync and the next OpenAsync would
+            // see "no witness on this tail" and treat as first use — silently missing the
+            // conflict. Writing here closes that window (dev plan §3.5.2 Change 3).
+            //
+            // Failure to write the witness is logged at Warning but does NOT fail the
+            // RegisterTailAsync call: the brain row is committed, the registry has the
+            // provider, and the next session-begin handshake will reseed the witness as part
+            // of its normal read-then-write algorithm.
+            string volumeId;
+            long currentEpoch;
+            VolumeState currentState;
+            using (var brainScope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
+            {
+                volumeId = await brainScope.Connection.QuerySingleAsync<string>(
+                    new CommandDefinition(
+                        "SELECT Value FROM Settings WHERE Key = 'VolumeID'",
+                        cancellationToken: ct)).ConfigureAwait(false);
+                var epochRaw = await brainScope.Connection.QuerySingleAsync<string>(
+                    new CommandDefinition(
+                        "SELECT Value FROM Settings WHERE Key = 'VolumeEpoch'",
+                        cancellationToken: ct)).ConfigureAwait(false);
+                currentEpoch = long.Parse(epochRaw, CultureInfo.InvariantCulture);
+                var stateRaw = await brainScope.Connection.QuerySingleOrDefaultAsync<string?>(
+                    new CommandDefinition(
+                        "SELECT Value FROM Settings WHERE Key = 'VolumeState'",
+                        cancellationToken: ct)).ConfigureAwait(false);
+                currentState = stateRaw is not null
+                    && Enum.TryParse<VolumeState>(stateRaw, ignoreCase: false, out var parsed)
+                        ? parsed
+                        : VolumeState.Normal;
+            }
+
+            var initialWitness = WitnessPayload.ForNewSession(
+                volumeId, currentEpoch, GetAppInformationalVersion())
+                with
+            { ConflictObserved = currentState == VolumeState.Fenced };
+            var writeResult = await _witnessStore.WriteAsync(
+                provider,
+                _session.Dek,
+                initialWitness,
+                CancellationToken.None).ConfigureAwait(false);
+            if (!writeResult.Success)
+            {
+                _logger.LogWarning(
+                    "Initial witness write to newly-registered tail {ProviderId} failed ({Code}); the next session-begin handshake will retry.",
+                    providerId, writeResult.Error!.Code);
+            }
+
             _wakeupSignal.Pulse();
             return Result.Ok();
         }
@@ -1037,12 +1124,14 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         VolumeLifecycle lifecycle,
         KeyVault keyVault,
         string vaultPath,
-        InstanceLock instanceLock)
+        InstanceLock instanceLock,
+        VolumeState initialState)
     {
         var loggerFactory = options.LoggerFactory;
         var notificationBus = options.NotificationBus;
         var brain = session.Brain!;
         var dek = new ReadOnlyMemory<byte>(session.Dek);
+        bool initiallyFenced = initialState == VolumeState.Fenced;
 
         var wal = new WalRepository(brain, loggerFactory.CreateLogger<WalRepository>());
         var blobs = new BlobRepository(brain, loggerFactory.CreateLogger<BlobRepository>());
@@ -1081,13 +1170,20 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             uploadQueueRepo, blobs, files, activityLog,
             registry, netMonitor, notificationBus,
             rangeUploader, retryPolicy, clock, wakeupSignal,
-            brain, skinkRoot,
+            brain, skinkRoot, initiallyFenced,
             loggerFactory.CreateLogger<UploadQueueService>());
 
         var brainMirrorService = new BrainMirrorService(
             brain, dek, skinkRoot, registry,
             notificationBus, clock,
             loggerFactory.CreateLogger<BrainMirrorService>());
+
+        // Witness store + volume-level logger are kept as fields on FlashSkinkVolume so
+        // PromoteAsync (§3.5.3) can drive fresh witness writes without rebuilding services,
+        // and so RegisterTailAsync can write the initial witness on tail registration
+        // (dev plan §3.5.2 Change 5).
+        var witnessStore = new WitnessStore(loggerFactory.CreateLogger<WitnessStore>());
+        var volumeLogger = loggerFactory.CreateLogger<FlashSkinkVolume>();
 
         var volumeCts = new CancellationTokenSource();
 
@@ -1120,7 +1216,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         return new FlashSkinkVolume(
             session, context, writePipeline, readPipeline, lifecycle, keyVault, vaultPath,
             registry, netMonitor, clock, wakeupSignal, uploadQueueService, brainMirrorService,
-            volumeCts, instanceLock);
+            volumeCts, instanceLock, witnessStore, initialState, volumeLogger);
     }
 
     /// <summary>
@@ -1189,6 +1285,228 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         {
             return Result.Fail(ErrorCode.Unknown, "Unexpected error seeding settings.", ex);
         }
+    }
+
+    /// <summary>
+    /// Runs the session-begin witness handshake against every reachable tail and applies the
+    /// fenced-state transition table. Called by <see cref="OpenAsync"/> after
+    /// <see cref="BackfillAndStampOnOpenAsync"/> has incremented the epoch and before
+    /// <see cref="BuildVolumeFromSessionAsync"/> constructs the background services. The
+    /// returned <see cref="VolumeState"/> is the post-handshake state — possibly transitioned
+    /// from the <paramref name="currentState"/> argument (Normal → Fenced on a fresh conflict,
+    /// or Fenced → Normal on a successful auto-downgrade). (Blueprint §19.6–19.7.)
+    /// </summary>
+    private static async Task<Result<VolumeState>> RunWitnessHandshakeAsync(
+        VolumeSession session,
+        VolumeCreationOptions options,
+        long newEpoch,
+        VolumeState currentState,
+        CancellationToken ct)
+    {
+        var logger = options.LoggerFactory.CreateLogger(typeof(FlashSkinkVolume));
+        // Mirror BuildVolumeFromSessionAsync's IClock fallback so tests that pass a FakeClock
+        // see deterministic timestamps on notifications and BackgroundFailures rows.
+        var clock = options.Clock ?? SystemClock.Instance;
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // Mirror the BuildVolumeFromSessionAsync registry fallback: a brand-new volume
+            // with no registered tails opens against an empty registry, the handshake sees
+            // no tails, and returns no-conflict. In production Phase 4 a BrainBackedProviderRegistry
+            // populates from the brain; in Phase 3 tests an InMemoryProviderRegistry is passed
+            // via options (cross-cutting decision 8).
+            var registry = options.ProviderRegistry
+                ?? new InMemoryProviderRegistry(
+                    options.LoggerFactory.CreateLogger<InMemoryProviderRegistry>());
+
+            // ── Read VolumeID and active providers from the brain ────────────
+            string volumeId;
+            IReadOnlyList<string> activeProviderIds;
+            using (var scope = await session.Brain!.LockAsync(ct).ConfigureAwait(false))
+            {
+                volumeId = await scope.Connection.QuerySingleAsync<string>(
+                    new CommandDefinition(
+                        "SELECT Value FROM Settings WHERE Key = 'VolumeID'",
+                        cancellationToken: ct)).ConfigureAwait(false);
+                var ids = await scope.Connection.QueryAsync<string>(
+                    new CommandDefinition(
+                        "SELECT ProviderID FROM Providers WHERE IsActive = 1",
+                        cancellationToken: ct)).ConfigureAwait(false);
+                activeProviderIds = ids.AsList();
+            }
+
+            // ── Resolve providers from registry ──────────────────────────────
+            var tails = new List<(string ProviderId, IStorageProvider Provider)>(activeProviderIds.Count);
+            foreach (var providerId in activeProviderIds)
+            {
+                var providerResult = await registry.GetAsync(providerId, ct).ConfigureAwait(false);
+                if (!providerResult.Success)
+                {
+                    // Normal in tests that haven't called RegisterTailAsync yet; normal in
+                    // Phase 4 if a brain-backed registry fails to reconstruct a cloud adapter.
+                    logger.LogDebug(
+                        "Provider {ProviderId} present in brain but not resolvable from registry ({Code}); skipping in handshake.",
+                        providerId, providerResult.Error!.Code);
+                    continue;
+                }
+                tails.Add((providerId, providerResult.Value!));
+            }
+
+            // ── Run handshake ────────────────────────────────────────────────
+            var store = new WitnessStore(options.LoggerFactory.CreateLogger<WitnessStore>());
+            var handshake = new WitnessHandshake(
+                store, options.LoggerFactory.CreateLogger<WitnessHandshake>());
+            var dek = new ReadOnlyMemory<byte>(session.Dek);
+            var outcomeResult = await handshake.RunAsync(
+                tails, volumeId, newEpoch, GetAppInformationalVersion(), dek,
+                alreadyFenced: currentState == VolumeState.Fenced, ct).ConfigureAwait(false);
+            if (!outcomeResult.Success)
+            {
+                return Result<VolumeState>.Fail(outcomeResult.Error!);
+            }
+            var outcome = outcomeResult.Value;
+
+            // ── Transition table (Blueprint §19.7) ───────────────────────────
+            if (outcome.ConflictDetected && currentState == VolumeState.Normal)
+            {
+                // Fresh detection — enter Fenced. Persist, notify, write BackgroundFailures.
+                await PersistVolumeStateAsync(session.Brain!, VolumeState.Fenced).ConfigureAwait(false);
+
+                logger.LogError(
+                    "Split-brain detected on tail {ProviderId} via {Trigger}; volume entering fenced state. WitnessEpoch={WitnessEpoch}, LocalEpoch={LocalEpoch}.",
+                    outcome.ConflictingProviderId,
+                    outcome.Trigger,
+                    outcome.ConflictWitness?.Epoch,
+                    newEpoch);
+
+                var metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["TailProviderID"] = outcome.ConflictingProviderId ?? string.Empty,
+                    ["ConflictTrigger"] = outcome.Trigger.ToString(),
+                    ["WitnessEpoch"] = outcome.ConflictWitness?.Epoch.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                    ["LocalEpoch"] = newEpoch.ToString(CultureInfo.InvariantCulture),
+                    ["WitnessHost"] = outcome.ConflictWitness?.Host ?? string.Empty,
+                    ["WitnessSessionId"] = outcome.ConflictWitness?.SessionId ?? string.Empty,
+                    ["ConflictObserved"] = outcome.ConflictWitness?.ConflictObserved.ToString() ?? string.Empty,
+                };
+                const string fencedUserMessage =
+                    "FlashSkink found a conflicting copy of this skink on one of your tails. Uploads are paused until you resolve the conflict.";
+                await options.NotificationBus.PublishAsync(new Notification
+                {
+                    Source = nameof(FlashSkinkVolume),
+                    Severity = NotificationSeverity.Critical,
+                    Title = "Conflicting copy detected",
+                    Message = fencedUserMessage,
+                    Error = new ErrorContext
+                    {
+                        Code = ErrorCode.SplitBrainDetected,
+                        Message = outcome.ConflictWitness is { } cw
+                            ? $"Conflict detected on tail '{outcome.ConflictingProviderId}'. {cw.ToDisplayString()}"
+                            : $"Conflict detected on tail '{outcome.ConflictingProviderId}'.",
+                        Metadata = metadata,
+                    },
+                    OccurredUtc = clock.UtcNow,
+                    RequiresUserAction = true,
+                }, CancellationToken.None).ConfigureAwait(false);
+
+                var backgroundFailures = new BackgroundFailureRepository(
+                    session.Brain!,
+                    options.LoggerFactory.CreateLogger<BackgroundFailureRepository>());
+                var bgResult = await backgroundFailures.AppendAsync(new BackgroundFailure
+                {
+                    FailureId = Guid.NewGuid().ToString(),
+                    OccurredUtc = clock.UtcNow,
+                    Source = nameof(FlashSkinkVolume),
+                    ErrorCode = nameof(ErrorCode.SplitBrainDetected),
+                    Message = fencedUserMessage,
+                    Metadata = null,
+                    Acknowledged = false,
+                }, CancellationToken.None).ConfigureAwait(false);
+                if (!bgResult.Success)
+                {
+                    // The notification was published; the persisted-failure write failing is
+                    // unfortunate but not fatal — log and continue.
+                    logger.LogWarning(
+                        "Failed to persist BackgroundFailures row for split-brain detection: {Code}.",
+                        bgResult.Error!.Code);
+                }
+
+                return Result<VolumeState>.Ok(VolumeState.Fenced);
+            }
+
+            if (outcome.ConflictDetected && currentState == VolumeState.Fenced)
+            {
+                // Already fenced; another fresh trigger observed. No state change, no spam
+                // (Principle 24 — initial detection only). Diagnostic log.
+                logger.LogWarning(
+                    "Volume already fenced; handshake observed another fresh trigger on tail {ProviderId} via {Trigger}.",
+                    outcome.ConflictingProviderId, outcome.Trigger);
+                return Result<VolumeState>.Ok(VolumeState.Fenced);
+            }
+
+            if (!outcome.ConflictDetected && currentState == VolumeState.Fenced)
+            {
+                // Auto-downgrade check: positive evidence required (TailsRead > 0).
+                if (outcome.TailsRead > 0)
+                {
+                    await PersistVolumeStateAsync(session.Brain!, VolumeState.Normal).ConfigureAwait(false);
+                    logger.LogInformation(
+                        "Auto-downgraded stale Fenced state — handshake observed {TailsRead} tail(s) with no conflict signal. A prior promote likely completed the tail writes before persisting the local state change.",
+                        outcome.TailsRead);
+                    await options.NotificationBus.PublishAsync(new Notification
+                    {
+                        Source = nameof(FlashSkinkVolume),
+                        Severity = NotificationSeverity.Info,
+                        Title = "Conflict resolved",
+                        Message = "FlashSkink finished resolving a prior conflict; uploads are resuming.",
+                        OccurredUtc = clock.UtcNow,
+                        RequiresUserAction = false,
+                    }, CancellationToken.None).ConfigureAwait(false);
+                    return Result<VolumeState>.Ok(VolumeState.Normal);
+                }
+
+                // No reachable tails to confirm against — keep Fenced. Absence of evidence
+                // is not evidence of absence.
+                logger.LogDebug(
+                    "Volume remains fenced; no reachable tails confirm the prior promote completed.");
+                return Result<VolumeState>.Ok(VolumeState.Fenced);
+            }
+
+            // (No fresh conflict, currently Normal) — ordinary path, no change.
+            return Result<VolumeState>.Ok(VolumeState.Normal);
+        }
+        catch (OperationCanceledException ex)
+        {
+            return Result<VolumeState>.Fail(
+                ErrorCode.Cancelled, "Witness handshake was cancelled.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            return Result<VolumeState>.Fail(
+                ErrorCode.DatabaseWriteFailed,
+                "Failed to persist volume state during witness handshake.", ex);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Unexpected error during witness handshake.");
+            return Result<VolumeState>.Fail(
+                ErrorCode.Unknown, "Unexpected error during witness handshake.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Upserts <c>Settings["VolumeState"]</c> with the supplied state name. Uses
+    /// <see cref="CancellationToken.None"/> per Principle 17 — once the handshake decides to
+    /// transition, the persist must complete regardless of concurrent shutdown.
+    /// </summary>
+    private static async Task PersistVolumeStateAsync(IBrainAccess brain, VolumeState state)
+    {
+        using var scope = await brain.LockAsync(CancellationToken.None).ConfigureAwait(false);
+        await scope.Connection.ExecuteAsync(new CommandDefinition(
+            "INSERT OR REPLACE INTO Settings (Key, Value) VALUES ('VolumeState', @Value)",
+            new { Value = state.ToString() },
+            cancellationToken: CancellationToken.None)).ConfigureAwait(false);
     }
 
     /// <summary>
