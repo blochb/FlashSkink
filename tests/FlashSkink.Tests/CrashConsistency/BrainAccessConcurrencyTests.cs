@@ -128,10 +128,15 @@ public sealed class BrainAccessConcurrencyTests
 
             try
             {
+                // PR §4.1 switched the default registry to BrainBackedProviderRegistry; this
+                // test calls RegisterTailAsync (which requires an InMemoryProviderRegistry-backed
+                // volume), so we pass one explicitly.
                 var options = new VolumeCreationOptions
                 {
                     LoggerFactory = NullLoggerFactory.Instance,
                     NotificationBus = bus,
+                    ProviderRegistry = new InMemoryProviderRegistry(
+                        NullLogger<InMemoryProviderRegistry>.Instance),
                 };
 
                 var createResult = await FlashSkinkVolume.CreateAsync(
