@@ -74,7 +74,11 @@ public sealed class LoopbackOAuthCapture : IOAuthCaptureFlow, IDisposable
     // RST mid-response). Disposal is the authoritative cleanup point. Concurrent because tests
     // may exercise parallel flows; production OAuth setup is single-flow.
     private readonly ConcurrentDictionary<string, FlowState> _flows = new(StringComparer.Ordinal);
-    private bool _disposed;
+
+    // 0 = live, 1 = disposed. Interlocked.Exchange / Volatile.Read so the XML doc's
+    // "safe to call concurrently" contract actually holds (a torn read on ARM or a double-entry
+    // race on x86 would otherwise let two Dispose calls both run the teardown loop).
+    private int _disposed;
 
     private sealed class FlowState
     {
@@ -115,7 +119,7 @@ public sealed class LoopbackOAuthCapture : IOAuthCaptureFlow, IDisposable
     /// <inheritdoc/>
     public Result<OAuthCaptureContext> Prepare()
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
         {
             throw new ObjectDisposedException(nameof(LoopbackOAuthCapture));
         }
@@ -181,7 +185,7 @@ public sealed class LoopbackOAuthCapture : IOAuthCaptureFlow, IDisposable
         Uri authorizationUri,
         CancellationToken ct)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
         {
             throw new ObjectDisposedException(nameof(LoopbackOAuthCapture));
         }
@@ -268,7 +272,7 @@ public sealed class LoopbackOAuthCapture : IOAuthCaptureFlow, IDisposable
                     string.Format(
                         System.Globalization.CultureInfo.InvariantCulture,
                         ErrorHtmlTemplate,
-                        $"The sign-in provider reported: {error}."));
+                        $"The sign-in provider reported: {System.Net.WebUtility.HtmlEncode(error)}."));
                 return Result<string>.Fail(
                     ErrorCode.ProviderAuthFailed,
                     $"OAuth provider returned error: {error}.");
@@ -317,11 +321,12 @@ public sealed class LoopbackOAuthCapture : IOAuthCaptureFlow, IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
-        if (_disposed)
+        // Exchange returns the *previous* value; if it was already 1, another caller is already
+        // running (or has already run) the teardown loop — bail out so we don't double-stop.
+        if (Interlocked.Exchange(ref _disposed, 1) == 1)
         {
             return;
         }
-        _disposed = true;
 
         foreach (var kvp in _flows)
         {

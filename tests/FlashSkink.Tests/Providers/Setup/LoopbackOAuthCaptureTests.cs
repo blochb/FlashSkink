@@ -157,6 +157,23 @@ public sealed class LoopbackOAuthCaptureTests
     }
 
     [Fact]
+    public async Task AwaitAuthorizationCodeAsync_AlreadyCancelledToken_ReturnsCancelled()
+    {
+        // Hits the synchronous ct.ThrowIfCancellationRequested() at method entry — a distinct
+        // path from the callback-driven listener.Stop() route exercised by the test below.
+        using var capture = NewCapture();
+        var context = capture.Prepare().Value!;
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var result = await capture.AwaitAuthorizationCodeAsync(
+            context, new Uri("https://example.com/auth"), cts.Token);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+    }
+
+    [Fact]
     public async Task AwaitAuthorizationCodeAsync_CancelledBeforeRedirect_ReturnsCancelled()
     {
         var launcher = new RecordingBrowserLauncher();

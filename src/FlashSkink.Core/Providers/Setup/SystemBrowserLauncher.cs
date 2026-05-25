@@ -16,6 +16,9 @@ internal sealed class SystemBrowserLauncher : IBrowserLauncher
     {
         ArgumentNullException.ThrowIfNull(url);
 
+        // Process.Start returns a Process? owning a native handle; dispose immediately so the
+        // handle is released deterministically rather than waiting on the finalizer
+        // (Principle 16 — dispose partially-constructed resources).
         if (OperatingSystem.IsWindows())
         {
             // UseShellExecute=true asks the Windows shell to resolve the registered handler for
@@ -24,14 +27,14 @@ internal sealed class SystemBrowserLauncher : IBrowserLauncher
             {
                 FileName = url.ToString(),
                 UseShellExecute = true,
-            });
+            })?.Dispose();
             return;
         }
 
         if (OperatingSystem.IsMacOS())
         {
             // `open <url>` on macOS launches the default browser.
-            Process.Start("open", url.ToString());
+            Process.Start("open", url.ToString())?.Dispose();
             return;
         }
 
@@ -41,7 +44,7 @@ internal sealed class SystemBrowserLauncher : IBrowserLauncher
             // distro (Ubuntu, Fedora, Arch, openSUSE, Debian). Headless CI runners without
             // xdg-open installed will surface Win32Exception — the caller maps that to
             // ErrorCode.Unknown.
-            Process.Start("xdg-open", url.ToString());
+            Process.Start("xdg-open", url.ToString())?.Dispose();
             return;
         }
 
