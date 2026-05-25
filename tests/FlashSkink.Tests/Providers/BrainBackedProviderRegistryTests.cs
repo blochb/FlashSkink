@@ -213,6 +213,19 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
     }
 
     [Fact]
+    public async Task CreateAsync_CancellationRequested_ReturnsCancelled()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var result = await BrainBackedProviderRegistry.CreateAsync(
+            _brain, _dek, NullLoggerFactory.Instance, cts.Token);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+    }
+
+    [Fact]
     public async Task CreateAsync_MixedRows_ActiveFileSystemKept_OthersSkipped()
     {
         var tail = MakeTailDir("tail-mixed");

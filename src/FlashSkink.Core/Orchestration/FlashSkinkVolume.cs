@@ -248,13 +248,19 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             // A brand-new volume has no registered tails, so no witness handshake can fire
             // and the initial state is always Normal. RegisterTailAsync will write the first
             // witness to each tail as it is registered (dev plan §3.5.2 Change 3).
-            var volume = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
+            var volumeResult = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
                 streamManager, lifecycle, keyVault, vaultPath, ownedLock!,
                 VolumeState.Normal, ct).ConfigureAwait(false);
+            if (!volumeResult.Success)
+            {
+                // BuildVolumeFromSessionAsync owns teardown on failure (session + lock are
+                // disposed inside the helper). Map the inner error code straight up.
+                return Result<VolumeCreationReceipt>.Fail(volumeResult.Error!);
+            }
 
             // Ownership of the phrase transfers to the receipt; the caller will dispose it.
             phraseOwned = false;
-            return Result<VolumeCreationReceipt>.Ok(new VolumeCreationReceipt(volume, phrase));
+            return Result<VolumeCreationReceipt>.Ok(new VolumeCreationReceipt(volumeResult.Value!, phrase));
         }
         catch (OperationCanceledException ex)
         {
@@ -385,10 +391,15 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             session = null;
             lockHeld = false;
 
-            var volume = await BuildVolumeFromSessionAsync(ownedSession, skinkRoot, options,
+            var volumeResult = await BuildVolumeFromSessionAsync(ownedSession, skinkRoot, options,
                 streamManager, lifecycle, keyVault, vaultPath, ownedLock!,
                 postHandshakeState, ct).ConfigureAwait(false);
-            return Result<FlashSkinkVolume>.Ok(volume);
+            if (!volumeResult.Success)
+            {
+                // BuildVolumeFromSessionAsync owns teardown on failure. Propagate the inner code.
+                return Result<FlashSkinkVolume>.Fail(volumeResult.Error!);
+            }
+            return Result<FlashSkinkVolume>.Ok(volumeResult.Value!);
         }
         catch (OperationCanceledException ex)
         {
@@ -1279,7 +1290,14 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         return (lf, sm, kdf, mnemonic, vault, brainFactory, migrations, lifecycle);
     }
 
-    private static async Task<FlashSkinkVolume> BuildVolumeFromSessionAsync(
+    /// <summary>
+    /// Constructs the live <see cref="FlashSkinkVolume"/> from a freshly-acquired
+    /// <see cref="VolumeSession"/> and instance lock. Returns
+    /// <see cref="Result{T}.Fail(ErrorCode, string, Exception?)"/> for any startup failure so the
+    /// caller (<see cref="CreateAsync"/> / <see cref="OpenAsync"/>) can propagate the actual
+    /// <see cref="ErrorCode"/> rather than wrap it as <see cref="ErrorCode.Unknown"/>.
+    /// </summary>
+    private static async Task<Result<FlashSkinkVolume>> BuildVolumeFromSessionAsync(
         VolumeSession session,
         string skinkRoot,
         VolumeCreationOptions options,
@@ -1335,8 +1353,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 context.Dispose();
                 await session.DisposeAsync().ConfigureAwait(false);
                 await instanceLock.DisposeAsync().ConfigureAwait(false);
-                throw new InvalidOperationException(
-                    $"Provider registry failed to initialise: {registryResult.Error!.Code}");
+                return Result<FlashSkinkVolume>.Fail(registryResult.Error!);
             }
             registry = registryResult.Value!;
         }
@@ -1382,8 +1399,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             context.Dispose();
             await session.DisposeAsync().ConfigureAwait(false);
             await instanceLock.DisposeAsync().ConfigureAwait(false);
-            throw new InvalidOperationException(
-                $"Upload queue service failed to start: {queueStartResult.Error!.Code}");
+            return Result<FlashSkinkVolume>.Fail(queueStartResult.Error!);
         }
 
         var mirrorStartResult = brainMirrorService.Start(volumeCts.Token);
@@ -1395,14 +1411,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             context.Dispose();
             await session.DisposeAsync().ConfigureAwait(false);
             await instanceLock.DisposeAsync().ConfigureAwait(false);
-            throw new InvalidOperationException(
-                $"Brain mirror service failed to start: {mirrorStartResult.Error!.Code}");
+            return Result<FlashSkinkVolume>.Fail(mirrorStartResult.Error!);
         }
 
-        return new FlashSkinkVolume(
+        return Result<FlashSkinkVolume>.Ok(new FlashSkinkVolume(
             session, context, writePipeline, readPipeline, lifecycle, keyVault, vaultPath,
             registry, netMonitor, clock, wakeupSignal, uploadQueueService, brainMirrorService,
-            volumeCts, instanceLock, witnessStore, initialState, volumeLogger);
+            volumeCts, instanceLock, witnessStore, initialState, volumeLogger));
     }
 
     /// <summary>
@@ -1508,7 +1523,12 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             // brain SELECTs are sequential and cheap (microsecond-range); deduplicating would
             // require plumbing the registry through, which is more invasive than the savings
             // justify.
+            //
+            // The locally-constructed registry owns whatever adapters it built and must be
+            // disposed at the end of the handshake; an injected registry is owned by the caller.
+            // `await using var _ = ownedRegistry;` is a no-op when ownedRegistry is null.
             IProviderRegistry registry;
+            BrainBackedProviderRegistry? ownedRegistry = null;
             if (options.ProviderRegistry is not null)
             {
                 registry = options.ProviderRegistry;
@@ -1523,7 +1543,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                     return Result<VolumeState>.Fail(registryResult.Error!);
                 }
                 registry = registryResult.Value!;
+                ownedRegistry = registryResult.Value!;
             }
+            await using var ownedRegistryDisposal = ownedRegistry;
 
             // ── Read VolumeID and active providers from the brain ────────────
             string volumeId;
