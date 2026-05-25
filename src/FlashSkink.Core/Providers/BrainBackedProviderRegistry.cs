@@ -4,6 +4,8 @@ using Dapper;
 using FlashSkink.Core.Abstractions.Providers;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Metadata;
+using FlashSkink.Core.Providers.GoogleDrive;
+using FlashSkink.Core.Providers.Setup;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -17,26 +19,32 @@ namespace FlashSkink.Core.Providers;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Per-type dispatch.</strong> <see cref="CreateAsync"/> reads each active
-/// <c>Providers</c> row and constructs an adapter based on the row's <c>ProviderType</c>:
+/// <strong>Per-type dispatch.</strong> <see cref="CreateAsync(IBrainAccess, ReadOnlyMemory{byte}, ILoggerFactory, CancellationToken)"/>
+/// reads each active <c>Providers</c> row and constructs an adapter based on the row's
+/// <c>ProviderType</c>:
 /// <list type="bullet">
 /// <item><description><c>"filesystem"</c> — parses <c>ProviderConfig</c> JSON to obtain
 /// <c>rootPath</c> and calls <c>FileSystemProvider.Create</c>.</description></item>
-/// <item><description><c>"google-drive"</c> / <c>"dropbox"</c> / <c>"onedrive"</c> — logs at
-/// <see cref="LogLevel.Warning"/> and skips. §4.3–4.5 will fill in these arms.</description></item>
+/// <item><description><c>"google-drive"</c> — decrypts the row's <c>EncryptedClientSecret</c> and
+/// <c>EncryptedToken</c> via <see cref="ProviderTokenCrypto"/>, builds the Drive SDK clients via
+/// <see cref="IGoogleDriveClientFactory"/>, and wraps them in a
+/// <c>GoogleDriveProvider</c> (§4.3).</description></item>
+/// <item><description><c>"dropbox"</c> / <c>"onedrive"</c> — logs at
+/// <see cref="LogLevel.Warning"/> and skips. §4.4–4.5 will fill in these arms.</description></item>
 /// <item><description>Any other value — logs at <see cref="LogLevel.Warning"/> and skips.</description></item>
 /// </list>
 /// A construction failure for any single row is a per-provider warning, not a fatal error on
-/// <see cref="CreateAsync"/> — the registry returns with whichever adapters successfully built.
-/// The upload orchestrator already handles "provider not registered" via
+/// <c>CreateAsync</c> — the registry returns with whichever adapters successfully built. The
+/// upload orchestrator already handles "provider not registered" via
 /// <see cref="ErrorCode.ProviderUnreachable"/> when it ticks.
 /// </para>
 /// <para>
-/// <strong>DEK lifecycle.</strong> The DEK passed to <see cref="CreateAsync"/> is used during the
-/// initial construction pass and then dropped — the registry instance never retains a reference
-/// (Principle 31). FileSystem rows do not need the DEK; cloud sections (§4.3–4.5) will decrypt
-/// the refresh token at construction and hand the cleartext to the SDK client, which then becomes
-/// the (unavoidable) holder of the cleartext token until disposal.
+/// <strong>DEK lifecycle.</strong> The DEK passed to <c>CreateAsync</c> is used during the initial
+/// construction pass and then dropped — the registry instance never retains a reference
+/// (Principle 31). FileSystem rows do not need the DEK; cloud rows decrypt their
+/// <c>EncryptedToken</c>/<c>EncryptedClientSecret</c> at construction time and hand the cleartext
+/// to the SDK clients, which then become the (unavoidable) holders of the cleartext until
+/// disposal.
 /// </para>
 /// <para>
 /// <strong>Threading.</strong> The cache is a
@@ -51,7 +59,7 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
     private readonly ILogger<BrainBackedProviderRegistry> _logger;
     private int _disposed;
 
-    /// <summary>Internal constructor — production callers use <see cref="CreateAsync"/>.</summary>
+    /// <summary>Internal constructor — production callers use <see cref="CreateAsync(IBrainAccess, ReadOnlyMemory{byte}, ILoggerFactory, CancellationToken)"/>.</summary>
     internal BrainBackedProviderRegistry(ILogger<BrainBackedProviderRegistry> logger)
     {
         _logger = logger;
@@ -60,15 +68,28 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
     /// <summary>
     /// Reads the active <c>Providers</c> rows from <paramref name="brain"/>, constructs the
     /// corresponding <see cref="IStorageProvider"/> adapters, and returns the populated registry.
+    /// Uses the production <c>GoogleDriveClientFactory</c>.
     /// </summary>
     /// <param name="brain">Brain access (Principle 36).</param>
-    /// <param name="dek">32-byte DEK. Used for cloud-row refresh-token decryption (§4.3–4.5);
-    /// in §4.1 only FileSystem rows are handled and the DEK is unused.</param>
+    /// <param name="dek">32-byte DEK. Used for cloud-row refresh-token / client-secret decryption.</param>
     /// <param name="loggerFactory">Logger factory for adapter-specific loggers.</param>
     /// <param name="ct">Cancellation token.</param>
-    public static async Task<Result<BrainBackedProviderRegistry>> CreateAsync(
+    public static Task<Result<BrainBackedProviderRegistry>> CreateAsync(
         IBrainAccess brain,
         ReadOnlyMemory<byte> dek,
+        ILoggerFactory loggerFactory,
+        CancellationToken ct)
+    {
+        return CreateAsync(brain, dek, new GoogleDriveClientFactory(), loggerFactory, ct);
+    }
+
+    /// <summary>
+    /// Test-friendly overload accepting an injected <see cref="IGoogleDriveClientFactory"/>.
+    /// </summary>
+    internal static async Task<Result<BrainBackedProviderRegistry>> CreateAsync(
+        IBrainAccess brain,
+        ReadOnlyMemory<byte> dek,
+        IGoogleDriveClientFactory googleDriveFactory,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
@@ -84,7 +105,8 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
             {
                 var enumerable = await scope.Connection.QueryAsync<ProviderRow>(
                     new CommandDefinition(
-                        "SELECT ProviderID, ProviderType, DisplayName, ProviderConfig " +
+                        "SELECT ProviderID, ProviderType, DisplayName, ClientID, " +
+                        "EncryptedToken, EncryptedClientSecret, ProviderConfig " +
                         "FROM Providers " +
                         "WHERE IsActive = 1 " +
                         "ORDER BY AddedUtc",
@@ -93,11 +115,12 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
             }
 
             // Construction runs OUTSIDE the brain scope — adapter construction can be slow for
-            // cloud providers in §4.3-4.5, and we don't want the brain gate held during HTTP.
+            // cloud providers (HTTP folder-lookup), and we don't want the brain gate held during HTTP.
             foreach (var row in rows)
             {
                 ct.ThrowIfCancellationRequested();
-                var adapter = TryBuildAdapter(row, dek, loggerFactory, logger);
+                var adapter = await TryBuildAdapterAsync(
+                    row, dek, googleDriveFactory, loggerFactory, logger, ct).ConfigureAwait(false);
                 if (adapter is not null)
                 {
                     registry._adapters[row.ProviderID] = adapter;
@@ -193,28 +216,28 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
     /// Per-row dispatch. Returns <see langword="null"/> when no adapter can be constructed; the
     /// caller logs and skips. Failures are warnings, not registry-fatal errors.
     /// </summary>
-    private static IStorageProvider? TryBuildAdapter(
+    private static async Task<IStorageProvider?> TryBuildAdapterAsync(
         ProviderRow row,
         ReadOnlyMemory<byte> dek,
+        IGoogleDriveClientFactory googleDriveFactory,
         ILoggerFactory loggerFactory,
-        ILogger<BrainBackedProviderRegistry> logger)
+        ILogger<BrainBackedProviderRegistry> logger,
+        CancellationToken ct)
     {
-        // The DEK is reserved for §4.3-4.5 cloud-provider construction; it is unused for
-        // FileSystem rows. Reference it once so it is not flagged as unused (the parameter
-        // remains in the signature for the future cloud arms).
-        _ = dek;
-
         switch (row.ProviderType)
         {
             case "filesystem":
                 return TryBuildFileSystemAdapter(row, loggerFactory, logger);
 
             case "google-drive":
+                return await TryBuildGoogleDriveAdapterAsync(
+                    row, dek, googleDriveFactory, loggerFactory, logger, ct).ConfigureAwait(false);
+
             case "dropbox":
             case "onedrive":
                 logger.LogWarning(
                     "Provider type '{ProviderType}' is not yet supported in this build; " +
-                    "row '{ProviderId}' will be unavailable until a later release. (§4.3-4.5)",
+                    "row '{ProviderId}' will be unavailable until a later release. (§4.4-4.5)",
                     row.ProviderType, row.ProviderID);
                 return null;
 
@@ -281,6 +304,86 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
         return createResult.Value!;
     }
 
+    private static async Task<IStorageProvider?> TryBuildGoogleDriveAdapterAsync(
+        ProviderRow row,
+        ReadOnlyMemory<byte> dek,
+        IGoogleDriveClientFactory googleDriveFactory,
+        ILoggerFactory loggerFactory,
+        ILogger<BrainBackedProviderRegistry> logger,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(row.ClientID))
+        {
+            logger.LogWarning(
+                "Google Drive provider row '{ProviderId}' has no ClientID; skipping.", row.ProviderID);
+            return null;
+        }
+        if (row.EncryptedToken is null || row.EncryptedToken.Length == 0)
+        {
+            logger.LogWarning(
+                "Google Drive provider row '{ProviderId}' has no EncryptedToken; skipping.", row.ProviderID);
+            return null;
+        }
+        if (row.EncryptedClientSecret is null || row.EncryptedClientSecret.Length == 0)
+        {
+            logger.LogWarning(
+                "Google Drive provider row '{ProviderId}' has no EncryptedClientSecret; skipping.", row.ProviderID);
+            return null;
+        }
+
+        if (!ProviderTokenCrypto.TryDecrypt(row.EncryptedClientSecret, dek, out var clientSecret))
+        {
+            logger.LogWarning(
+                "Google Drive provider row '{ProviderId}': could not decrypt client secret; skipping.",
+                row.ProviderID);
+            return null;
+        }
+        if (!ProviderTokenCrypto.TryDecrypt(row.EncryptedToken, dek, out var refreshToken))
+        {
+            logger.LogWarning(
+                "Google Drive provider row '{ProviderId}': could not decrypt refresh token; skipping.",
+                row.ProviderID);
+            return null;
+        }
+
+        // Parse the (required) persisted folder ID. A row with no config indicates §4.6 forgot to
+        // persist the folder id after the first setup; we still attempt construction but pass
+        // null so the setup resolves/creates the folder on this open.
+        string? folderId = null;
+        if (!string.IsNullOrWhiteSpace(row.ProviderConfig))
+        {
+            try
+            {
+                var cfg = JsonSerializer.Deserialize(
+                    row.ProviderConfig,
+                    GoogleDriveProviderConfigJsonContext.Default.GoogleDriveProviderConfig);
+                folderId = cfg?.FolderId;
+            }
+            catch (JsonException ex)
+            {
+                logger.LogWarning(ex,
+                    "Google Drive provider row '{ProviderId}' has malformed ProviderConfig; skipping.",
+                    row.ProviderID);
+                return null;
+            }
+        }
+
+        var setup = new GoogleDriveSetup(googleDriveFactory, new HttpClient(), loggerFactory);
+        var result = await setup.CreateProviderFromConfigAsync(
+            row.ProviderID, row.DisplayName, row.ClientID, clientSecret, refreshToken, folderId, ct)
+            .ConfigureAwait(false);
+
+        if (!result.Success)
+        {
+            logger.LogWarning(
+                "Google Drive provider row '{ProviderId}' failed to construct: {Code} ({Message}); skipping.",
+                row.ProviderID, result.Error!.Code, result.Error!.Message);
+            return null;
+        }
+
+        return result.Value!;
+    }
+
     /// <summary>
     /// Row shape for the brain SELECT. Property names match the SQL column aliases.
     /// </summary>
@@ -288,5 +391,8 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
         string ProviderID,
         string ProviderType,
         string DisplayName,
+        string? ClientID,
+        byte[]? EncryptedToken,
+        byte[]? EncryptedClientSecret,
         string? ProviderConfig);
 }
