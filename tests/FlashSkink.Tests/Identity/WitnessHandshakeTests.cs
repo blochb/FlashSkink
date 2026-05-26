@@ -114,9 +114,9 @@ public sealed class WitnessHandshakeTests : IDisposable
         var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
         Assert.True(readBack.Success);
         Assert.NotNull(readBack.Value);
-        Assert.Equal(5L, readBack.Value!.Value.Epoch);
-        Assert.False(readBack.Value!.Value.ConflictObserved);
-        Assert.Equal(TestVolumeId, readBack.Value!.Value.VolumeId);
+        Assert.Equal(5L, readBack.AssertValue().Value.Epoch);
+        Assert.False(readBack.AssertValue().Value.ConflictObserved);
+        Assert.Equal(TestVolumeId, readBack.AssertValue().Value.VolumeId);
     }
 
     [Fact]
@@ -136,8 +136,8 @@ public sealed class WitnessHandshakeTests : IDisposable
 
         var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
         Assert.True(readBack.Success);
-        Assert.Equal(5L, readBack.Value!.Value.Epoch);
-        Assert.False(readBack.Value!.Value.ConflictObserved);
+        Assert.Equal(5L, readBack.AssertValue().Value.Epoch);
+        Assert.False(readBack.AssertValue().Value.ConflictObserved);
     }
 
     // ── Trigger A (epoch comparison) ─────────────────────────────────────────
@@ -161,7 +161,7 @@ public sealed class WitnessHandshakeTests : IDisposable
         // After a conflict-detecting run, the rewritten witness has ConflictObserved=true.
         var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
         Assert.True(readBack.Success);
-        Assert.True(readBack.Value!.Value.ConflictObserved);
+        Assert.True(readBack.AssertValue().Value.ConflictObserved);
     }
 
     [Fact]
@@ -229,7 +229,7 @@ public sealed class WitnessHandshakeTests : IDisposable
         foreach (var tail in new[] { tail1, tail2 })
         {
             var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
-            Assert.True(readBack.Value!.Value.ConflictObserved);
+            Assert.True(readBack.AssertValue().Value.ConflictObserved);
         }
     }
 
@@ -249,8 +249,8 @@ public sealed class WitnessHandshakeTests : IDisposable
         Assert.Equal(ConflictTrigger.None, result.Value.Trigger);
 
         var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
-        Assert.True(readBack.Value!.Value.ConflictObserved);
-        Assert.Equal(5L, readBack.Value!.Value.Epoch);
+        Assert.True(readBack.AssertValue().Value.ConflictObserved);
+        Assert.Equal(5L, readBack.AssertValue().Value.Epoch);
     }
 
     [Fact]
@@ -402,7 +402,7 @@ public sealed class WitnessHandshakeTests : IDisposable
 
         // The rewritten witness now carries the handshake's volumeId.
         var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
-        Assert.Equal(TestVolumeId, readBack.Value!.Value.VolumeId);
+        Assert.Equal(TestVolumeId, readBack.AssertValue().Value.VolumeId);
     }
 
     // ── Cancellation ─────────────────────────────────────────────────────────
@@ -420,6 +420,6 @@ public sealed class WitnessHandshakeTests : IDisposable
             alreadyFenced: false, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 }

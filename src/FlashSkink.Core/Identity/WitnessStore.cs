@@ -101,7 +101,7 @@ internal sealed class WitnessStore
             var listResult = await provider.ListAsync(WitnessRemotePrefix, ct).ConfigureAwait(false);
             if (!listResult.Success)
             {
-                if (OfflineErrorCodes.Contains(listResult.Error!.Code))
+                if (OfflineErrorCodes.Contains(listResult.Error.Code))
                 {
                     _logger.LogDebug(
                         "Tail {ProviderId} unavailable for witness read ({Code}); treating as no information.",
@@ -111,7 +111,7 @@ internal sealed class WitnessStore
                 return Result<WitnessPayload?>.Fail(listResult.Error);
             }
 
-            var remoteIds = listResult.Value!;
+            var remoteIds = listResult.Value;
             if (remoteIds.Count == 0)
             {
                 // No witness file on this tail — first use, or witness was deleted. Either
@@ -137,7 +137,7 @@ internal sealed class WitnessStore
             var dlResult = await provider.DownloadAsync(remoteId, ct).ConfigureAwait(false);
             if (!dlResult.Success)
             {
-                if (OfflineErrorCodes.Contains(dlResult.Error!.Code))
+                if (OfflineErrorCodes.Contains(dlResult.Error.Code))
                 {
                     _logger.LogDebug(
                         "Tail {ProviderId} unavailable for witness download ({Code}); treating as no information.",
@@ -154,7 +154,7 @@ internal sealed class WitnessStore
             }
 
             byte[] envelope;
-            await using (var stream = dlResult.Value!)
+            await using (var stream = dlResult.Value)
             {
                 using var ms = new MemoryStream();
                 await stream.CopyToAsync(ms, ct).ConfigureAwait(false);
@@ -241,7 +241,7 @@ internal sealed class WitnessStore
                 WitnessRemotePrefix, CancellationToken.None).ConfigureAwait(false);
             if (listResult.Success)
             {
-                foreach (var existingId in listResult.Value!)
+                foreach (var existingId in listResult.Value)
                 {
                     var deleteResult = await provider.DeleteAsync(
                         existingId, CancellationToken.None).ConfigureAwait(false);
@@ -249,7 +249,7 @@ internal sealed class WitnessStore
                     {
                         _logger.LogDebug(
                             "Best-effort delete of existing witness {RemoteId} on tail {ProviderId} failed ({Code}); subsequent upload may fail if the destination still exists.",
-                            existingId, provider.ProviderID, deleteResult.Error!.Code);
+                            existingId, provider.ProviderID, deleteResult.Error.Code);
                     }
                 }
             }
@@ -257,7 +257,7 @@ internal sealed class WitnessStore
             {
                 _logger.LogDebug(
                     "Pre-write list of witness prefix on tail {ProviderId} failed ({Code}); subsequent upload may fail if a stale witness still exists.",
-                    provider.ProviderID, listResult.Error!.Code);
+                    provider.ProviderID, listResult.Error.Code);
             }
 
             // Step 2 — encrypt the payload into the envelope. Synchronous, no I/O.
@@ -271,7 +271,7 @@ internal sealed class WitnessStore
             {
                 _logger.LogWarning(
                     "Witness BeginUpload on tail {ProviderId} failed: {Code}.",
-                    provider.ProviderID, beginResult.Error!.Code);
+                    provider.ProviderID, beginResult.Error.Code);
                 return Result.Fail(new ErrorContext
                 {
                     Code = ErrorCode.StagingFailed,
@@ -283,7 +283,7 @@ internal sealed class WitnessStore
                     },
                 });
             }
-            session = beginResult.Value!;
+            session = beginResult.Value;
 
             // Step 4 — upload the envelope as a single range (it fits in well under the
             // 4 MiB range size). Failure here triggers the finally-block abort below.
@@ -293,7 +293,7 @@ internal sealed class WitnessStore
             {
                 _logger.LogWarning(
                     "Witness UploadRange on tail {ProviderId} failed: {Code}.",
-                    provider.ProviderID, rangeResult.Error!.Code);
+                    provider.ProviderID, rangeResult.Error.Code);
                 return Result.Fail(new ErrorContext
                 {
                     Code = ErrorCode.StagingFailed,
@@ -314,7 +314,7 @@ internal sealed class WitnessStore
             {
                 _logger.LogWarning(
                     "Witness FinaliseUpload on tail {ProviderId} failed: {Code}.",
-                    provider.ProviderID, finResult.Error!.Code);
+                    provider.ProviderID, finResult.Error.Code);
                 return Result.Fail(new ErrorContext
                 {
                     Code = ErrorCode.StagingFailed,
@@ -357,7 +357,7 @@ internal sealed class WitnessStore
                     {
                         _logger.LogDebug(
                             "Best-effort abort of orphaned witness session on tail {ProviderId} did not succeed ({Code}).",
-                            provider.ProviderID, abortResult.Error!.Code);
+                            provider.ProviderID, abortResult.Error.Code);
                     }
                 }
                 catch (Exception abortEx)

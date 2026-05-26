@@ -29,7 +29,7 @@ public sealed class GoogleDriveProviderTests
         var bundleResult = factory.Create("cid", "csec", "rtok", NullLoggerFactory.Instance);
         Assert.True(bundleResult.Success);
         var provider = new GoogleDriveProvider(
-            "drive-1", "Google Drive", bundleResult.Value!, FolderId,
+            "drive-1", "Google Drive", bundleResult.AssertValue(), FolderId,
             NullLoggerFactory.Instance.CreateLogger<GoogleDriveProvider>());
         return (provider, factory);
     }
@@ -57,10 +57,10 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.BeginUploadAsync("blob.bin", 1024, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(SessionUri, result.Value!.SessionUri);
-        Assert.Equal(1024, result.Value!.TotalBytes);
-        Assert.Equal(0, result.Value!.BytesUploaded);
-        Assert.True(result.Value!.ExpiresAt > DateTimeOffset.UtcNow.AddDays(6));
+        Assert.Equal(SessionUri, result.AssertValue().SessionUri);
+        Assert.Equal(1024, result.AssertValue().TotalBytes);
+        Assert.Equal(0, result.AssertValue().BytesUploaded);
+        Assert.True(result.AssertValue().ExpiresAt > DateTimeOffset.UtcNow.AddDays(6));
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.BeginUploadAsync("blob.bin", 1024, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderApiChanged, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderApiChanged, result.AssertError().Code);
     }
 
     [Fact]
@@ -147,7 +147,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.BeginUploadAsync("blob.bin", 1024, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderQuotaExceeded, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderQuotaExceeded, result.AssertError().Code);
     }
 
     [Fact]
@@ -163,7 +163,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.BeginUploadAsync("blob.bin", 1024, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -178,7 +178,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.BeginUploadAsync("blob.bin", 1024, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -189,7 +189,7 @@ public sealed class GoogleDriveProviderTests
 
         var result = await provider.BeginUploadAsync("", 1024, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -200,7 +200,7 @@ public sealed class GoogleDriveProviderTests
 
         var result = await provider.BeginUploadAsync("blob.bin", -1, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── UploadRangeAsync ──────────────────────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.UploadRangeAsync(SessionAt(0, 1024), 0, new byte[100], CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]
@@ -268,7 +268,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.UploadRangeAsync(SessionAt(0, 1024), 0, new byte[100], CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]
@@ -283,7 +283,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.UploadRangeAsync(SessionAt(0, 1024), 0, new byte[100], CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]
@@ -298,7 +298,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.UploadRangeAsync(SessionAt(0, 1024), 0, new byte[100], CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadFailed, result.AssertError().Code);
         Assert.NotNull(result.Error.Metadata);
         Assert.Contains("responseBody", result.Error.Metadata!.Keys);
     }
@@ -349,7 +349,7 @@ public sealed class GoogleDriveProviderTests
             SessionAt(0, 1024), 1000, new byte[100], CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── GetUploadedBytesAsync ─────────────────────────────────────────────────────────────────
@@ -411,7 +411,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.GetUploadedBytesAsync(SessionAt(0, 8192), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     // ── FinaliseUploadAsync ───────────────────────────────────────────────────────────────────
@@ -443,7 +443,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.FinaliseUploadAsync(SessionAt(1024, 1024), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -458,7 +458,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.FinaliseUploadAsync(SessionAt(1024, 1024), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderApiChanged, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderApiChanged, result.AssertError().Code);
     }
 
     // ── AbortUploadAsync ──────────────────────────────────────────────────────────────────────
@@ -519,7 +519,7 @@ public sealed class GoogleDriveProviderTests
 
         Assert.True(result.Success);
         using var ms = new MemoryStream();
-        await result.Value!.CopyToAsync(ms);
+        await result.AssertValue().CopyToAsync(ms);
         Assert.Equal(body, ms.ToArray());
         result.Value.Dispose();
     }
@@ -537,7 +537,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.DownloadAsync("rid-1", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobNotFound, result.AssertError().Code);
     }
 
     [Fact]
@@ -548,7 +548,7 @@ public sealed class GoogleDriveProviderTests
 
         var result = await provider.DownloadAsync("", CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── DeleteAsync ───────────────────────────────────────────────────────────────────────────
@@ -639,7 +639,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.ListAsync("_brain/", CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(2, result.AssertValue().Count);
         Assert.Contains("id-a", result.Value);
         Assert.Contains("id-b", result.Value);
         Assert.DoesNotContain("id-c", result.Value);
@@ -667,7 +667,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.ListAsync("", CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(2, result.AssertValue().Count);
     }
 
     // ── CheckHealthAsync ──────────────────────────────────────────────────────────────────────
@@ -685,7 +685,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.CheckHealthAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(ProviderHealthStatus.Healthy, result.Value!.Status);
+        Assert.Equal(ProviderHealthStatus.Healthy, result.AssertValue().Status);
         Assert.NotNull(result.Value.RoundTripLatency);
     }
 
@@ -702,7 +702,7 @@ public sealed class GoogleDriveProviderTests
         var result = await provider.CheckHealthAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(ProviderHealthStatus.Unreachable, result.Value!.Status);
+        Assert.Equal(ProviderHealthStatus.Unreachable, result.AssertValue().Status);
     }
 
     // ── Used / Quota ──────────────────────────────────────────────────────────────────────────

@@ -44,7 +44,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(32, result.Value!.Length);
+        Assert.Equal(32, result.AssertValue().Length);
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.False(result.Value!.All(b => b == 0));
+        Assert.False(result.AssertValue().All(b => b == 0));
     }
 
     [Fact]
@@ -66,7 +66,7 @@ public class KeyVaultTests : IDisposable
 
         Assert.True(r1.Success);
         Assert.True(r2.Success);
-        Assert.False(r1.Value!.SequenceEqual(r2.Value!));
+        Assert.False(r1.AssertValue().SequenceEqual(r2.AssertValue()));
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.CreateAsync(VaultPath(), _password, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── VaultFile magic / version ─────────────────────────────────────────────
@@ -123,12 +123,12 @@ public class KeyVaultTests : IDisposable
     public async Task UnlockAsync_WithCorrectPassword_ReturnsOriginalDek()
     {
         var createResult = await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
-        var expectedDek = createResult.Value!;
+        var expectedDek = createResult.AssertValue();
 
         var unlockResult = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.True(unlockResult.Success);
-        Assert.True(expectedDek.SequenceEqual(unlockResult.Value!));
+        Assert.True(expectedDek.SequenceEqual(unlockResult.AssertValue()));
     }
 
     [Fact]
@@ -140,7 +140,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.UnlockAsync(VaultPath(), wrong, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidPassword, result.AssertError().Code);
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeNotFound, result.AssertError().Code);
     }
 
     [Fact]
@@ -163,7 +163,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -177,7 +177,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -188,7 +188,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     // ── ChangePasswordAsync ───────────────────────────────────────────────────
@@ -197,7 +197,7 @@ public class KeyVaultTests : IDisposable
     public async Task ChangePasswordAsync_ThenUnlock_WithNewPassword_Succeeds()
     {
         var createResult = await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
-        var originalDek = createResult.Value!;
+        var originalDek = createResult.AssertValue();
         ReadOnlyMemory<byte> newPassword = Encoding.UTF8.GetBytes("new-super-secret");
 
         var changeResult = await _sut.ChangePasswordAsync(VaultPath(), _password, newPassword, CancellationToken.None);
@@ -206,7 +206,7 @@ public class KeyVaultTests : IDisposable
 
         var unlockResult = await _sut.UnlockAsync(VaultPath(), newPassword, CancellationToken.None);
         Assert.True(unlockResult.Success);
-        Assert.True(originalDek.SequenceEqual(unlockResult.Value!));
+        Assert.True(originalDek.SequenceEqual(unlockResult.AssertValue()));
     }
 
     [Fact]
@@ -219,7 +219,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.ChangePasswordAsync(VaultPath(), wrong, newPassword, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidPassword, result.AssertError().Code);
     }
 
     [Fact]
@@ -246,7 +246,7 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidPassword, result.AssertError().Code);
     }
 
     // ── UnlockFromMnemonicAsync failure paths ─────────────────────────────────
@@ -256,35 +256,35 @@ public class KeyVaultTests : IDisposable
     {
         await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
         var garbage = new[] { "notaword", "alsonotaword", "definitelynot" };
-        using var phrase = RecoveryPhrase.FromUserInput(garbage).Value!;
+        using var phrase = RecoveryPhrase.FromUserInput(garbage).AssertValue();
 
         var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), phrase, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidMnemonic, result.AssertError().Code);
     }
 
     [Fact]
     public async Task UnlockFromMnemonicAsync_VaultNotFound_ReturnsVolumeNotFound()
     {
-        using var phrase = _mnemonic.Generate().Value!;
+        using var phrase = _mnemonic.Generate().AssertValue();
 
         var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), phrase, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeNotFound, result.AssertError().Code);
     }
 
     [Fact]
     public async Task UnlockFromMnemonicAsync_WrongMnemonic_ReturnsInvalidPassword()
     {
         await _sut.CreateAsync(VaultPath(), _password, CancellationToken.None);
-        using var wrongPhrase = _mnemonic.Generate().Value!; // random mnemonic ≠ vault KEK
+        using var wrongPhrase = _mnemonic.Generate().AssertValue(); // random mnemonic ≠ vault KEK
 
         var result = await _sut.UnlockFromMnemonicAsync(VaultPath(), wrongPhrase, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidPassword, result.AssertError().Code);
     }
 
     [Fact]
@@ -297,22 +297,22 @@ public class KeyVaultTests : IDisposable
         // in §1.2 has diverged between the two code paths.
         var phraseResult = _mnemonic.Generate();
         Assert.True(phraseResult.Success);
-        using var phrase = phraseResult.Value!;
+        using var phrase = phraseResult.AssertValue();
 
         var seedResult = _mnemonic.ToSeed(phrase);
         Assert.True(seedResult.Success);
-        var seed = seedResult.Value!;
+        var seed = seedResult.AssertValue();
 
         // Create the vault using the seed bytes as the password — this locks the DEK under
         // the same KEK that UnlockFromMnemonicAsync will derive from the same phrase.
         var createResult = await _sut.CreateAsync(VaultPath(), seed, CancellationToken.None);
         Assert.True(createResult.Success);
-        var expectedDek = createResult.Value!;
+        var expectedDek = createResult.AssertValue();
 
         var unlockResult = await _sut.UnlockFromMnemonicAsync(VaultPath(), phrase, CancellationToken.None);
 
         Assert.True(unlockResult.Success);
-        var actualDek = unlockResult.Value!;
+        var actualDek = unlockResult.AssertValue();
         Assert.Equal(expectedDek, actualDek);
 
         CryptographicOperations.ZeroMemory(expectedDek);
@@ -337,6 +337,6 @@ public class KeyVaultTests : IDisposable
         var result = await _sut.UnlockAsync(VaultPath(), _password, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidPassword, result.AssertError().Code);
     }
 }

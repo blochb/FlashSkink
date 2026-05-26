@@ -102,8 +102,8 @@ public sealed class WitnessEdgeCaseTests : IDisposable
         var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
         Assert.True(readBack.Success);
         Assert.NotNull(readBack.Value);
-        Assert.Equal(5L, readBack.Value!.Value.Epoch);
-        Assert.False(readBack.Value!.Value.ConflictObserved);
+        Assert.Equal(5L, readBack.AssertValue().Value.Epoch);
+        Assert.False(readBack.AssertValue().Value.ConflictObserved);
     }
 
     // ── Meta-plan item 14 — manual deletion ──────────────────────────────────
@@ -129,8 +129,8 @@ public sealed class WitnessEdgeCaseTests : IDisposable
         var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
         Assert.True(readBack.Success);
         Assert.NotNull(readBack.Value);
-        Assert.Equal(5L, readBack.Value!.Value.Epoch);
-        Assert.False(readBack.Value!.Value.ConflictObserved);
+        Assert.Equal(5L, readBack.AssertValue().Value.Epoch);
+        Assert.False(readBack.AssertValue().Value.ConflictObserved);
     }
 
     // ── Meta-plan item 15 — same recovery phrase, separate init ──────────────
@@ -160,7 +160,7 @@ public sealed class WitnessEdgeCaseTests : IDisposable
         // The witness on the shared tail now carries our VolumeId.
         var readBack = await _store.TryReadAsync(tail, _dek, CancellationToken.None);
         Assert.True(readBack.Success);
-        Assert.Equal(TestVolumeId, readBack.Value!.Value.VolumeId);
+        Assert.Equal(TestVolumeId, readBack.AssertValue().Value.VolumeId);
     }
 
     // ── Meta-plan item 16 — restore from image ───────────────────────────────

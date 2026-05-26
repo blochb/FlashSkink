@@ -36,7 +36,7 @@ public sealed class DropboxProviderTests
         var bundleResult = factory.Create("app-key", "app-secret", "rt-xyz", NullLoggerFactory.Instance);
         Assert.True(bundleResult.Success);
         var provider = new DropboxProvider(
-            "dbx-1", "Dropbox", bundleResult.Value!, rootPath,
+            "dbx-1", "Dropbox", bundleResult.AssertValue(), rootPath,
             NullLoggerFactory.Instance.CreateLogger<DropboxProvider>());
         return (provider, factory);
     }
@@ -109,12 +109,12 @@ public sealed class DropboxProviderTests
         var result = await provider.BeginUploadAsync("blob.bin", 1024, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.True(DropboxSessionUri.TryDecode(result.Value!.SessionUri, out var decoded));
+        Assert.True(DropboxSessionUri.TryDecode(result.AssertValue().SessionUri, out var decoded));
         Assert.Equal(SessionId, decoded.SessionId);
         Assert.Equal($"{RootPath}/blob.bin", decoded.RemotePath);
-        Assert.Equal(1024, result.Value!.TotalBytes);
-        Assert.Equal(0, result.Value!.BytesUploaded);
-        Assert.True(result.Value!.ExpiresAt > DateTimeOffset.UtcNow.AddHours(47));
+        Assert.Equal(1024, result.AssertValue().TotalBytes);
+        Assert.Equal(0, result.AssertValue().BytesUploaded);
+        Assert.True(result.AssertValue().ExpiresAt > DateTimeOffset.UtcNow.AddHours(47));
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.BeginUploadAsync("/blob.bin", 100, CancellationToken.None);
         Assert.True(result.Success);
-        Assert.True(DropboxSessionUri.TryDecode(result.Value!.SessionUri, out var decoded));
+        Assert.True(DropboxSessionUri.TryDecode(result.AssertValue().SessionUri, out var decoded));
         Assert.Equal($"{RootPath}/blob.bin", decoded.RemotePath);
     }
 
@@ -141,7 +141,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.BeginUploadAsync("_brain/2026-05.bin", 0, CancellationToken.None);
         Assert.True(result.Success);
-        Assert.True(DropboxSessionUri.TryDecode(result.Value!.SessionUri, out var decoded));
+        Assert.True(DropboxSessionUri.TryDecode(result.AssertValue().SessionUri, out var decoded));
         Assert.Equal($"{RootPath}/_brain/2026-05.bin", decoded.RemotePath);
     }
 
@@ -155,7 +155,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.BeginUploadAsync("blob.bin", 100, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.TokenRefreshFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.TokenRefreshFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.BeginUploadAsync("blob.bin", 100, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
     }
 
     [Fact]
@@ -181,7 +181,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.BeginUploadAsync("blob.bin", 100, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
     }
 
     [Fact]
@@ -194,7 +194,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.BeginUploadAsync("blob.bin", 100, cts.Token);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Theory]
@@ -206,7 +206,7 @@ public sealed class DropboxProviderTests
         await using var _disp = provider;
         var result = await provider.BeginUploadAsync(remoteName, totalBytes, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── GetUploadedBytesAsync ─────────────────────────────────────────────────────────────────
@@ -235,7 +235,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, "/p/x", 0, 1);
         var result = await provider.GetUploadedBytesAsync(session, cts.Token);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── UploadRangeAsync ──────────────────────────────────────────────────────────────────────
@@ -265,7 +265,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 100, 1024);
         var result = await provider.UploadRangeAsync(session, 100, new byte[256], CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]
@@ -279,7 +279,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]
@@ -293,7 +293,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]
@@ -307,7 +307,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.TokenRefreshFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.TokenRefreshFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -321,7 +321,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
     }
 
     [Fact]
@@ -335,7 +335,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderRateLimited, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderRateLimited, result.AssertError().Code);
     }
 
     [Fact]
@@ -349,7 +349,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
     }
 
     [Fact]
@@ -363,7 +363,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.UploadRangeAsync(session, 0, new byte[10], cts.Token);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -380,7 +380,7 @@ public sealed class DropboxProviderTests
         };
         var result = await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Theory]
@@ -395,7 +395,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.UploadRangeAsync(session, offset, data, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── FinaliseUploadAsync ───────────────────────────────────────────────────────────────────
@@ -426,7 +426,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 1024, 1024);
         var result = await provider.FinaliseUploadAsync(session, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]
@@ -442,7 +442,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 1024, 1024);
         var result = await provider.FinaliseUploadAsync(session, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -456,7 +456,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 1024, 1024);
         var result = await provider.FinaliseUploadAsync(session, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.TokenRefreshFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.TokenRefreshFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -473,7 +473,7 @@ public sealed class DropboxProviderTests
         };
         var result = await provider.FinaliseUploadAsync(session, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]
@@ -487,7 +487,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 1, 1);
         var result = await provider.FinaliseUploadAsync(session, cts.Token);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── AbortUploadAsync ──────────────────────────────────────────────────────────────────────
@@ -515,7 +515,7 @@ public sealed class DropboxProviderTests
         var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
         var result = await provider.AbortUploadAsync(session, cts.Token);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── DownloadAsync ─────────────────────────────────────────────────────────────────────────
@@ -532,9 +532,9 @@ public sealed class DropboxProviderTests
         var result = await provider.DownloadAsync(FileId, CancellationToken.None);
         Assert.True(result.Success);
         using var ms = new MemoryStream();
-        await result.Value!.CopyToAsync(ms);
+        await result.AssertValue().CopyToAsync(ms);
         Assert.Equal(body, ms.ToArray());
-        result.Value!.Dispose();
+        result.AssertValue().Dispose();
     }
 
     [Fact]
@@ -547,7 +547,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.DownloadAsync(FileId, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobNotFound, result.AssertError().Code);
     }
 
     [Fact]
@@ -560,7 +560,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.DownloadAsync(FileId, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.TokenRefreshFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.TokenRefreshFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -570,7 +570,7 @@ public sealed class DropboxProviderTests
         await using var _disp = provider;
         var result = await provider.DownloadAsync("", CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── DeleteAsync ───────────────────────────────────────────────────────────────────────────
@@ -609,7 +609,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.DeleteAsync(FileId, CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.TokenRefreshFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.TokenRefreshFailed, result.AssertError().Code);
     }
 
     // ── ExistsAsync ───────────────────────────────────────────────────────────────────────────
@@ -657,7 +657,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.ListAsync(string.Empty, CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(2, result.AssertValue().Count);
         Assert.Contains("id:a1", result.Value);
         Assert.Contains("id:a2", result.Value);
     }
@@ -677,8 +677,8 @@ public sealed class DropboxProviderTests
 
         var result = await provider.ListAsync("/_brain", CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Single(result.Value!);
-        Assert.Equal("id:a2", result.Value![0]);
+        Assert.Single(result.AssertValue());
+        Assert.Equal("id:a2", result.AssertValue()[0]);
     }
 
     [Fact]
@@ -691,7 +691,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.ListAsync(string.Empty, CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Empty(result.Value!);
+        Assert.Empty(result.AssertValue());
     }
 
     [Fact]
@@ -709,7 +709,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.ListAsync(string.Empty, CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(2, result.AssertValue().Count);
         Assert.Contains("id:p1", result.Value);
         Assert.Contains("id:p2", result.Value);
     }
@@ -726,8 +726,8 @@ public sealed class DropboxProviderTests
 
         var result = await provider.CheckHealthAsync(CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Equal(ProviderHealthStatus.Healthy, result.Value!.Status);
-        Assert.NotNull(result.Value!.RoundTripLatency);
+        Assert.Equal(ProviderHealthStatus.Healthy, result.AssertValue().Status);
+        Assert.NotNull(result.AssertValue().RoundTripLatency);
     }
 
     [Fact]
@@ -740,7 +740,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.CheckHealthAsync(CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Equal(ProviderHealthStatus.AuthFailed, result.Value!.Status);
+        Assert.Equal(ProviderHealthStatus.AuthFailed, result.AssertValue().Status);
     }
 
     [Fact]
@@ -753,7 +753,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.CheckHealthAsync(CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Equal(ProviderHealthStatus.Unreachable, result.Value!.Status);
+        Assert.Equal(ProviderHealthStatus.Unreachable, result.AssertValue().Status);
     }
 
     [Fact]
@@ -766,7 +766,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.CheckHealthAsync(CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Equal(ProviderHealthStatus.Unreachable, result.Value!.Status);
+        Assert.Equal(ProviderHealthStatus.Unreachable, result.AssertValue().Status);
     }
 
     // ── GetUsedBytesAsync / GetQuotaBytesAsync ────────────────────────────────────────────────
@@ -807,7 +807,7 @@ public sealed class DropboxProviderTests
 
         var result = await provider.GetQuotaBytesAsync(CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.TokenRefreshFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.TokenRefreshFailed, result.AssertError().Code);
     }
 
     // ── DisposeAsync ──────────────────────────────────────────────────────────────────────────

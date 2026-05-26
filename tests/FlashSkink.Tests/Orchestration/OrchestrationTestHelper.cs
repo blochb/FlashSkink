@@ -40,10 +40,10 @@ internal static class OrchestrationTestHelper
         if (!unlockResult.Success)
         {
             throw new InvalidOperationException(
-                $"Test brain unlock failed: {unlockResult.Error!.Message}");
+                $"Test brain unlock failed: {unlockResult.AssertError().Message}");
         }
 
-        var dek = unlockResult.Value!;
+        var dek = unlockResult.AssertValue();
         var brainResult = await brainFactory.CreateAsync(
             brainPath, dek, CancellationToken.None);
         CryptographicOperations.ZeroMemory(dek);
@@ -51,10 +51,10 @@ internal static class OrchestrationTestHelper
         if (!brainResult.Success)
         {
             throw new InvalidOperationException(
-                $"Test brain open failed: {brainResult.Error!.Message}");
+                $"Test brain open failed: {brainResult.AssertError().Message}");
         }
 
-        return brainResult.Value!;
+        return brainResult.AssertValue();
     }
 
     /// <summary>Reads a single <c>Settings</c> row by key, or <see langword="null"/> if absent.</summary>

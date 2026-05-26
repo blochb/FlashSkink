@@ -46,8 +46,8 @@ public class ActivityLogRepositoryTests : IAsyncLifetime
         var result = await _sut.ListRecentAsync(10, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Single(result.Value!);
-        Assert.Equal(entry.EntryId, result.Value![0].EntryId);
+        Assert.Single(result.AssertValue());
+        Assert.Equal(entry.EntryId, result.AssertValue()[0].EntryId);
         Assert.Equal(entry.Category, result.Value[0].Category);
         Assert.Equal(entry.Summary, result.Value[0].Summary);
     }
@@ -65,7 +65,7 @@ public class ActivityLogRepositoryTests : IAsyncLifetime
         var result = await _sut.ListRecentAsync(3, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(3, result.Value!.Count);
+        Assert.Equal(3, result.AssertValue().Count);
     }
 
     // ── ListByCategoryAsync ───────────────────────────────────────────────────
@@ -80,7 +80,7 @@ public class ActivityLogRepositoryTests : IAsyncLifetime
         var result = await _sut.ListByCategoryAsync("WRITE", 10, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(2, result.AssertValue().Count);
         Assert.All(result.Value, e => Assert.Equal("WRITE", e.Category));
     }
 }

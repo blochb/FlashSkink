@@ -56,8 +56,8 @@ public sealed class FileSystemProviderSetupTests : IDisposable
         var result = await _sut.ValidatePathAsync(tail, _skinkRoot, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.True(result.Value!.IsValid);
-        Assert.Null(result.Value!.Reason);
+        Assert.True(result.AssertValue().IsValid);
+        Assert.Null(result.AssertValue().Reason);
     }
 
     [Fact]
@@ -68,8 +68,8 @@ public sealed class FileSystemProviderSetupTests : IDisposable
         var result = await _sut.ValidatePathAsync(missing, _skinkRoot, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.False(result.Value!.IsValid);
-        Assert.Contains("does not exist", result.Value!.Reason!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(result.AssertValue().IsValid);
+        Assert.Contains("does not exist", result.AssertValue().Reason!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -78,8 +78,8 @@ public sealed class FileSystemProviderSetupTests : IDisposable
         var result = await _sut.ValidatePathAsync(string.Empty, _skinkRoot, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.False(result.Value!.IsValid);
-        Assert.Contains("empty", result.Value!.Reason!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(result.AssertValue().IsValid);
+        Assert.Contains("empty", result.AssertValue().Reason!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -88,8 +88,8 @@ public sealed class FileSystemProviderSetupTests : IDisposable
         var result = await _sut.ValidatePathAsync(_skinkRoot, _skinkRoot, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.False(result.Value!.IsValid);
-        Assert.Contains("skink", result.Value!.Reason!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(result.AssertValue().IsValid);
+        Assert.Contains("skink", result.AssertValue().Reason!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -101,8 +101,8 @@ public sealed class FileSystemProviderSetupTests : IDisposable
         var result = await _sut.ValidatePathAsync(inside, _skinkRoot, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.False(result.Value!.IsValid);
-        Assert.Contains("inside the skink", result.Value!.Reason!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(result.AssertValue().IsValid);
+        Assert.Contains("inside the skink", result.AssertValue().Reason!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -113,7 +113,7 @@ public sealed class FileSystemProviderSetupTests : IDisposable
         var result = await _sut.ValidatePathAsync(tail, _skinkRoot, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.True(result.Value!.IsValid);
+        Assert.True(result.AssertValue().IsValid);
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public sealed class FileSystemProviderSetupTests : IDisposable
         var result = await _sut.ValidatePathAsync(sibling, _skinkRoot, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.True(result.Value!.IsValid);
+        Assert.True(result.AssertValue().IsValid);
     }
 
     [Fact]
@@ -139,7 +139,7 @@ public sealed class FileSystemProviderSetupTests : IDisposable
         var result = await _sut.ValidatePathAsync(_skinkRoot, _skinkRoot, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── OAuth methods ─────────────────────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ public sealed class FileSystemProviderSetupTests : IDisposable
             CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -169,7 +169,7 @@ public sealed class FileSystemProviderSetupTests : IDisposable
             CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── CreateProviderAsync ───────────────────────────────────────────────────────────────────
@@ -183,7 +183,7 @@ public sealed class FileSystemProviderSetupTests : IDisposable
             new ReadOnlyMemory<byte>(new byte[32]), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -195,7 +195,7 @@ public sealed class FileSystemProviderSetupTests : IDisposable
             new ReadOnlyMemory<byte>(new byte[32]), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -207,7 +207,7 @@ public sealed class FileSystemProviderSetupTests : IDisposable
             new ReadOnlyMemory<byte>(new byte[32]), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -223,9 +223,9 @@ public sealed class FileSystemProviderSetupTests : IDisposable
 
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
-        Assert.Equal("p-created", result.Value!.ProviderID);
-        Assert.Equal("Created Tail", result.Value!.DisplayName);
-        Assert.Equal("filesystem", result.Value!.ProviderType);
+        Assert.Equal("p-created", result.AssertValue().ProviderID);
+        Assert.Equal("Created Tail", result.AssertValue().DisplayName);
+        Assert.Equal("filesystem", result.AssertValue().ProviderType);
     }
 
     [Fact]
@@ -240,6 +240,6 @@ public sealed class FileSystemProviderSetupTests : IDisposable
             new ReadOnlyMemory<byte>(new byte[32]), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 }

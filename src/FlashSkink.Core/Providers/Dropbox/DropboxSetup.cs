@@ -337,9 +337,9 @@ internal sealed class DropboxSetup : IProviderSetup, IDisposable
         var bundleResult = _clientFactory.Create(appKey, appSecret, refreshToken, _loggerFactory);
         if (!bundleResult.Success)
         {
-            return Result<IStorageProvider>.Fail(bundleResult.Error!);
+            return Result<IStorageProvider>.Fail(bundleResult.Error);
         }
-        var bundle = bundleResult.Value!;
+        var bundle = bundleResult.Value;
 
         try
         {

@@ -58,7 +58,7 @@ public class VolumeSessionTests : IDisposable
         await SeedVaultAsync();
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
         Assert.True(result.Success);
-        var session = result.Value!;
+        var session = result.AssertValue();
         var dek = session.Dek; // holds reference to the underlying array
 
         await session.DisposeAsync();
@@ -72,7 +72,7 @@ public class VolumeSessionTests : IDisposable
         await SeedVaultAsync();
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
         Assert.True(result.Success);
-        var session = result.Value!;
+        var session = result.AssertValue();
         await session.DisposeAsync();
 
         Assert.Throws<ObjectDisposedException>(() => _ = session.Dek);
@@ -84,7 +84,7 @@ public class VolumeSessionTests : IDisposable
         await SeedVaultAsync();
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
         Assert.True(result.Success);
-        var session = result.Value!;
+        var session = result.AssertValue();
 
         await session.DisposeAsync();
         var ex = await Record.ExceptionAsync(() => session.DisposeAsync().AsTask());
@@ -102,7 +102,7 @@ public class VolumeSessionTests : IDisposable
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(32, result.Value!.Dek.Length);
+        Assert.Equal(32, result.AssertValue().Dek.Length);
         await result.Value.DisposeAsync();
     }
 
@@ -114,10 +114,10 @@ public class VolumeSessionTests : IDisposable
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.NotNull(result.Value!.Brain);
+        Assert.NotNull(result.AssertValue().Brain);
         // Verify the brain is usable by acquiring and releasing a scope and querying the
         // underlying connection state.
-        using (var scope = await result.Value!.Brain!.LockAsync(CancellationToken.None))
+        using (var scope = await result.AssertValue().Brain!.LockAsync(CancellationToken.None))
         {
             Assert.Equal(ConnectionState.Open, scope.Connection.State);
         }
@@ -133,7 +133,7 @@ public class VolumeSessionTests : IDisposable
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), wrong, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidPassword, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidPassword, result.AssertError().Code);
     }
 
     [Fact]
@@ -142,7 +142,7 @@ public class VolumeSessionTests : IDisposable
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeNotFound, result.AssertError().Code);
     }
 
     [Fact]
@@ -159,10 +159,10 @@ public class VolumeSessionTests : IDisposable
         var unlockResult = await _vault.UnlockAsync(
             Path.Combine(flashskinkDir, "vault.bin"), _password, CancellationToken.None);
         Assert.True(unlockResult.Success);
-        var seedDek = unlockResult.Value!;
+        var seedDek = unlockResult.AssertValue();
         var brainResult = await _brainFactory.CreateAsync(brainPath, seedDek, CancellationToken.None);
         Assert.True(brainResult.Success);
-        using (var seedConn = brainResult.Value!)
+        using (var seedConn = brainResult.AssertValue())
         {
             using var cmd = seedConn.CreateCommand();
             cmd.CommandText =
@@ -177,16 +177,16 @@ public class VolumeSessionTests : IDisposable
         var result = await CreateLifecycle().OpenAsync(SkinkRoot(), _password, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.AssertError().Code);
         // Verify the brain connection was properly released: a second open attempt
         // on the same file must succeed (no locked file handle left behind).
         var unlockResult2 = await _vault.UnlockAsync(
             Path.Combine(flashskinkDir, "vault.bin"), _password, CancellationToken.None);
         Assert.True(unlockResult2.Success);
-        var dek2 = unlockResult2.Value!;
+        var dek2 = unlockResult2.AssertValue();
         var brainResult2 = await _brainFactory.CreateAsync(brainPath, dek2, CancellationToken.None);
         Assert.True(brainResult2.Success);
-        brainResult2.Value!.Dispose();
+        brainResult2.AssertValue().Dispose();
         System.Security.Cryptography.CryptographicOperations.ZeroMemory(dek2);
     }
 }

@@ -80,7 +80,7 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
         var result = await FlashSkinkVolume.CreateAsync(
             _skinkRoot, Password, options ?? DefaultOptions());
         Assert.True(result.Success, result.Error?.Message);
-        var volume = result.Value!.Volume;
+        var volume = result.AssertValue().Volume;
         var reg = await volume.RegisterTailAsync(
             ProviderId, ProviderType, DisplayName, null, provider ?? CreateFsProvider());
         Assert.True(reg.Success, reg.Error?.Message);
@@ -92,7 +92,7 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
         var result = await FlashSkinkVolume.OpenAsync(
             _skinkRoot, Password, options ?? DefaultOptions());
         Assert.True(result.Success, result.Error?.Message);
-        return result.Value!;
+        return result.AssertValue();
     }
 
     /// <summary>
@@ -109,7 +109,7 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
             vaultPath, new ReadOnlyMemory<byte>(passwordBytes), CancellationToken.None);
         CryptographicOperations.ZeroMemory(passwordBytes);
         Assert.True(unlock.Success, unlock.Error?.Message);
-        return unlock.Value!;
+        return unlock.AssertValue();
     }
 
     /// <summary>
@@ -259,6 +259,7 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
             n.Error?.Code == ErrorCode.SplitBrainDetected).ToList();
         Assert.Single(critical);
         Assert.Equal(nameof(FlashSkinkVolume), critical[0].Source);
+        // critical[] is filtered by n.Error?.Code above, so Error and its Metadata are non-null — principle 37.
         Assert.Equal(ProviderId, critical[0].Error!.Metadata!["TailProviderID"]);
     }
 
@@ -515,7 +516,7 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
         var createResult = await FlashSkinkVolume.CreateAsync(
             _skinkRoot, Password, DefaultOptions());
         Assert.True(createResult.Success);
-        await using var volume = createResult.Value!.Volume;
+        await using var volume = createResult.AssertValue().Volume;
 
         var faulty = new FaultInjectingStorageProvider(CreateFsProvider());
         faulty.FailNextBeginWith(ErrorCode.ProviderUnreachable);
@@ -535,7 +536,7 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
         // In-memory registry has the adapter.
         var ids = await _registry.ListActiveProviderIdsAsync(CancellationToken.None);
         Assert.True(ids.Success);
-        Assert.Contains(ProviderId, ids.Value!);
+        Assert.Contains(ProviderId, ids.AssertValue());
     }
 
     // ── PromoteAsync — §3.5.3 ────────────────────────────────────────────────

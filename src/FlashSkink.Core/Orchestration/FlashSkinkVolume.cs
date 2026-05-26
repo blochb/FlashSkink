@@ -184,9 +184,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 ct).ConfigureAwait(false);
             if (!lockResult.Success)
             {
-                return Result<VolumeCreationReceipt>.Fail(lockResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(lockResult.Error);
             }
-            instanceLock = lockResult.Value!;
+            instanceLock = lockResult.Value;
             lockHeld = true;
 
             passwordBytes = Encoding.UTF8.GetBytes(password);
@@ -195,40 +195,40 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var vaultResult = await keyVault.CreateAsync(vaultPath, passwordMem, ct).ConfigureAwait(false);
             if (!vaultResult.Success)
             {
-                return Result<VolumeCreationReceipt>.Fail(vaultResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(vaultResult.Error);
             }
 
             vaultCreated = true;
-            dek = vaultResult.Value!;
+            dek = vaultResult.Value;
 
             var brainResult = await brainFactory.CreateAsync(brainPath, dek, ct).ConfigureAwait(false);
             if (!brainResult.Success)
             {
-                return Result<VolumeCreationReceipt>.Fail(brainResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(brainResult.Error);
             }
 
             brainCreated = true;
-            connection = brainResult.Value!;
+            connection = brainResult.Value;
 
             var migrationResult = await migrationRunner.RunAsync(connection, ct).ConfigureAwait(false);
             if (!migrationResult.Success)
             {
-                return Result<VolumeCreationReceipt>.Fail(migrationResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(migrationResult.Error);
             }
 
             var mnemonicResult = mnemonicService.Generate();
             if (!mnemonicResult.Success)
             {
-                return Result<VolumeCreationReceipt>.Fail(mnemonicResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(mnemonicResult.Error);
             }
 
-            phrase = mnemonicResult.Value!;
+            phrase = mnemonicResult.Value;
             phraseOwned = true;
 
             var seedResult = await SeedInitialSettingsAsync(connection, ct).ConfigureAwait(false);
             if (!seedResult.Success)
             {
-                return Result<VolumeCreationReceipt>.Fail(seedResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(seedResult.Error);
             }
 
             // Take ownership — clear locals so finally does not double-zero or delete files.
@@ -255,12 +255,12 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             {
                 // BuildVolumeFromSessionAsync owns teardown on failure (session + lock are
                 // disposed inside the helper). Map the inner error code straight up.
-                return Result<VolumeCreationReceipt>.Fail(volumeResult.Error!);
+                return Result<VolumeCreationReceipt>.Fail(volumeResult.Error);
             }
 
             // Ownership of the phrase transfers to the receipt; the caller will dispose it.
             phraseOwned = false;
-            return Result<VolumeCreationReceipt>.Ok(new VolumeCreationReceipt(volumeResult.Value!, phrase));
+            return Result<VolumeCreationReceipt>.Ok(new VolumeCreationReceipt(volumeResult.Value, phrase));
         }
         catch (OperationCanceledException ex)
         {
@@ -342,9 +342,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 ct).ConfigureAwait(false);
             if (!lockResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(lockResult.Error!);
+                return Result<FlashSkinkVolume>.Fail(lockResult.Error);
             }
-            instanceLock = lockResult.Value!;
+            instanceLock = lockResult.Value;
             lockHeld = true;
 
             passwordBytes = Encoding.UTF8.GetBytes(password);
@@ -353,10 +353,10 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var openResult = await lifecycle.OpenAsync(skinkRoot, passwordMem, ct).ConfigureAwait(false);
             if (!openResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(openResult.Error!);
+                return Result<FlashSkinkVolume>.Fail(openResult.Error);
             }
 
-            session = openResult.Value!;
+            session = openResult.Value;
 
             // Backfill volume identity, stamp the open-time app-version (Refactor PR A),
             // and increment VolumeEpoch + read VolumeState (dev plan §3.5.1). Runs before
@@ -368,7 +368,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 session.Brain!, ct).ConfigureAwait(false);
             if (!backfillResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(backfillResult.Error!);
+                return Result<FlashSkinkVolume>.Fail(backfillResult.Error);
             }
             var (preHandshakeState, newEpoch) = backfillResult.Value;
 
@@ -381,7 +381,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 session, options, newEpoch, preHandshakeState, ct).ConfigureAwait(false);
             if (!handshakeResult.Success)
             {
-                return Result<FlashSkinkVolume>.Fail(handshakeResult.Error!);
+                return Result<FlashSkinkVolume>.Fail(handshakeResult.Error);
             }
             var postHandshakeState = handshakeResult.Value;
 
@@ -397,9 +397,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             if (!volumeResult.Success)
             {
                 // BuildVolumeFromSessionAsync owns teardown on failure. Propagate the inner code.
-                return Result<FlashSkinkVolume>.Fail(volumeResult.Error!);
+                return Result<FlashSkinkVolume>.Fail(volumeResult.Error);
             }
-            return Result<FlashSkinkVolume>.Ok(volumeResult.Value!);
+            return Result<FlashSkinkVolume>.Ok(volumeResult.Value);
         }
         catch (OperationCanceledException ex)
         {
@@ -587,7 +587,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var lookupResult = await _context.Files.GetByVirtualPathAsync(virtualPath, ct).ConfigureAwait(false);
             if (!lookupResult.Success)
             {
-                return Result.Fail(lookupResult.Error!);
+                return Result.Fail(lookupResult.Error);
             }
             if (lookupResult.Value is null)
             {
@@ -634,7 +634,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 var parentResult = await _context.Files.GetByIdAsync(parentId, ct).ConfigureAwait(false);
                 if (!parentResult.Success)
                 {
-                    return Result<string>.Fail(parentResult.Error!);
+                    return Result<string>.Fail(parentResult.Error);
                 }
                 if (parentResult.Value is null)
                 {
@@ -666,7 +666,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var insertResult = await _context.Files.InsertAsync(folder, ct).ConfigureAwait(false);
             if (!insertResult.Success)
             {
-                return Result<string>.Fail(insertResult.Error!);
+                return Result<string>.Fail(insertResult.Error);
             }
 
             return Result<string>.Ok(folderId);
@@ -986,7 +986,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             {
                 _logger.LogWarning(
                     "Initial witness write to newly-registered tail {ProviderId} failed ({Code}); the next session-begin handshake will retry.",
-                    providerId, writeResult.Error!.Code);
+                    providerId, writeResult.Error.Code);
             }
 
             _wakeupSignal.Pulse();
@@ -1122,17 +1122,17 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 {
                     _logger.LogDebug(
                         "Provider {ProviderId} not resolvable from registry ({Code}); skipping in promote.",
-                        providerId, resolved.Error!.Code);
+                        providerId, resolved.Error.Code);
                     continue;
                 }
 
                 var writeResult = await _witnessStore.WriteAsync(
-                    resolved.Value!, _session.Dek, payload, CancellationToken.None).ConfigureAwait(false);
+                    resolved.Value, _session.Dek, payload, CancellationToken.None).ConfigureAwait(false);
                 if (!writeResult.Success)
                 {
                     _logger.LogWarning(
                         "Witness write to tail {ProviderId} during promote failed ({Code}); the next session-begin handshake will retry.",
-                        providerId, writeResult.Error!.Code);
+                        providerId, writeResult.Error.Code);
                 }
             }
 
@@ -1353,9 +1353,9 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 context.Dispose();
                 await session.DisposeAsync().ConfigureAwait(false);
                 await instanceLock.DisposeAsync().ConfigureAwait(false);
-                return Result<FlashSkinkVolume>.Fail(registryResult.Error!);
+                return Result<FlashSkinkVolume>.Fail(registryResult.Error);
             }
-            registry = registryResult.Value!;
+            registry = registryResult.Value;
         }
         var netMonitor = options.NetworkMonitor ?? new AlwaysOnlineNetworkMonitor();
         var clock = options.Clock ?? SystemClock.Instance;
@@ -1399,7 +1399,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             context.Dispose();
             await session.DisposeAsync().ConfigureAwait(false);
             await instanceLock.DisposeAsync().ConfigureAwait(false);
-            return Result<FlashSkinkVolume>.Fail(queueStartResult.Error!);
+            return Result<FlashSkinkVolume>.Fail(queueStartResult.Error);
         }
 
         var mirrorStartResult = brainMirrorService.Start(volumeCts.Token);
@@ -1411,7 +1411,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             context.Dispose();
             await session.DisposeAsync().ConfigureAwait(false);
             await instanceLock.DisposeAsync().ConfigureAwait(false);
-            return Result<FlashSkinkVolume>.Fail(mirrorStartResult.Error!);
+            return Result<FlashSkinkVolume>.Fail(mirrorStartResult.Error);
         }
 
         return Result<FlashSkinkVolume>.Ok(new FlashSkinkVolume(
@@ -1540,10 +1540,10 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                     options.LoggerFactory, ct).ConfigureAwait(false);
                 if (!registryResult.Success)
                 {
-                    return Result<VolumeState>.Fail(registryResult.Error!);
+                    return Result<VolumeState>.Fail(registryResult.Error);
                 }
-                registry = registryResult.Value!;
-                ownedRegistry = registryResult.Value!;
+                registry = registryResult.Value;
+                ownedRegistry = registryResult.Value;
             }
             await using var ownedRegistryDisposal = ownedRegistry;
 
@@ -1574,10 +1574,10 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                     // Phase 4 if a brain-backed registry fails to reconstruct a cloud adapter.
                     logger.LogDebug(
                         "Provider {ProviderId} present in brain but not resolvable from registry ({Code}); skipping in handshake.",
-                        providerId, providerResult.Error!.Code);
+                        providerId, providerResult.Error.Code);
                     continue;
                 }
-                tails.Add((providerId, providerResult.Value!));
+                tails.Add((providerId, providerResult.Value));
             }
 
             // ── Run handshake ────────────────────────────────────────────────
@@ -1590,7 +1590,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 alreadyFenced: currentState == VolumeState.Fenced, ct).ConfigureAwait(false);
             if (!outcomeResult.Success)
             {
-                return Result<VolumeState>.Fail(outcomeResult.Error!);
+                return Result<VolumeState>.Fail(outcomeResult.Error);
             }
             var outcome = outcomeResult.Value;
 
@@ -1656,7 +1656,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                     // unfortunate but not fatal — log and continue.
                     logger.LogWarning(
                         "Failed to persist BackgroundFailures row for split-brain detection: {Code}.",
-                        bgResult.Error!.Code);
+                        bgResult.Error.Code);
                 }
 
                 return Result<VolumeState>.Ok(VolumeState.Fenced);

@@ -49,7 +49,7 @@ public sealed class SingleInstanceTests : IAsyncLifetime
     public async Task CreateAsync_AcquiresLock_LockFileExistsOnDisk()
     {
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
 
         try
         {
@@ -68,7 +68,7 @@ public sealed class SingleInstanceTests : IAsyncLifetime
     {
         // First, create + dispose so vault.bin and brain.db exist.
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -86,7 +86,7 @@ public sealed class SingleInstanceTests : IAsyncLifetime
 
             Assert.False(secondOpen.Success);
             Assert.NotNull(secondOpen.Error);
-            Assert.Equal(ErrorCode.SingleInstanceLockHeld, secondOpen.Error!.Code);
+            Assert.Equal(ErrorCode.SingleInstanceLockHeld, secondOpen.AssertError().Code);
             Assert.NotNull(secondOpen.Error.Metadata);
             Assert.Equal(
                 Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -95,7 +95,7 @@ public sealed class SingleInstanceTests : IAsyncLifetime
         }
         finally
         {
-            await firstOpen.Value!.DisposeAsync();
+            await firstOpen.AssertValue().DisposeAsync();
         }
     }
 
@@ -103,19 +103,19 @@ public sealed class SingleInstanceTests : IAsyncLifetime
     public async Task OpenAsync_AfterFirstDispose_SucceedsOnSecondCall()
     {
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
 
         var firstOpen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(firstOpen.Success);
-        await firstOpen.Value!.DisposeAsync();
+        await firstOpen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var secondOpen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(secondOpen.Success);
-        await secondOpen.Value!.DisposeAsync();
+        await secondOpen.AssertValue().DisposeAsync();
     }
 
     [Fact]
@@ -123,7 +123,7 @@ public sealed class SingleInstanceTests : IAsyncLifetime
     {
         // Create + dispose so vault.bin / brain.db exist.
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -144,14 +144,14 @@ public sealed class SingleInstanceTests : IAsyncLifetime
 
         var result = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, forceOptions);
         Assert.True(result.Success);
-        await result.Value!.DisposeAsync();
+        await result.AssertValue().DisposeAsync();
     }
 
     [Fact]
     public async Task DisposeAsync_ReleasesLock_LockFileIsDeleted()
     {
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try
         {
             Assert.True(File.Exists(LockFilePath));
@@ -177,7 +177,7 @@ public sealed class SingleInstanceTests : IAsyncLifetime
         // OpenAsync acquires the lock first, then tries vault unlock — the unlock fails,
         // and the finally block must release the lock so a retry can succeed.
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -185,7 +185,7 @@ public sealed class SingleInstanceTests : IAsyncLifetime
         var badOpen = await FlashSkinkVolume.OpenAsync(
             _skinkRoot, "WRONG-PASSWORD", DefaultOptions);
         Assert.False(badOpen.Success);
-        Assert.Equal(ErrorCode.InvalidPassword, badOpen.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidPassword, badOpen.AssertError().Code);
         SqliteConnection.ClearAllPools();
 
         // The failure-path finally block must have released the lock — a retry with the
@@ -194,6 +194,6 @@ public sealed class SingleInstanceTests : IAsyncLifetime
             "Failed OpenAsync should clean up the lock file via its finally block.");
         var retry = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(retry.Success);
-        await retry.Value!.DisposeAsync();
+        await retry.AssertValue().DisposeAsync();
     }
 }

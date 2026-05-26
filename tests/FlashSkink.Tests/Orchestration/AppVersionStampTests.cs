@@ -44,7 +44,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
     public async Task AppVersionCreatedWith_IsWrittenOnCreate_FromInformationalVersion()
     {
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -61,7 +61,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
     public async Task AppVersionCreatedWith_IsStable_AcrossReopens()
     {
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -72,7 +72,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
 
         var reopen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(reopen.Success);
-        await reopen.Value!.DisposeAsync();
+        await reopen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var afterReopen = await OrchestrationTestHelper.ReadSettingAsync(
@@ -88,14 +88,14 @@ public sealed class AppVersionStampTests : IAsyncLifetime
         // current process's informational version. (Cross-build divergence — version A
         // creates, version B opens — is verified by the legacy-migration test below.)
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
 
         var reopen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(reopen.Success);
-        await reopen.Value!.DisposeAsync();
+        await reopen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var lastOpened = await OrchestrationTestHelper.ReadSettingAsync(
@@ -113,7 +113,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
         // increasing ISO-8601 timestamps. 50 ms is well above the sub-second
         // resolution of the "O" format string.
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -126,7 +126,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
 
         var reopen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(reopen.Success);
-        await reopen.Value!.DisposeAsync();
+        await reopen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var afterReopen = await OrchestrationTestHelper.ReadSettingAsync(
@@ -149,7 +149,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
         // `AppVersion` key but not `AppVersionCreatedWith`. First open under the new
         // code should migrate the value and delete the legacy key.
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -163,7 +163,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
 
         var reopen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(reopen.Success);
-        await reopen.Value!.DisposeAsync();
+        await reopen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var migrated = await OrchestrationTestHelper.ReadSettingAsync(
@@ -184,7 +184,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
         // `"unknown-legacy"` (not `"0.0.0-unknown"`, which is used when MinVer is unwired
         // at create time) so audit logs can tell the two cases apart.
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -198,7 +198,7 @@ public sealed class AppVersionStampTests : IAsyncLifetime
 
         var reopen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(reopen.Success);
-        await reopen.Value!.DisposeAsync();
+        await reopen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var stamped = await OrchestrationTestHelper.ReadSettingAsync(

@@ -1,4 +1,6 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using FlashSkink.Core.Abstractions.Results;
 using Xunit;
 
 namespace FlashSkink.Tests;
@@ -78,5 +80,23 @@ public class ArchitectureTests
     public void CLI_DoesNotReference_AnyUiOrPresentationAssembly()
     {
         AssertNoForbiddenUiReference("FlashSkink.CLI");
+    }
+
+    [Fact]
+    public void Result_Success_Property_Carries_MemberNotNullWhen_Attributes()
+    {
+        // Validates Principle 37 by reflection so it can't silently regress.
+        var resultSuccess = typeof(Result).GetProperty(nameof(Result.Success))!;
+        Assert.Contains(
+            resultSuccess.GetCustomAttributes(typeof(MemberNotNullWhenAttribute), inherit: false)
+                         .Cast<MemberNotNullWhenAttribute>(),
+            a => !a.ReturnValue && a.Members.Contains(nameof(Result.Error)));
+
+        var resultOfTSuccess = typeof(Result<object>).GetProperty(nameof(Result<object>.Success))!;
+        var attrs = resultOfTSuccess.GetCustomAttributes(typeof(MemberNotNullWhenAttribute), inherit: false)
+                                    .Cast<MemberNotNullWhenAttribute>()
+                                    .ToArray();
+        Assert.Contains(attrs, a => a.ReturnValue && a.Members.Contains(nameof(Result<object>.Value)));
+        Assert.Contains(attrs, a => !a.ReturnValue && a.Members.Contains(nameof(Result<object>.Error)));
     }
 }

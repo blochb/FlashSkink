@@ -77,7 +77,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         Assert.True(result.Success, result.Error?.Message);
         // The RecoveryPhrase is intentionally leaked across this test fixture — these
         // tests exercise upload paths, not phrase lifecycle. xUnit GCs it at test end.
-        return result.Value!.Volume;
+        return result.AssertValue().Volume;
     }
 
     /// <summary>
@@ -126,11 +126,11 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
             vaultPath, new ReadOnlyMemory<byte>(passwordBytes), CancellationToken.None);
         CryptographicOperations.ZeroMemory(passwordBytes);
         Assert.True(unlock.Success, unlock.Error?.Message);
-        var dek = unlock.Value!;
+        var dek = unlock.AssertValue();
         var brainResult = await brainFactory.CreateAsync(brainPath, dek, CancellationToken.None);
         CryptographicOperations.ZeroMemory(dek);
         Assert.True(brainResult.Success, brainResult.Error?.Message);
-        return brainResult.Value!;
+        return brainResult.AssertValue();
     }
 
     private static byte[] RandomBytes(int n) => RandomNumberGenerator.GetBytes(n);
@@ -166,7 +166,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var result = await volume.WriteBulkAsync(items);
 
         Assert.True(result.Success);
-        var receipt = result.Value!;
+        var receipt = result.AssertValue();
         Assert.Equal(5, receipt.Items.Count);
         for (int i = 0; i < 5; i++)
         {
@@ -201,7 +201,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var result = await volume.WriteBulkAsync(items);
 
         Assert.True(result.Success);
-        var receipt = result.Value!;
+        var receipt = result.AssertValue();
         Assert.Equal(5, receipt.Items.Count);
         Assert.True(receipt.Items[0].Outcome.Success);
         Assert.True(receipt.Items[1].Outcome.Success);
@@ -252,7 +252,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         await using var volume = await CreateVolumeAsync();
         var result = await volume.WriteBulkAsync(null!);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -325,7 +325,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
 
         var ids = await _registry.ListActiveProviderIdsAsync(CancellationToken.None);
         Assert.True(ids.Success);
-        Assert.Contains(ProviderId, ids.Value!);
+        Assert.Contains(ProviderId, ids.AssertValue());
     }
 
     [Fact]
@@ -335,7 +335,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var result = await volume.RegisterTailAsync(
             ProviderId, ProviderType, DisplayName, null, provider: null!);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -345,7 +345,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var result = await volume.RegisterTailAsync(
             "", ProviderType, DisplayName, null, CreateFsProvider());
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── End-to-end upload (real time, FileSystemProvider) ────────────────────
@@ -366,7 +366,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var payload = RandomBytes(512 * 1024);   // 512 KB
         var writeResult = await volume.WriteFileAsync(new MemoryStream(payload), "doc.bin");
         Assert.True(writeResult.Success);
-        var blobId = writeResult.Value!.BlobId;
+        var blobId = writeResult.AssertValue().BlobId;
 
         netMonitor.SetAvailable(true);
 
@@ -395,7 +395,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         {
             var w = await volume.WriteFileAsync(new MemoryStream(RandomBytes(64 * 1024)), $"f{i}.bin");
             Assert.True(w.Success);
-            blobIds.Add(w.Value!.BlobId);
+            blobIds.Add(w.AssertValue().BlobId);
         }
 
         netMonitor.SetAvailable(true);
@@ -470,7 +470,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
                     {
                         var w = await volume.WriteFileAsync(new MemoryStream(RandomBytes(64 * 1024)), $"f{i}.bin");
                         Assert.True(w.Success);
-                        blobIds.Add(w.Value!.BlobId);
+                        blobIds.Add(w.AssertValue().BlobId);
                     }
 
                     netMonitor.SetAvailable(true);
@@ -530,7 +530,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         {
             var w = await volume.WriteFileAsync(new MemoryStream(RandomBytes(32 * 1024)), $"wal-{i}.bin");
             Assert.True(w.Success);
-            blobIds.Add(w.Value!.BlobId);
+            blobIds.Add(w.AssertValue().BlobId);
         }
 
         netMonitor.SetAvailable(true);
@@ -566,7 +566,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
 
         var w = await volume.WriteFileAsync(new MemoryStream(RandomBytes(16 * 1024)), "offline.bin");
         Assert.True(w.Success);
-        var blobId = w.Value!.BlobId;
+        var blobId = w.AssertValue().BlobId;
 
         // While offline, the blob must not appear at the tail. Give the worker a brief window
         // to confirm it's actually paused.

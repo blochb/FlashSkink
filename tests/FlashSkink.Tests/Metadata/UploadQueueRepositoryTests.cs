@@ -59,7 +59,7 @@ public class UploadQueueRepositoryTests : IAsyncLifetime
         var result = await _sut.EnqueueAsync(FileId, ProviderId, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.PathConflict, result.Error!.Code);
+        Assert.Equal(ErrorCode.PathConflict, result.AssertError().Code);
     }
 
     // ── DequeueNextBatchAsync ─────────────────────────────────────────────────
@@ -165,7 +165,7 @@ public class UploadQueueRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
-        Assert.Equal(0, result.Value!.BytesUploaded);
+        Assert.Equal(0, result.AssertValue().BytesUploaded);
         Assert.Equal(1024, result.Value.TotalBytes);
     }
 
@@ -181,7 +181,7 @@ public class UploadQueueRepositoryTests : IAsyncLifetime
             FileId, ProviderId, "https://new-uri", expires, 512, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal("https://new-uri", result.Value!.SessionUri);
+        Assert.Equal("https://new-uri", result.AssertValue().SessionUri);
         Assert.Equal(0, result.Value.BytesUploaded);
     }
 
@@ -244,7 +244,7 @@ public class UploadQueueRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
-        Assert.Equal(FileId, result.Value!.FileId);
+        Assert.Equal(FileId, result.AssertValue().FileId);
         Assert.Equal(ProviderId, result.Value.ProviderId);
         Assert.Equal("https://session-uri/x", result.Value.SessionUri);
         Assert.Equal(1024, result.Value.BytesUploaded);
@@ -263,9 +263,9 @@ public class UploadQueueRepositoryTests : IAsyncLifetime
         var second = await _sut.LookupSessionAsync(FileId, ProviderId, CancellationToken.None);
         var third = await _sut.LookupSessionAsync(FileId, ProviderId, CancellationToken.None);
 
-        Assert.Equal(first.Value!.BytesUploaded, third.Value!.BytesUploaded);
-        Assert.Equal(first.Value.LastActivityUtc, second.Value!.LastActivityUtc);
-        Assert.Equal(first.Value.LastActivityUtc, third.Value.LastActivityUtc);
+        Assert.Equal(first.AssertValue().BytesUploaded, third.AssertValue().BytesUploaded);
+        Assert.Equal(first.AssertValue().LastActivityUtc, second.AssertValue().LastActivityUtc);
+        Assert.Equal(first.AssertValue().LastActivityUtc, third.AssertValue().LastActivityUtc);
     }
 
     [Fact]
@@ -277,6 +277,6 @@ public class UploadQueueRepositoryTests : IAsyncLifetime
         var result = await _sut.LookupSessionAsync(FileId, ProviderId, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 }

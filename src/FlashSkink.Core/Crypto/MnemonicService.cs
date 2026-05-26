@@ -200,7 +200,7 @@ public sealed class MnemonicService
         var validation = Validate(phrase);
         if (!validation.Success)
         {
-            return Result<byte[]>.Fail(validation.Error!);
+            return Result<byte[]>.Fail(validation.Error);
         }
 
         // Total joined length = sum of word lengths + (count-1) separator spaces.

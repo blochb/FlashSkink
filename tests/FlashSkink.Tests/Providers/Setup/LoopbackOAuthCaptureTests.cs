@@ -28,7 +28,7 @@ public sealed class LoopbackOAuthCaptureTests
         var result = capture.Prepare();
 
         Assert.True(result.Success);
-        var context = result.Value!;
+        var context = result.AssertValue();
         Assert.StartsWith("http://127.0.0.1:", context.RedirectUri);
         Assert.EndsWith("/oauth-callback/", context.RedirectUri);
         Assert.Equal(VerifierExpectedLength, context.CodeVerifier.Length);
@@ -40,8 +40,8 @@ public sealed class LoopbackOAuthCaptureTests
     {
         using var capture = NewCapture();
 
-        var a = capture.Prepare().Value!;
-        var b = capture.Prepare().Value!;
+        var a = capture.Prepare().AssertValue();
+        var b = capture.Prepare().AssertValue();
 
         Assert.NotEqual(a.RedirectUri, b.RedirectUri);
     }
@@ -51,7 +51,7 @@ public sealed class LoopbackOAuthCaptureTests
     {
         using var capture = NewCapture();
 
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         var verifierBytes = Encoding.ASCII.GetBytes(context.CodeVerifier);
         var hash = SHA256.HashData(verifierBytes);
@@ -64,8 +64,8 @@ public sealed class LoopbackOAuthCaptureTests
     {
         using var capture = NewCapture();
 
-        var a = capture.Prepare().Value!;
-        var b = capture.Prepare().Value!;
+        var a = capture.Prepare().AssertValue();
+        var b = capture.Prepare().AssertValue();
 
         Assert.NotEqual(a.CodeVerifier, b.CodeVerifier);
     }
@@ -76,7 +76,7 @@ public sealed class LoopbackOAuthCaptureTests
         var launcher = new RecordingBrowserLauncher();
         using var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromSeconds(30));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         var awaitTask = capture.AwaitAuthorizationCodeAsync(
             context, new Uri("https://example.com/auth"), CancellationToken.None);
@@ -99,7 +99,7 @@ public sealed class LoopbackOAuthCaptureTests
         var launcher = new RecordingBrowserLauncher();
         using var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromSeconds(30));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
         var authUri = new Uri("https://accounts.google.com/o/oauth2/v2/auth?client_id=test");
 
         var awaitTask = capture.AwaitAuthorizationCodeAsync(context, authUri, CancellationToken.None);
@@ -118,7 +118,7 @@ public sealed class LoopbackOAuthCaptureTests
         var launcher = new RecordingBrowserLauncher();
         using var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromSeconds(30));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         var awaitTask = capture.AwaitAuthorizationCodeAsync(
             context, new Uri("https://example.com/auth"), CancellationToken.None);
@@ -130,7 +130,7 @@ public sealed class LoopbackOAuthCaptureTests
         var response = await responseTask;
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderAuthFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderAuthFailed, result.AssertError().Code);
         Assert.Contains("access_denied", result.Error.Message, StringComparison.Ordinal);
 
         var body = await response.Content.ReadAsStringAsync(CancellationToken.None);
@@ -143,7 +143,7 @@ public sealed class LoopbackOAuthCaptureTests
         var launcher = new RecordingBrowserLauncher();
         using var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromSeconds(30));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         var awaitTask = capture.AwaitAuthorizationCodeAsync(
             context, new Uri("https://example.com/auth"), CancellationToken.None);
@@ -153,7 +153,7 @@ public sealed class LoopbackOAuthCaptureTests
 
         var result = await awaitTask;
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderAuthFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderAuthFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -162,7 +162,7 @@ public sealed class LoopbackOAuthCaptureTests
         // Hits the synchronous ct.ThrowIfCancellationRequested() at method entry — a distinct
         // path from the callback-driven listener.Stop() route exercised by the test below.
         using var capture = NewCapture();
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
@@ -170,7 +170,7 @@ public sealed class LoopbackOAuthCaptureTests
             context, new Uri("https://example.com/auth"), cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -179,7 +179,7 @@ public sealed class LoopbackOAuthCaptureTests
         var launcher = new RecordingBrowserLauncher();
         using var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromMinutes(5));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         using var cts = new CancellationTokenSource();
         var awaitTask = capture.AwaitAuthorizationCodeAsync(
@@ -192,7 +192,7 @@ public sealed class LoopbackOAuthCaptureTests
         var result = await awaitTask.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -201,7 +201,7 @@ public sealed class LoopbackOAuthCaptureTests
         var launcher = new RecordingBrowserLauncher();
         using var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromMilliseconds(200));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         var awaitTask = capture.AwaitAuthorizationCodeAsync(
             context, new Uri("https://example.com/auth"), CancellationToken.None);
@@ -209,7 +209,7 @@ public sealed class LoopbackOAuthCaptureTests
         var result = await awaitTask.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Timeout, result.Error!.Code);
+        Assert.Equal(ErrorCode.Timeout, result.AssertError().Code);
     }
 
     [Fact]
@@ -218,13 +218,13 @@ public sealed class LoopbackOAuthCaptureTests
         using var instanceA = NewCapture();
         using var instanceB = NewCapture();
 
-        var contextFromA = instanceA.Prepare().Value!;
+        var contextFromA = instanceA.Prepare().AssertValue();
 
         var result = await instanceB.AwaitAuthorizationCodeAsync(
             contextFromA, new Uri("https://example.com/auth"), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -233,7 +233,7 @@ public sealed class LoopbackOAuthCaptureTests
         var launcher = new RecordingBrowserLauncher();
         using var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromSeconds(30));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         var firstAwait = capture.AwaitAuthorizationCodeAsync(
             context, new Uri("https://example.com/auth"), CancellationToken.None);
@@ -247,7 +247,7 @@ public sealed class LoopbackOAuthCaptureTests
             context, new Uri("https://example.com/auth"), CancellationToken.None);
 
         Assert.False(secondResult.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, secondResult.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, secondResult.AssertError().Code);
     }
 
     [Fact]
@@ -259,13 +259,13 @@ public sealed class LoopbackOAuthCaptureTests
         };
         using var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromSeconds(30));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         var result = await capture.AwaitAuthorizationCodeAsync(
             context, new Uri("https://example.com/auth"), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.Unknown, result.AssertError().Code);
         Assert.Equal(typeof(PlatformNotSupportedException).FullName, result.Error.ExceptionType);
     }
 
@@ -275,7 +275,7 @@ public sealed class LoopbackOAuthCaptureTests
         var launcher = new RecordingBrowserLauncher();
         var capture = new LoopbackOAuthCapture(
             launcher, NullLoggerFactory.Instance, TimeProvider.System, TimeSpan.FromSeconds(30));
-        var context = capture.Prepare().Value!;
+        var context = capture.Prepare().AssertValue();
 
         capture.Dispose();
 

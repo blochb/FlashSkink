@@ -51,7 +51,7 @@ public class BlobRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
-        Assert.Equal(blob.BlobId, result.Value!.BlobId);
+        Assert.Equal(blob.BlobId, result.AssertValue().BlobId);
         Assert.Equal(blob.EncryptedSize, result.Value.EncryptedSize);
         Assert.Equal(blob.PlaintextSize, result.Value.PlaintextSize);
         Assert.Equal(blob.PlaintextSha256, result.Value.PlaintextSha256);
@@ -73,7 +73,7 @@ public class BlobRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
-        Assert.Equal(blob.BlobId, result.Value!.BlobId);
+        Assert.Equal(blob.BlobId, result.AssertValue().BlobId);
     }
 
     [Fact]
@@ -110,7 +110,7 @@ public class BlobRepositoryTests : IAsyncLifetime
         var result = await _sut.GetByIdAsync(blob.BlobId, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.NotNull(result.Value!.SoftDeletedUtc);
+        Assert.NotNull(result.AssertValue().SoftDeletedUtc);
         Assert.NotNull(result.Value.PurgeAfterUtc);
     }
 
@@ -127,7 +127,7 @@ public class BlobRepositoryTests : IAsyncLifetime
         var result = await _sut.GetByIdAsync(blob.BlobId, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.NotNull(result.Value!.PurgeAfterUtc);
+        Assert.NotNull(result.AssertValue().PurgeAfterUtc);
         // PurgeAfterUtc should be at-or-after the timestamp taken before MarkCorruptAsync ran.
         Assert.True(result.Value.PurgeAfterUtc!.Value >= before.AddSeconds(-1));
     }
@@ -150,8 +150,8 @@ public class BlobRepositoryTests : IAsyncLifetime
         var result = await _sut.ListPendingPurgeAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Single(result.Value!);
-        Assert.Equal(past.BlobId, result.Value![0].BlobId);
+        Assert.Single(result.AssertValue());
+        Assert.Equal(past.BlobId, result.AssertValue()[0].BlobId);
     }
 
     // ── HardDeleteAsync ───────────────────────────────────────────────────────

@@ -76,7 +76,7 @@ public sealed class WitnessStoreTests : IDisposable
         Assert.True(readResult.Success);
         Assert.NotNull(readResult.Value);
 
-        var read = readResult.Value!.Value;
+        var read = readResult.AssertValue().Value;
         Assert.Equal(payload.VolumeId, read.VolumeId);
         Assert.Equal(payload.Epoch, read.Epoch);
         Assert.Equal(payload.SessionId, read.SessionId);
@@ -106,7 +106,7 @@ public sealed class WitnessStoreTests : IDisposable
 
         var readResult = await _store.TryReadAsync(_provider, _dek, CancellationToken.None);
         Assert.True(readResult.Success);
-        Assert.Equal(2L, readResult.Value!.Value.Epoch);
+        Assert.Equal(2L, readResult.AssertValue().Value.Epoch);
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public sealed class WitnessStoreTests : IDisposable
         var result = await _store.TryReadAsync(_provider, _dek, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -161,7 +161,7 @@ public sealed class WitnessStoreTests : IDisposable
         var result = await _store.WriteAsync(_provider, _dek, SamplePayload(), cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -215,7 +215,7 @@ public sealed class WitnessStoreTests : IDisposable
         var result = await _store.WriteAsync(faulty, _dek, SamplePayload(), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.StagingFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.StagingFailed, result.AssertError().Code);
         // Error metadata is a contract the §3.5.2 handshake will read when building its
         // BackgroundFailures row and notification metadata. Regressions in the keys or
         // values would degrade diagnostics silently — assert both keys here.
@@ -242,7 +242,7 @@ public sealed class WitnessStoreTests : IDisposable
         var result = await _store.WriteAsync(faulty, _dek, SamplePayload(), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.StagingFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.StagingFailed, result.AssertError().Code);
         Assert.NotNull(result.Error.Metadata);
         Assert.Equal(faulty.ProviderID, result.Error.Metadata!["ProviderID"]);
         Assert.Equal(
@@ -266,7 +266,7 @@ public sealed class WitnessStoreTests : IDisposable
         var result = await _store.WriteAsync(faulty, _dek, SamplePayload(), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.StagingFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.StagingFailed, result.AssertError().Code);
         Assert.NotNull(result.Error.Metadata);
         Assert.Equal(faulty.ProviderID, result.Error.Metadata!["ProviderID"]);
         Assert.Equal(

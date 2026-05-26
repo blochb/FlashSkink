@@ -83,7 +83,7 @@ public class FileRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
-        Assert.Equal("f1", result.Value!.FileId);
+        Assert.Equal("f1", result.AssertValue().FileId);
         Assert.Equal("document.pdf", result.Value.Name);
         Assert.False(result.Value.IsFolder);
         Assert.False(result.Value.IsSymlink);
@@ -99,7 +99,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.GetByIdAsync("fd1", CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.True(result.Value!.IsFolder);
+        Assert.True(result.AssertValue().IsFolder);
     }
 
     [Fact]
@@ -110,7 +110,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.InsertAsync(MakeFile("f2", "dup.txt"), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.PathConflict, result.Error!.Code);
+        Assert.Equal(ErrorCode.PathConflict, result.AssertError().Code);
     }
 
     [Fact]
@@ -139,7 +139,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.ListChildrenAsync(null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(2, result.AssertValue().Count);
         Assert.True(result.Value[0].IsFolder);   // folder sorts first
         Assert.False(result.Value[1].IsFolder);
     }
@@ -154,8 +154,8 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.ListChildrenAsync(null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Single(result.Value!);
-        Assert.Equal("fd1", result.Value![0].FileId);
+        Assert.Single(result.AssertValue());
+        Assert.Equal("fd1", result.AssertValue()[0].FileId);
     }
 
     // ── ListFilesAsync ────────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.ListFilesAsync("docs/", CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(2, result.AssertValue().Count);
         Assert.All(result.Value, f => Assert.StartsWith("docs/", f.VirtualPath));
     }
 
@@ -186,8 +186,8 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.ListFilesAsync("100%_done/", CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Single(result.Value!);
-        Assert.Equal("100%_done/notes.txt", result.Value![0].VirtualPath);
+        Assert.Single(result.AssertValue());
+        Assert.Equal("100%_done/notes.txt", result.AssertValue()[0].VirtualPath);
     }
 
     // ── EnsureFolderPathAsync ─────────────────────────────────────────────────
@@ -202,12 +202,12 @@ public class FileRepositoryTests : IAsyncLifetime
 
         // "docs" should exist at root.
         var rootChildren = await _sut.ListChildrenAsync(null, CancellationToken.None);
-        var docs = Assert.Single(rootChildren.Value!);
+        var docs = Assert.Single(rootChildren.AssertValue());
         Assert.Equal("docs", docs.Name);
 
         // "reports" should be under "docs", and its FileId must equal the return value.
         var docsChildren = await _sut.ListChildrenAsync(docs.FileId, CancellationToken.None);
-        var reports = Assert.Single(docsChildren.Value!);
+        var reports = Assert.Single(docsChildren.AssertValue());
         Assert.Equal("reports", reports.Name);
         Assert.Equal(result.Value, reports.FileId);
     }
@@ -223,7 +223,7 @@ public class FileRepositoryTests : IAsyncLifetime
         Assert.Equal(first.Value, second.Value); // same leaf FileId returned
 
         var children = await _sut.ListChildrenAsync(null, CancellationToken.None);
-        Assert.Single(children.Value!); // exactly one row created, not two
+        Assert.Single(children.AssertValue()); // exactly one row created, not two
     }
 
     [Fact]
@@ -235,7 +235,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.EnsureFolderPathAsync("docs/reports", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.PathConflict, result.Error!.Code);
+        Assert.Equal(ErrorCode.PathConflict, result.AssertError().Code);
     }
 
     // ── CountChildrenAsync ────────────────────────────────────────────────────
@@ -278,7 +278,7 @@ public class FileRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         // CTE includes fd1 itself + fd2 + f3 = 3 rows.
-        Assert.Equal(3, result.Value!.Count);
+        Assert.Equal(3, result.AssertValue().Count);
     }
 
     // ── DeleteFileAsync ───────────────────────────────────────────────────────
@@ -307,7 +307,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.DeleteFileAsync("no-such-file", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.FileNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.FileNotFound, result.AssertError().Code);
     }
 
     // ── DeleteFolderCascadeAsync ──────────────────────────────────────────────
@@ -321,7 +321,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.DeleteFolderCascadeAsync("fd1", confirmed: false, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ConfirmationRequired, result.Error!.Code);
+        Assert.Equal(ErrorCode.ConfirmationRequired, result.AssertError().Code);
         Assert.NotNull(result.Error.Metadata);
         Assert.True(result.Error.Metadata!.ContainsKey("ChildCount"));
         Assert.Equal("1", result.Error.Metadata["ChildCount"]);
@@ -354,7 +354,7 @@ public class FileRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         var child = await _sut.GetByIdAsync("f1", CancellationToken.None);
-        Assert.Equal("new/child.txt", child.Value!.VirtualPath);
+        Assert.Equal("new/child.txt", child.AssertValue().VirtualPath);
     }
 
     [Fact]
@@ -367,7 +367,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.RenameFolderAsync("fd1", "folderB", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.PathConflict, result.Error!.Code);
+        Assert.Equal(ErrorCode.PathConflict, result.AssertError().Code);
     }
 
     // ── MoveAsync ─────────────────────────────────────────────────────────────
@@ -382,7 +382,8 @@ public class FileRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         var moved = await _sut.GetByIdAsync("f1", CancellationToken.None);
-        Assert.Equal("fd1", moved.Value!.ParentId);
+        Assert.True(moved.Success);
+        Assert.Equal("fd1", moved.Value.ParentId);
         Assert.Equal("target/file.txt", moved.Value.VirtualPath);
     }
 
@@ -396,7 +397,7 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.MoveAsync("fd1", "fd2", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.CyclicMoveDetected, result.Error!.Code);
+        Assert.Equal(ErrorCode.CyclicMoveDetected, result.AssertError().Code);
     }
 
     // ── RestoreFromGracePeriodAsync ───────────────────────────────────────────
@@ -434,7 +435,7 @@ public class FileRepositoryTests : IAsyncLifetime
             "no-such-blob", "some-path.txt", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobNotFound, result.AssertError().Code);
     }
 
     // ── GetByVirtualPathAsync ─────────────────────────────────────────────────
@@ -448,7 +449,7 @@ public class FileRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
-        Assert.Equal("f1", result.Value!.FileId);
+        Assert.Equal("f1", result.AssertValue().FileId);
         Assert.Equal("x/y.txt", result.Value.VirtualPath);
         Assert.False(result.Value.IsFolder);
     }
@@ -471,7 +472,7 @@ public class FileRepositoryTests : IAsyncLifetime
 
         Assert.True(result.Success);
         Assert.NotNull(result.Value);
-        Assert.True(result.Value!.IsFolder);
+        Assert.True(result.AssertValue().IsFolder);
     }
 
     [Fact]
@@ -483,6 +484,6 @@ public class FileRepositoryTests : IAsyncLifetime
         var result = await _sut.GetByVirtualPathAsync("any/path.txt", cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 }

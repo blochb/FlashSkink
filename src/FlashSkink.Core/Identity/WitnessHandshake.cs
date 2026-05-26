@@ -166,7 +166,7 @@ internal sealed class WitnessHandshake
                 // a stale Fenced row), so we probe first.
                 var probe = await provider.ListAsync(
                     WitnessStore.WitnessRemotePrefix, ct).ConfigureAwait(false);
-                if (!probe.Success && WitnessStore.OfflineErrorCodes.Contains(probe.Error!.Code))
+                if (!probe.Success && WitnessStore.OfflineErrorCodes.Contains(probe.Error.Code))
                 {
                     _logger.LogDebug(
                         "Tail {ProviderId} unreachable for handshake probe ({Code}); skipping read, not counting toward TailsRead.",
@@ -181,7 +181,7 @@ internal sealed class WitnessHandshake
                     // TryReadAsync only Fails on Cancelled or Unknown. Cancelled re-throws via
                     // the outer catch (ct is still observed in the loop). Unknown is logged at
                     // Debug and counted as "not read" — this tail provides no information.
-                    if (readResult.Error!.Code == ErrorCode.Cancelled)
+                    if (readResult.Error.Code == ErrorCode.Cancelled)
                     {
                         throw new OperationCanceledException(ct);
                     }
@@ -268,7 +268,7 @@ internal sealed class WitnessHandshake
                     // and counted separately; the handshake proceeds.
                     _logger.LogWarning(
                         "Witness write failed on tail {ProviderId}: {Code}.",
-                        providerId, writeResult.Error!.Code);
+                        providerId, writeResult.Error.Code);
                 }
             }
 

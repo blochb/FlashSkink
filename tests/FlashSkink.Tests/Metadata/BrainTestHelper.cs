@@ -33,7 +33,7 @@ internal static class BrainTestHelper
         if (!result.Success)
         {
             throw new InvalidOperationException(
-                $"Schema migration failed in test setup: {result.Error!.Message}");
+                $"Schema migration failed in test setup: {result.AssertError().Message}");
         }
     }
 

@@ -233,6 +233,14 @@ jobs:
             `path/file.cs:LINE — Principle N: short reason`
             If none, write "None found."
 
+            Pay particular attention to Principle 37 (encode invariants in
+            the type system before reaching for `!`): every new `!` in the
+            diff should either be removable via a flow attribute on the
+            relevant type, OR carry a one-line comment naming the invariant
+            it relies on. A `!` after a `.Success` / `.Value` / `.Error`
+            access on `Result`/`Result<T>` is almost always redundant given
+            the `[MemberNotNullWhen]` attributes on those types — flag it.
+
             **2. Plan-template compliance issues** — list any missing or malformed
             sections in the plan file (compared to the principle list).
             If none, write "None found."

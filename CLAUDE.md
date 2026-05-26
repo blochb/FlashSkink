@@ -270,6 +270,19 @@ Then stop. Do not start another PR in the same session.
 - `spike/topic` — exploratory spike. Code may be discarded. Example: `spike/sqlcipher-native-rids`.
 - `fix/short-description` — bug fix not tied to dev-plan section.
 - `docs/short-description` — documentation-only change.
+- `refactor/short-description` — cross-cutting refactor or cleanup not tied to a dev-plan section. Example: `refactor/result-flow-attributes`.
+- `chore/short-description` — tooling, CI, dependency, or other non-functional housekeeping.
+
+## Plan file naming
+
+Plans live under `.claude/plans/` and pair with the branch:
+
+- `pr-X.Y.md` for dev-plan branches (`pr/X.Y-...`).
+- `refactor-<slug>.md` for `refactor/...` branches.
+- `chore-<slug>.md` for `chore/...` branches.
+- `fix-<slug>.md` for `fix/...` branches when the fix warrants a plan (most don't).
+
+The non-`pr-X.Y` variants follow the same plan template; the "Dev plan section" header reads `none` and the "Blueprint sections" header still cites the relevant §s.
 
 ---
 
@@ -345,6 +358,8 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 
 36. **Every brain SQL operation flows through `IBrainAccess`; raw `SqliteConnection` is never injected into a downstream component.** `Microsoft.Data.Sqlite.SqliteConnection` is not thread-safe — its internal `_commands` collection is an unsynchronized `List<T>`, and two threads issuing SQL on one connection corrupt it (CI evidence in `docs/spike-findings.md` § "2026-05-20 — SQLite dispose-time NRE on Windows CI"; the corruption surfaces later as `NullReferenceException` inside `SqliteConnection.Close()`). Every repository, service, write-pipeline stage, and volume-orchestration code path receives an `IBrainAccess` (`FlashSkink.Core.Metadata`) and acquires a `BrainScope` before issuing SQL: `using var scope = await _brain.LockAsync(ct); … scope.Connection.ExecuteAsync(…);`. Multi-statement transactions hold one scope for the full lifetime (open → all statements → commit); repository overloads that take a `SqliteTransaction` parameter assume the caller already holds the scope and skip the acquisition (they SQL against `transaction.Connection`). The single sanctioned exception is the volume-open path — `BrainConnectionFactory.CreateAsync` and `MigrationRunner.RunAsync` may take a raw `SqliteConnection` because they run before any background service exists. Verified by grep: no `: SqliteConnection` constructor parameter outside that factory pair, `BrainAccess`, and the destination connection inside `BrainMirrorService.BackupAsync`. (Blueprint §16, spike findings 2026-05-20.)
 
+37. **Encode invariants in the type system before reaching for `!`.** When the nullable analyzer can't see an invariant, the first question is whether the *type author* can teach it via flow attributes (`[MemberNotNullWhen]`, `[NotNullWhen]`, `[MaybeNullWhen]`, `[MaybeNull]`, `[NotNull]`) — not whether the *call site* can paper over it with `!`. `!` to silence the analyzer at a call site for a correlation the type itself could express is a defect at the type, not the call site, and is a Gate 2 rejection. `!` is acceptable only when the invariant exists but cannot be encoded — e.g. inside a `catch ... when (...)` filter that already proved the access path non-null, when bridging a third-party API whose type signatures lie, or in a private helper whose caller-visible signature is wider than its actual behavior (a `MapX<T>` that always returns a failed `Result<T>`, for instance). Every accepted `!` carries a one-line comment naming the invariant — no prose. The reference implementation is `Result<T>` with `[MemberNotNullWhen]` carrying the `Success` ↔ `Value`/`Error` correlation, plus the `tests/FlashSkink.Tests/ResultAssertions.cs` helper that concentrates the test-side `!` behind an `Assert.True(r.Success)` precondition. Verified by `ArchitectureTests.Result_Success_Property_Carries_MemberNotNullWhen_Attributes`. (Blueprint §6.1; PR `refactor/result-flow-attributes`.)
+
 ---
 
 ## Conventions
@@ -352,7 +367,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 ### C# style
 
 - Target framework: `net10.0` (with platform-specific variants where needed for native RIDs).
-- `<Nullable>enable</Nullable>` everywhere. No `!` suppression without a comment explaining why.
+- `<Nullable>enable</Nullable>` everywhere. `!` suppression is governed by Principle 37 — encode invariants in flow attributes first; only retained `!`s with a one-line invariant comment are accepted.
 - `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
 - `<ImplicitUsings>enable</ImplicitUsings>`.
 - `readonly record struct` for hot-path DTOs and brain-reader rows.

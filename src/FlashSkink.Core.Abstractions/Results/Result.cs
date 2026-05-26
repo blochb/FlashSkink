@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace FlashSkink.Core.Abstractions.Results;
 
 /// <summary>
@@ -8,7 +10,13 @@ namespace FlashSkink.Core.Abstractions.Results;
 /// </summary>
 public readonly record struct Result
 {
-    /// <summary><see langword="true"/> if the operation succeeded; <see langword="false"/> if it failed.</summary>
+    /// <summary>
+    /// <see langword="true"/> if the operation succeeded; <see langword="false"/> if it failed.
+    /// When <see langword="false"/>, <see cref="Error"/> is guaranteed non-null — the analyzer
+    /// carries this through <c>if (!result.Success)</c> branches via <see cref="MemberNotNullWhenAttribute"/>
+    /// (principle 37).
+    /// </summary>
+    [MemberNotNullWhen(false, nameof(Error))]
     public bool Success { get; }
 
     /// <summary>

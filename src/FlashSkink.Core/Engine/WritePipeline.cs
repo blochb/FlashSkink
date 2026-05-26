@@ -107,11 +107,11 @@ public sealed class WritePipeline
                 .ConfigureAwait(false);
             if (!bufferResult.Success)
             {
-                await LogAndPublishAsync(context, virtualPath, bufferResult.Error!, ct).ConfigureAwait(false);
-                return Result<WriteReceipt>.Fail(bufferResult.Error!);
+                await LogAndPublishAsync(context, virtualPath, bufferResult.Error, ct).ConfigureAwait(false);
+                return Result<WriteReceipt>.Fail(bufferResult.Error);
             }
 
-            using var plaintextBuffer = bufferResult.Value!;
+            using var plaintextBuffer = bufferResult.Value;
             long plaintextSize = plaintextBuffer.Memory.Length;
 
             // Use a managed byte[] rather than stackalloc because sha256Bytes is referenced
@@ -131,8 +131,8 @@ public sealed class WritePipeline
                 .ConfigureAwait(false);
             if (!existingResult.Success)
             {
-                await LogAndPublishAsync(context, virtualPath, existingResult.Error!, ct).ConfigureAwait(false);
-                return Result<WriteReceipt>.Fail(existingResult.Error!);
+                await LogAndPublishAsync(context, virtualPath, existingResult.Error, ct).ConfigureAwait(false);
+                return Result<WriteReceipt>.Fail(existingResult.Error);
             }
 
             if (existingResult.Value is { } existingBlob)
@@ -197,8 +197,8 @@ public sealed class WritePipeline
                 payload.Span, context.Dek.Span, aadArray, flags, encrypted, out int encWritten);
             if (!encResult.Success)
             {
-                await LogAndPublishAsync(context, virtualPath, encResult.Error!, ct).ConfigureAwait(false);
-                return Result<WriteReceipt>.Fail(encResult.Error!);
+                await LogAndPublishAsync(context, virtualPath, encResult.Error, ct).ConfigureAwait(false);
+                return Result<WriteReceipt>.Fail(encResult.Error);
             }
 
             // ── Stage 5 — blob assembly (header already included in encrypted buffer) ──
@@ -213,11 +213,11 @@ public sealed class WritePipeline
                 .ConfigureAwait(false);
             if (!scopeResult.Success)
             {
-                await LogAndPublishAsync(context, virtualPath, scopeResult.Error!, ct).ConfigureAwait(false);
-                return Result<WriteReceipt>.Fail(scopeResult.Error!);
+                await LogAndPublishAsync(context, virtualPath, scopeResult.Error, ct).ConfigureAwait(false);
+                return Result<WriteReceipt>.Fail(scopeResult.Error);
             }
 
-            await using var scope = scopeResult.Value!;
+            await using var scope = scopeResult.Value;
 
             // ── Stage 7 — durable atomic write ──────────────────────────────
             var writeResult = await context.BlobWriter.WriteAsync(
@@ -225,11 +225,11 @@ public sealed class WritePipeline
                 .ConfigureAwait(false);
             if (!writeResult.Success)
             {
-                await LogAndPublishAsync(context, virtualPath, writeResult.Error!, ct).ConfigureAwait(false);
-                return Result<WriteReceipt>.Fail(writeResult.Error!);
+                await LogAndPublishAsync(context, virtualPath, writeResult.Error, ct).ConfigureAwait(false);
+                return Result<WriteReceipt>.Fail(writeResult.Error);
             }
 
-            string blobPath = writeResult.Value!;
+            string blobPath = writeResult.Value;
             scope.MarkRenamed();
 
             // ── Stage 8 — XXHash64 over the final on-disk blob bytes ─────────
@@ -245,8 +245,8 @@ public sealed class WritePipeline
                     .ConfigureAwait(false);
                 if (!ensureResult.Success)
                 {
-                    await LogAndPublishAsync(context, virtualPath, ensureResult.Error!, ct).ConfigureAwait(false);
-                    return Result<WriteReceipt>.Fail(ensureResult.Error!);
+                    await LogAndPublishAsync(context, virtualPath, ensureResult.Error, ct).ConfigureAwait(false);
+                    return Result<WriteReceipt>.Fail(ensureResult.Error);
                 }
 
                 parentFileId = ensureResult.Value;
@@ -280,8 +280,8 @@ public sealed class WritePipeline
                 .ConfigureAwait(false);
             if (!commitResult.Success)
             {
-                await LogAndPublishAsync(context, virtualPath, commitResult.Error!, ct).ConfigureAwait(false);
-                return Result<WriteReceipt>.Fail(commitResult.Error!);
+                await LogAndPublishAsync(context, virtualPath, commitResult.Error, ct).ConfigureAwait(false);
+                return Result<WriteReceipt>.Fail(commitResult.Error);
             }
 
             // Success — scope is COMMITTED; DisposeAsync is now a no-op.

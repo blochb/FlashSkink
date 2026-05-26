@@ -55,7 +55,7 @@ public sealed class KeyVault
             var kdfResult = _kdf.DeriveKekFromPassword(password.Span, salt, out kek);
             if (!kdfResult.Success)
             {
-                return Result<byte[]>.Fail(kdfResult.Error!);
+                return Result<byte[]>.Fail(kdfResult.Error);
             }
 
             var ciphertext = new byte[32];
@@ -69,7 +69,7 @@ public sealed class KeyVault
             var writeResult = await AtomicWriteAsync(vaultPath, vault, ct).ConfigureAwait(false);
             if (!writeResult.Success)
             {
-                return Result<byte[]>.Fail(writeResult.Error!);
+                return Result<byte[]>.Fail(writeResult.Error);
             }
 
             return Result<byte[]>.Ok(dek);
@@ -108,10 +108,10 @@ public sealed class KeyVault
             var readResult = await ReadVaultAsync(vaultPath, ct).ConfigureAwait(false);
             if (!readResult.Success)
             {
-                return Result<byte[]>.Fail(readResult.Error!);
+                return Result<byte[]>.Fail(readResult.Error);
             }
 
-            return DecryptDek(password.Span, readResult.Value!);
+            return DecryptDek(password.Span, readResult.Value);
         }
         catch (OperationCanceledException ex)
         {
@@ -147,18 +147,18 @@ public sealed class KeyVault
             var readResult = await ReadVaultAsync(vaultPath, ct).ConfigureAwait(false);
             if (!readResult.Success)
             {
-                return Result<byte[]>.Fail(readResult.Error!);
+                return Result<byte[]>.Fail(readResult.Error);
             }
 
-            var header = readResult.Value!;
+            var header = readResult.Value;
 
             var seedResult = _mnemonic.ToSeed(phrase);
             if (!seedResult.Success)
             {
-                return Result<byte[]>.Fail(seedResult.Error!);
+                return Result<byte[]>.Fail(seedResult.Error);
             }
 
-            seed = seedResult.Value!;
+            seed = seedResult.Value;
 
             var kdfResult = _kdf.DeriveKek(
                 seed, header.Salt,
@@ -166,7 +166,7 @@ public sealed class KeyVault
                 out kek);
             if (!kdfResult.Success)
             {
-                return Result<byte[]>.Fail(kdfResult.Error!);
+                return Result<byte[]>.Fail(kdfResult.Error);
             }
 
             return DecryptDekWithKek(kek, header);
@@ -209,10 +209,10 @@ public sealed class KeyVault
             var unlockResult = await UnlockAsync(vaultPath, currentPassword, ct).ConfigureAwait(false);
             if (!unlockResult.Success)
             {
-                return Result.Fail(unlockResult.Error!);
+                return Result.Fail(unlockResult.Error);
             }
 
-            dek = unlockResult.Value!;
+            dek = unlockResult.Value;
 
             var newSalt = RandomNumberGenerator.GetBytes(32);
             var newNonce = RandomNumberGenerator.GetBytes(12);
@@ -220,7 +220,7 @@ public sealed class KeyVault
             var kdfResult = _kdf.DeriveKekFromPassword(newPassword.Span, newSalt, out newKek);
             if (!kdfResult.Success)
             {
-                return Result.Fail(kdfResult.Error!);
+                return Result.Fail(kdfResult.Error);
             }
 
             var ciphertext = new byte[32];
@@ -266,7 +266,7 @@ public sealed class KeyVault
                 out kek);
             if (!kdfResult.Success)
             {
-                return Result<byte[]>.Fail(kdfResult.Error!);
+                return Result<byte[]>.Fail(kdfResult.Error);
             }
 
             return DecryptDekWithKek(kek, header);

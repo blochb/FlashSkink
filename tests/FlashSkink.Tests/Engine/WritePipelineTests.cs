@@ -192,7 +192,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
             BytesStream(payload), virtualPath, _context, CancellationToken.None);
 
         Assert.True(result.Success, result.Error?.Message);
-        var receipt = result.Value!;
+        var receipt = result.AssertValue();
 
         Assert.Equal(WriteStatus.Written, receipt.Status);
         Assert.False(string.IsNullOrEmpty(receipt.FileId));
@@ -256,7 +256,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
         Assert.True(result.Success);
         var parentId = _connection.QuerySingleOrDefault<string>(
             "SELECT ParentID FROM Files WHERE FileID = @Id",
-            new { Id = result.Value!.FileId });
+            new { Id = result.AssertValue().FileId });
         Assert.Null(parentId);
     }
 
@@ -275,13 +275,13 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
         Assert.True(result.Success, result.Error?.Message);
         var compression = _connection.QuerySingleOrDefault<string?>(
             "SELECT Compression FROM Blobs WHERE BlobID = @Id",
-            new { Id = result.Value!.BlobId });
+            new { Id = result.AssertValue().BlobId });
 
         // LZ4 is used below 512 KB; Zstd above
         Assert.True(compression is "LZ4" or "ZSTD",
             $"Expected LZ4 or ZSTD compression; got: {compression}");
         // Encrypted blob should be smaller than plaintext + header + tag
-        Assert.True(result.Value!.EncryptedSize < payload.Length + 20 + 16,
+        Assert.True(result.AssertValue().EncryptedSize < payload.Length + 20 + 16,
             "Expected compressed blob to be smaller than uncompressed.");
     }
 
@@ -299,11 +299,11 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
         Assert.True(result.Success, result.Error?.Message);
         var compression = _connection.QuerySingleOrDefault<string?>(
             "SELECT Compression FROM Blobs WHERE BlobID = @Id",
-            new { Id = result.Value!.BlobId });
+            new { Id = result.AssertValue().BlobId });
 
         Assert.Null(compression);
         // Uncompressed: EncryptedSize = 20 + 1048576 + 16 = 1048612
-        Assert.Equal(payload.Length + 20 + 16, result.Value!.EncryptedSize);
+        Assert.Equal(payload.Length + 20 + 16, result.AssertValue().EncryptedSize);
     }
 
     [Fact]
@@ -316,7 +316,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
             BytesStream(payload), "/data/zeros.bin", _context, CancellationToken.None);
 
         Assert.True(result.Success, result.Error?.Message);
-        var dest = AtomicBlobWriter.ComputeDestinationPath(_skinkRoot, result.Value!.BlobId);
+        var dest = AtomicBlobWriter.ComputeDestinationPath(_skinkRoot, result.AssertValue().BlobId);
         var onDisk = await File.ReadAllBytesAsync(dest);
 
         var parseResult = BlobHeader.Parse(onDisk, out BlobFlags flags, out _);
@@ -324,7 +324,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
 
         var compression = _connection.QuerySingle<string?>(
             "SELECT Compression FROM Blobs WHERE BlobID = @Id",
-            new { Id = result.Value!.BlobId });
+            new { Id = result.AssertValue().BlobId });
 
         // The on-disk header flags must agree with the Blobs.Compression column.
         if (compression == "LZ4")
@@ -352,12 +352,12 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
 
         var first = await _pipeline.ExecuteAsync(BytesStream(content), path, _context, CancellationToken.None);
         Assert.True(first.Success);
-        Assert.Equal(WriteStatus.Written, first.Value!.Status);
+        Assert.Equal(WriteStatus.Written, first.AssertValue().Status);
 
         var second = await _pipeline.ExecuteAsync(BytesStream(content), path, _context, CancellationToken.None);
         Assert.True(second.Success);
-        Assert.Equal(WriteStatus.Unchanged, second.Value!.Status);
-        Assert.Equal(first.Value!.BlobId, second.Value!.BlobId);
+        Assert.Equal(WriteStatus.Unchanged, second.AssertValue().Status);
+        Assert.Equal(first.AssertValue().BlobId, second.AssertValue().BlobId);
 
         var blobCount = _connection.QuerySingle<int>("SELECT COUNT(*) FROM Blobs");
         Assert.Equal(1, blobCount); // no new blob
@@ -384,7 +384,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
         // V1: no cross-path dedup — each path gets its own blob
         var blobCount = _connection.QuerySingle<int>("SELECT COUNT(*) FROM Blobs");
         Assert.Equal(2, blobCount);
-        Assert.NotEqual(a.Value!.BlobId, b.Value!.BlobId);
+        Assert.NotEqual(a.AssertValue().BlobId, b.AssertValue().BlobId);
 
         var fileCount = _connection.QuerySingle<int>("SELECT COUNT(*) FROM Files WHERE IsFolder = 0");
         Assert.Equal(2, fileCount);
@@ -404,7 +404,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
             "/file.txt", _context, CancellationToken.None);
 
         Assert.False(second.Success);
-        Assert.Equal(ErrorCode.PathConflict, second.Error!.Code);
+        Assert.Equal(ErrorCode.PathConflict, second.AssertError().Code);
     }
 
     // ── Cancellation tests ────────────────────────────────────────────────────
@@ -419,7 +419,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
             BytesStream([0x01]), "/file.bin", _context, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
 
         var blobsCount = _connection.QuerySingle<int>("SELECT COUNT(*) FROM Blobs");
         Assert.Equal(0, blobsCount);
@@ -439,7 +439,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
         var result = await _pipeline.ExecuteAsync(cancelStream, "/large.bin", _context, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
 
         // No orphan staging file.
         var stagingDir = Path.Combine(_skinkRoot, ".flashskink", "staging");
@@ -465,7 +465,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
         sw.Stop();
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.FileTooLong, result.Error!.Code);
+        Assert.Equal(ErrorCode.FileTooLong, result.AssertError().Code);
         // Must return quickly without trying to allocate 4+ GiB.
         Assert.True(sw.ElapsedMilliseconds < 5000,
             $"Expected quick return for seekable FileTooLong check, took {sw.ElapsedMilliseconds}ms.");
@@ -481,8 +481,8 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
         var result = await _pipeline.ExecuteAsync(tooLong, "/huge.bin", _context, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.FileTooLong, result.Error!.Code);
-        Assert.NotEqual(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.FileTooLong, result.AssertError().Code);
+        Assert.NotEqual(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── Brain-tx-failure / fault injection ────────────────────────────────────
@@ -502,7 +502,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
             "/conflict.txt", _context, CancellationToken.None);
 
         Assert.False(second.Success);
-        Assert.Equal(ErrorCode.PathConflict, second.Error!.Code);
+        Assert.Equal(ErrorCode.PathConflict, second.AssertError().Code);
 
         // No orphan staging file.
         var stagingDir = Path.Combine(_skinkRoot, ".flashskink", "staging");
@@ -540,6 +540,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
         Assert.Equal("WritePipeline", n.Source);
         Assert.Equal(NotificationSeverity.Error, n.Severity);
         Assert.Equal("Could not save file", n.Title);
+        // Notification.Error is populated when Severity == Error (asserted above) — principle 37.
         Assert.Equal(ErrorCode.PathConflict, n.Error!.Code);
         Assert.Contains("/notify.txt", n.Message);
 
@@ -574,7 +575,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
             BytesStream(content), "/checksum.bin", _context, CancellationToken.None);
 
         Assert.True(result.Success);
-        var blobId = result.Value!.BlobId;
+        var blobId = result.AssertValue().BlobId;
 
         var dest = AtomicBlobWriter.ComputeDestinationPath(_skinkRoot, blobId);
         byte[] onDisk = await File.ReadAllBytesAsync(dest);
@@ -603,7 +604,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
 
         // Even though the bus threw, the original failure is returned.
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.PathConflict, result.Error!.Code);
+        Assert.Equal(ErrorCode.PathConflict, result.AssertError().Code);
     }
 
     // ── AAD construction test ─────────────────────────────────────────────────
@@ -620,7 +621,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
             BytesStream(payload), "/aad-test.bin", _context, CancellationToken.None);
         Assert.True(result.Success);
 
-        var blobId = result.Value!.BlobId;
+        var blobId = result.AssertValue().BlobId;
         var sha256Hex = _connection.QuerySingle<string>(
             "SELECT PlaintextSHA256 FROM Blobs WHERE BlobID = @Id", new { Id = blobId });
 
@@ -644,7 +645,7 @@ public sealed class WritePipelineTests : IAsyncLifetime, IDisposable
 
         var decWrong = _context.Crypto.Decrypt(onDisk, Dek, wrongOrderAad, decOut, out _, out _);
         Assert.False(decWrong.Success, "Decryption with wrong-order AAD must fail.");
-        Assert.Equal(ErrorCode.DecryptionFailed, decWrong.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, decWrong.AssertError().Code);
     }
 }
 

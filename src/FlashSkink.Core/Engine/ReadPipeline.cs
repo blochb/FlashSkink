@@ -51,7 +51,7 @@ public sealed class ReadPipeline
             if (!fileResult.Success)
             {
                 return await FailWithLogAndPublishAsync(
-                    context, virtualPath, fileResult.Error!, NotificationSeverity.Error).ConfigureAwait(false);
+                    context, virtualPath, fileResult.Error, NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             if (fileResult.Value is not { } fileRow)
@@ -82,7 +82,7 @@ public sealed class ReadPipeline
             if (!blobResult.Success)
             {
                 return await FailWithLogAndPublishAsync(
-                    context, virtualPath, blobResult.Error!, NotificationSeverity.Error).ConfigureAwait(false);
+                    context, virtualPath, blobResult.Error, NotificationSeverity.Error).ConfigureAwait(false);
             }
 
             if (blobResult.Value is not { } blobRow)
@@ -111,10 +111,10 @@ public sealed class ReadPipeline
             if (!blobReadResult.Success)
             {
                 return await FailWithLogAndPublishAsync(
-                    context, virtualPath, blobReadResult.Error!, NotificationSeverity.Error).ConfigureAwait(false);
+                    context, virtualPath, blobReadResult.Error, NotificationSeverity.Error).ConfigureAwait(false);
             }
 
-            using var encryptedBuffer = blobReadResult.Value!;
+            using var encryptedBuffer = blobReadResult.Value;
 
             // ── Stage 4 — decrypt ─────────────────────────────────────────────
             Guid blobGuid = TryParseBlobGuid(blobRow.BlobId);
@@ -170,9 +170,9 @@ public sealed class ReadPipeline
 
             if (!decryptResult.Success)
             {
-                bool isTampered = decryptResult.Error!.Code == ErrorCode.DecryptionFailed;
+                bool isTampered = decryptResult.Error.Code == ErrorCode.DecryptionFailed;
                 return await FailWithLogAndPublishAsync(
-                    context, virtualPath, decryptResult.Error!,
+                    context, virtualPath, decryptResult.Error,
                     isTampered ? NotificationSeverity.Critical : NotificationSeverity.Error,
                     requiresUserAction: isTampered).ConfigureAwait(false);
             }
@@ -227,7 +227,7 @@ public sealed class ReadPipeline
                     {
                         plaintext.Dispose();
                         return await FailWithLogAndPublishAsync(
-                            context, virtualPath, decompressResult.Error!, NotificationSeverity.Error).ConfigureAwait(false);
+                            context, virtualPath, decompressResult.Error, NotificationSeverity.Error).ConfigureAwait(false);
                     }
 
                     if (plaintextWritten != plaintextSizeInt)

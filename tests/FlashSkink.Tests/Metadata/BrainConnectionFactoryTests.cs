@@ -46,8 +46,8 @@ public class BrainConnectionFactoryTests : IDisposable
         var result = await _sut.CreateAsync(BrainPath(), TestDekA, CancellationToken.None);
 
         Assert.True(result.Success);
-        await using var _ = result.Value!;
-        Assert.Equal(ConnectionState.Open, result.Value!.State);
+        await using var _ = result.AssertValue();
+        Assert.Equal(ConnectionState.Open, result.AssertValue().State);
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public class BrainConnectionFactoryTests : IDisposable
     {
         var result = await _sut.CreateAsync(BrainPath(), TestDekA, CancellationToken.None);
         Assert.True(result.Success);
-        await using var connection = result.Value!;
+        await using var connection = result.AssertValue();
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = "PRAGMA integrity_check";
@@ -70,13 +70,13 @@ public class BrainConnectionFactoryTests : IDisposable
         var path = BrainPath();
         var first = await _sut.CreateAsync(path, TestDekA, CancellationToken.None);
         Assert.True(first.Success);
-        await using var c1 = first.Value!;
+        await using var c1 = first.AssertValue();
         c1.Close();
 
         var second = await _sut.CreateAsync(path, TestDekA, CancellationToken.None);
 
         Assert.True(second.Success);
-        await using var c2 = second.Value!;
+        await using var c2 = second.AssertValue();
         Assert.Equal(ConnectionState.Open, c2.State);
     }
 
@@ -91,7 +91,7 @@ public class BrainConnectionFactoryTests : IDisposable
         var result = await _sut.CreateAsync(BrainPath(), TestDekA, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── Corruption and wrong key ──────────────────────────────────────────────
@@ -106,7 +106,7 @@ public class BrainConnectionFactoryTests : IDisposable
         var result = await _sut.CreateAsync(path, TestDekA, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DatabaseCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.DatabaseCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -121,14 +121,14 @@ public class BrainConnectionFactoryTests : IDisposable
         // are no data pages to verify.
         var migrationRunner = new MigrationRunner(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<MigrationRunner>.Instance);
-        await migrationRunner.RunAsync(first.Value!, CancellationToken.None);
-        first.Value!.Dispose();
+        await migrationRunner.RunAsync(first.AssertValue(), CancellationToken.None);
+        first.AssertValue().Dispose();
         SqliteConnection.ClearAllPools();
 
         var second = await _sut.CreateAsync(path, TestDekB, CancellationToken.None);
 
         Assert.False(second.Success);
-        Assert.Equal(ErrorCode.DatabaseCorrupt, second.Error!.Code);
+        Assert.Equal(ErrorCode.DatabaseCorrupt, second.AssertError().Code);
     }
 
     // ── Integration: ciphertext on disk ───────────────────────────────────────
@@ -142,11 +142,11 @@ public class BrainConnectionFactoryTests : IDisposable
         Assert.True(result.Success);
 
         // Write something to ensure the first page is flushed to disk.
-        using var cmd = result.Value!.CreateCommand();
+        using var cmd = result.AssertValue().CreateCommand();
         cmd.CommandText = "CREATE TABLE _smoke (x INTEGER)";
         await cmd.ExecuteNonQueryAsync();
 
-        result.Value!.Dispose();
+        result.AssertValue().Dispose();
         // Release pooled file handles before reading raw bytes (WAL mode on Windows).
         SqliteConnection.ClearAllPools();
 
