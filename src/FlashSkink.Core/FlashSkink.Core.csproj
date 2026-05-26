@@ -20,6 +20,7 @@
     <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" />
     <PackageReference Include="System.IO.Hashing" />
     <PackageReference Include="Google.Apis.Drive.v3" />
+    <PackageReference Include="Dropbox.Api" />
   </ItemGroup>
 
   <ItemGroup>

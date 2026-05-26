@@ -5,11 +5,13 @@ using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Orchestration;
 using FlashSkink.Core.Providers;
+using FlashSkink.Core.Providers.Dropbox;
 using FlashSkink.Core.Providers.GoogleDrive;
 using FlashSkink.Core.Providers.Setup;
 using FlashSkink.Tests.Engine;
 using FlashSkink.Tests.Metadata;
 using FlashSkink.Tests.Orchestration;
+using FlashSkink.Tests.Providers.Dropbox;
 using FlashSkink.Tests.Providers.GoogleDrive;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -139,6 +141,63 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         return result.Value!;
     }
 
+    private async Task<BrainBackedProviderRegistry> BuildAsync(
+        IDropboxClientFactory dropboxFactory,
+        ILoggerFactory? loggerFactory = null)
+    {
+        loggerFactory ??= NullLoggerFactory.Instance;
+        var result = await BrainBackedProviderRegistry.CreateAsync(
+            _brain, _dek, new FakeGoogleDriveClientFactory(), dropboxFactory,
+            loggerFactory, CancellationToken.None);
+        Assert.True(result.Success);
+        return result.Value!;
+    }
+
+    private async Task<BrainBackedProviderRegistry> BuildAsync(
+        IGoogleDriveClientFactory googleDriveFactory,
+        IDropboxClientFactory dropboxFactory,
+        ILoggerFactory? loggerFactory = null)
+    {
+        loggerFactory ??= NullLoggerFactory.Instance;
+        var result = await BrainBackedProviderRegistry.CreateAsync(
+            _brain, _dek, googleDriveFactory, dropboxFactory, loggerFactory, CancellationToken.None);
+        Assert.True(result.Success);
+        return result.Value!;
+    }
+
+    private void InsertDropboxProvider(
+        string providerId,
+        string displayName,
+        string? clientId,
+        byte[]? encryptedToken,
+        byte[]? encryptedClientSecret,
+        string? providerConfig,
+        bool isActive = true)
+    {
+        _connection.Execute(
+            """
+            INSERT INTO Providers
+                (ProviderID, ProviderType, DisplayName, ClientID,
+                 EncryptedToken, EncryptedClientSecret, ProviderConfig,
+                 HealthStatus, AddedUtc, IsActive)
+            VALUES
+                (@Id, 'dropbox', @Name, @ClientId,
+                 @EncToken, @EncSecret, @Config,
+                 'Healthy', @AddedUtc, @IsActive)
+            """,
+            new
+            {
+                Id = providerId,
+                Name = displayName,
+                ClientId = clientId,
+                EncToken = encryptedToken,
+                EncSecret = encryptedClientSecret,
+                Config = providerConfig,
+                AddedUtc = DateTime.UtcNow.ToString("O"),
+                IsActive = isActive ? 1 : 0,
+            });
+    }
+
     // ── CreateAsync ───────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -230,7 +289,6 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
     }
 
     [Theory]
-    [InlineData("dropbox")]
     [InlineData("onedrive")]
     public async Task CreateAsync_OneRowWithUnsupportedCloudProviderType_LogsWarningAndSkips(string providerType)
     {
@@ -435,6 +493,161 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         Assert.Equal(2, ids.Count);
         Assert.Contains("fs-A", ids);
         Assert.Contains("gd-1", ids);
+    }
+
+    // ── dropbox dispatch arm (§4.4) ──────────────────────────────────────────────────────────
+
+    private const string DropboxConfigJson = "{\"rootPath\":\"/FlashSkink Backup\"}";
+
+    [Fact]
+    public async Task CreateAsync_OneDropboxRow_WithAllCredentials_ConstructsProvider()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt-dbx", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("csec-dbx", _dek);
+        InsertDropboxProvider("dbx-1", "Dropbox", "appkey-1", token, secret, DropboxConfigJson);
+
+        var factory = new FakeDropboxClientFactory();
+        await using var registry = await BuildAsync(factory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Single(ids);
+        Assert.Equal("dbx-1", ids[0]);
+
+        var providerResult = await registry.GetAsync("dbx-1", CancellationToken.None);
+        Assert.True(providerResult.Success);
+        Assert.Equal("dropbox", providerResult.Value!.ProviderType);
+        Assert.Equal("appkey-1", factory.LastAppKey);
+        Assert.Equal("csec-dbx", factory.LastAppSecret);
+        Assert.Equal("rt-dbx", factory.LastRefreshToken);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneDropboxRow_MissingClientId_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertDropboxProvider("dbx-1", "Dropbox",
+            clientId: null, encryptedToken: token, encryptedClientSecret: secret,
+            providerConfig: DropboxConfigJson);
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("no ClientID", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneDropboxRow_MissingEncryptedToken_LogsWarningAndSkips()
+    {
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertDropboxProvider("dbx-1", "Dropbox", "appkey",
+            encryptedToken: null, encryptedClientSecret: secret,
+            providerConfig: DropboxConfigJson);
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("no EncryptedToken", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneDropboxRow_MissingEncryptedClientSecret_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        InsertDropboxProvider("dbx-1", "Dropbox", "appkey",
+            encryptedToken: token, encryptedClientSecret: null,
+            providerConfig: DropboxConfigJson);
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("no EncryptedClientSecret", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneDropboxRow_DecryptClientSecretFails_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var otherDek = new byte[32];
+        otherDek[0] = 0xFF;
+        var secret = ProviderTokenCrypto.Encrypt("cs", otherDek);
+
+        InsertDropboxProvider("dbx-1", "Dropbox", "appkey", token, secret, DropboxConfigJson);
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("could not decrypt client secret",
+            logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneDropboxRow_MalformedProviderConfig_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertDropboxProvider("dbx-1", "Dropbox", "appkey", token, secret, providerConfig: "{not json");
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("malformed ProviderConfig",
+            logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneDropboxRow_FactoryFails_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertDropboxProvider("dbx-1", "Dropbox", "appkey", token, secret, DropboxConfigJson);
+
+        var factory = new FakeDropboxClientFactory
+        {
+            CreateResultOverride = Result<DropboxClientBundle>.Fail(
+                ErrorCode.Unknown, "factory boom"),
+        };
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(factory, logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("failed to construct", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_MixedFileSystemAndGoogleDriveAndDropboxRows_AllLoaded()
+    {
+        var tail = MakeTailDir("tail-mixed-all");
+        InsertProvider("fs-A", "filesystem", "Tail A",
+            $$"""{"rootPath":"{{tail.Replace("\\", "\\\\")}}"}""");
+
+        var gdToken = ProviderTokenCrypto.Encrypt("rt-gd", _dek);
+        var gdSecret = ProviderTokenCrypto.Encrypt("cs-gd", _dek);
+        InsertGoogleDriveProvider("gd-1", "Drive", "cid-gd", gdToken, gdSecret, GdriveConfigJson);
+
+        var dbxToken = ProviderTokenCrypto.Encrypt("rt-dbx", _dek);
+        var dbxSecret = ProviderTokenCrypto.Encrypt("cs-dbx", _dek);
+        InsertDropboxProvider("dbx-1", "Dropbox", "appkey-1", dbxToken, dbxSecret, DropboxConfigJson);
+
+        await using var registry = await BuildAsync(
+            new FakeGoogleDriveClientFactory(), new FakeDropboxClientFactory());
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Equal(3, ids.Count);
+        Assert.Contains("fs-A", ids);
+        Assert.Contains("gd-1", ids);
+        Assert.Contains("dbx-1", ids);
     }
 
     // ── GetAsync ──────────────────────────────────────────────────────────────────────────────

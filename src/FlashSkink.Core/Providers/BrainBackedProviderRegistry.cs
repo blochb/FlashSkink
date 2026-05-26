@@ -4,6 +4,7 @@ using Dapper;
 using FlashSkink.Core.Abstractions.Providers;
 using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Metadata;
+using FlashSkink.Core.Providers.Dropbox;
 using FlashSkink.Core.Providers.GoogleDrive;
 using FlashSkink.Core.Providers.Setup;
 using Microsoft.Data.Sqlite;
@@ -29,8 +30,10 @@ namespace FlashSkink.Core.Providers;
 /// <c>EncryptedToken</c> via <see cref="ProviderTokenCrypto"/>, builds the Drive SDK clients via
 /// <see cref="IGoogleDriveClientFactory"/>, and wraps them in a
 /// <c>GoogleDriveProvider</c> (§4.3).</description></item>
-/// <item><description><c>"dropbox"</c> / <c>"onedrive"</c> — logs at
-/// <see cref="LogLevel.Warning"/> and skips. §4.4–4.5 will fill in these arms.</description></item>
+/// <item><description><c>"dropbox"</c> — same shape as <c>"google-drive"</c> but uses
+/// <see cref="IDropboxClientFactory"/> and constructs a <c>DropboxProvider</c> (§4.4).</description></item>
+/// <item><description><c>"onedrive"</c> — logs at
+/// <see cref="LogLevel.Warning"/> and skips. §4.5 will fill this arm.</description></item>
 /// <item><description>Any other value — logs at <see cref="LogLevel.Warning"/> and skips.</description></item>
 /// </list>
 /// A construction failure for any single row is a per-provider warning, not a fatal error on
@@ -80,16 +83,32 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
-        return CreateAsync(brain, dek, new GoogleDriveClientFactory(), loggerFactory, ct);
+        return CreateAsync(brain, dek, new GoogleDriveClientFactory(), new DropboxClientFactory(), loggerFactory, ct);
     }
 
     /// <summary>
-    /// Test-friendly overload accepting an injected <see cref="IGoogleDriveClientFactory"/>.
+    /// Back-compat test overload — defaults the Dropbox factory to the production implementation.
+    /// Retained so §4.3 Drive-only tests don't need to thread a Dropbox factory they don't use.
+    /// </summary>
+    internal static Task<Result<BrainBackedProviderRegistry>> CreateAsync(
+        IBrainAccess brain,
+        ReadOnlyMemory<byte> dek,
+        IGoogleDriveClientFactory googleDriveFactory,
+        ILoggerFactory loggerFactory,
+        CancellationToken ct)
+    {
+        return CreateAsync(brain, dek, googleDriveFactory, new DropboxClientFactory(), loggerFactory, ct);
+    }
+
+    /// <summary>
+    /// Test-friendly overload accepting injected <see cref="IGoogleDriveClientFactory"/> and
+    /// <see cref="IDropboxClientFactory"/>. Used by Dropbox dispatch tests.
     /// </summary>
     internal static async Task<Result<BrainBackedProviderRegistry>> CreateAsync(
         IBrainAccess brain,
         ReadOnlyMemory<byte> dek,
         IGoogleDriveClientFactory googleDriveFactory,
+        IDropboxClientFactory dropboxFactory,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
@@ -120,7 +139,7 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
             {
                 ct.ThrowIfCancellationRequested();
                 var adapter = await TryBuildAdapterAsync(
-                    row, dek, googleDriveFactory, loggerFactory, logger, ct).ConfigureAwait(false);
+                    row, dek, googleDriveFactory, dropboxFactory, loggerFactory, logger, ct).ConfigureAwait(false);
                 if (adapter is not null)
                 {
                     registry._adapters[row.ProviderID] = adapter;
@@ -220,6 +239,7 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
         ProviderRow row,
         ReadOnlyMemory<byte> dek,
         IGoogleDriveClientFactory googleDriveFactory,
+        IDropboxClientFactory dropboxFactory,
         ILoggerFactory loggerFactory,
         ILogger<BrainBackedProviderRegistry> logger,
         CancellationToken ct)
@@ -234,10 +254,13 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
                     row, dek, googleDriveFactory, loggerFactory, logger, ct).ConfigureAwait(false);
 
             case "dropbox":
+                return await TryBuildDropboxAdapterAsync(
+                    row, dek, dropboxFactory, loggerFactory, logger, ct).ConfigureAwait(false);
+
             case "onedrive":
                 logger.LogWarning(
                     "Provider type '{ProviderType}' is not yet supported in this build; " +
-                    "row '{ProviderId}' will be unavailable until a later release. (§4.4-4.5)",
+                    "row '{ProviderId}' will be unavailable until a later release. (§4.5)",
                     row.ProviderType, row.ProviderID);
                 return null;
 
@@ -382,6 +405,88 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
         {
             logger.LogWarning(
                 "Google Drive provider row '{ProviderId}' failed to construct: {Code} ({Message}); skipping.",
+                row.ProviderID, result.Error!.Code, result.Error!.Message);
+            return null;
+        }
+
+        return result.Value!;
+    }
+
+    private static async Task<IStorageProvider?> TryBuildDropboxAdapterAsync(
+        ProviderRow row,
+        ReadOnlyMemory<byte> dek,
+        IDropboxClientFactory dropboxFactory,
+        ILoggerFactory loggerFactory,
+        ILogger<BrainBackedProviderRegistry> logger,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(row.ClientID))
+        {
+            logger.LogWarning(
+                "Dropbox provider row '{ProviderId}' has no ClientID; skipping.", row.ProviderID);
+            return null;
+        }
+        if (row.EncryptedToken is null || row.EncryptedToken.Length == 0)
+        {
+            logger.LogWarning(
+                "Dropbox provider row '{ProviderId}' has no EncryptedToken; skipping.", row.ProviderID);
+            return null;
+        }
+        if (row.EncryptedClientSecret is null || row.EncryptedClientSecret.Length == 0)
+        {
+            logger.LogWarning(
+                "Dropbox provider row '{ProviderId}' has no EncryptedClientSecret; skipping.", row.ProviderID);
+            return null;
+        }
+
+        if (!ProviderTokenCrypto.TryDecrypt(row.EncryptedClientSecret, dek, out var appSecret))
+        {
+            logger.LogWarning(
+                "Dropbox provider row '{ProviderId}': could not decrypt client secret; skipping.",
+                row.ProviderID);
+            return null;
+        }
+        if (!ProviderTokenCrypto.TryDecrypt(row.EncryptedToken, dek, out var refreshToken))
+        {
+            logger.LogWarning(
+                "Dropbox provider row '{ProviderId}': could not decrypt refresh token; skipping.",
+                row.ProviderID);
+            return null;
+        }
+
+        // Optional persisted root path. Dropbox creates intermediate folders implicitly on upload,
+        // so a missing config just means "use the default root" — the setup helper handles it.
+        string? rootPath = null;
+        if (!string.IsNullOrWhiteSpace(row.ProviderConfig))
+        {
+            try
+            {
+                var cfg = JsonSerializer.Deserialize(
+                    row.ProviderConfig,
+                    DropboxProviderConfigJsonContext.Default.DropboxProviderConfig);
+                rootPath = cfg?.RootPath;
+            }
+            catch (JsonException ex)
+            {
+                logger.LogWarning(ex,
+                    "Dropbox provider row '{ProviderId}' has malformed ProviderConfig; skipping.",
+                    row.ProviderID);
+                return null;
+            }
+        }
+
+        // Token-exchange HTTP client is unused on the CreateProviderFromConfigAsync path; the
+        // setup constructor still requires one (mirror of Drive pattern). using-disposed below.
+        using var oauthClient = new HttpClient();
+        var setup = new DropboxSetup(dropboxFactory, oauthClient, loggerFactory);
+        var result = await setup.CreateProviderFromConfigAsync(
+            row.ProviderID, row.DisplayName, row.ClientID, appSecret, refreshToken, rootPath, ct)
+            .ConfigureAwait(false);
+
+        if (!result.Success)
+        {
+            logger.LogWarning(
+                "Dropbox provider row '{ProviderId}' failed to construct: {Code} ({Message}); skipping.",
                 row.ProviderID, result.Error!.Code, result.Error!.Message);
             return null;
         }
