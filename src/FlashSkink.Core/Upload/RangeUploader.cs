@@ -95,7 +95,7 @@ public sealed class RangeUploader
                 fileId, providerId, provider, blob, existingSession, ct).ConfigureAwait(false);
             if (!resumeResult.Success)
             {
-                return Result<UploadOutcome>.Fail(resumeResult.Error!);
+                return Result<UploadOutcome>.Fail(resumeResult.Error);
             }
 
             var session = resumeResult.Value.Session;
@@ -173,7 +173,7 @@ public sealed class RangeUploader
                             .ConfigureAwait(false);
                         if (!update.Success)
                         {
-                            return Result<UploadOutcome>.Fail(update.Error!);
+                            return Result<UploadOutcome>.Fail(update.Error);
                         }
                         session = session with { BytesUploaded = bytesUploaded };
                         break;
@@ -189,10 +189,10 @@ public sealed class RangeUploader
                             .ConfigureAwait(false);
                         if (!fresh.Success)
                         {
-                            return Result<UploadOutcome>.Fail(fresh.Error!);
+                            return Result<UploadOutcome>.Fail(fresh.Error);
                         }
 
-                        session = fresh.Value!;
+                        session = fresh.Value;
                         bytesUploaded = 0;
                         stream.Seek(0, SeekOrigin.Begin);
                         break;
@@ -263,8 +263,8 @@ public sealed class RangeUploader
             var fresh = await OpenFreshSessionAsync(fileId, providerId, provider, blob, ct)
                 .ConfigureAwait(false);
             return fresh.Success
-                ? Result<SessionResume>.Ok(new SessionResume(fresh.Value!, 0))
-                : Result<SessionResume>.Fail(fresh.Error!);
+                ? Result<SessionResume>.Ok(new SessionResume(fresh.Value, 0))
+                : Result<SessionResume>.Fail(fresh.Error);
         }
 
         if (existingSession.SessionExpiresUtc <= _clock.UtcNow)
@@ -279,8 +279,8 @@ public sealed class RangeUploader
             var fresh = await OpenFreshSessionAsync(fileId, providerId, provider, blob, ct)
                 .ConfigureAwait(false);
             return fresh.Success
-                ? Result<SessionResume>.Ok(new SessionResume(fresh.Value!, 0))
-                : Result<SessionResume>.Fail(fresh.Error!);
+                ? Result<SessionResume>.Ok(new SessionResume(fresh.Value, 0))
+                : Result<SessionResume>.Fail(fresh.Error);
         }
 
         // Resume — reconcile against provider-reported bytes.
@@ -288,7 +288,7 @@ public sealed class RangeUploader
         var probe = await provider.GetUploadedBytesAsync(session, ct).ConfigureAwait(false);
         if (!probe.Success)
         {
-            return Result<SessionResume>.Fail(probe.Error!);
+            return Result<SessionResume>.Fail(probe.Error);
         }
 
         long providerReported = probe.Value;
@@ -301,7 +301,7 @@ public sealed class RangeUploader
                 .ConfigureAwait(false);
             if (!update.Success)
             {
-                return Result<SessionResume>.Fail(update.Error!);
+                return Result<SessionResume>.Fail(update.Error);
             }
         }
 
@@ -322,10 +322,10 @@ public sealed class RangeUploader
             .ConfigureAwait(false);
         if (!begin.Success)
         {
-            return Result<UploadSession>.Fail(begin.Error!);
+            return Result<UploadSession>.Fail(begin.Error);
         }
 
-        var session = begin.Value! with
+        var session = begin.Value with
         {
             FileID = fileId,
             ProviderID = providerId,
@@ -345,7 +345,7 @@ public sealed class RangeUploader
             .ConfigureAwait(false);
         if (!persist.Success)
         {
-            return Result<UploadSession>.Fail(persist.Error!);
+            return Result<UploadSession>.Fail(persist.Error);
         }
 
         return Result<UploadSession>.Ok(session);
@@ -373,7 +373,7 @@ public sealed class RangeUploader
                 return new RangeStepResult(RangeStepKind.Success, FailureOutcome: null);
             }
 
-            var error = result.Error!;
+            var error = result.Error;
             var code = error.Code;
 
             if (code == ErrorCode.UploadSessionExpired)
@@ -428,7 +428,7 @@ public sealed class RangeUploader
         var finalise = await provider.FinaliseUploadAsync(session, ct).ConfigureAwait(false);
         if (!finalise.Success)
         {
-            var error = finalise.Error!;
+            var error = finalise.Error;
             if (IsPermanent(error.Code))
             {
                 return Result<UploadOutcome>.Ok(UploadOutcome.Permanent(error.Code, error.Message));
@@ -436,7 +436,7 @@ public sealed class RangeUploader
             return Result<UploadOutcome>.Ok(UploadOutcome.Retryable(error.Code, error.Message));
         }
 
-        string remoteId = finalise.Value!;
+        string remoteId = finalise.Value;
 
         // §15.7 verification — hash check if the provider supports it; otherwise trust the GCM tag.
         // CancellationToken.None (Principle 17): FinaliseUploadAsync succeeded — the file is
@@ -448,7 +448,7 @@ public sealed class RangeUploader
             if (!hashResult.Success)
             {
                 // Verification I/O failure — treat as retryable (the next cycle re-attempts).
-                var error = hashResult.Error!;
+                var error = hashResult.Error;
                 _logger.LogWarning(
                     "Remote hash check failed for {FileId} on {ProviderId} ({RemoteId}): {Code}",
                     fileId, providerId, remoteId, error.Code);

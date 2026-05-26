@@ -872,9 +872,9 @@ internal sealed partial class DropboxProvider : IStorageProvider, IAsyncDisposab
         var usage = await TryGetSpaceUsageAsync(ct).ConfigureAwait(false);
         if (!usage.Success)
         {
-            return Result<long>.Fail(usage.Error!);
+            return Result<long>.Fail(usage.Error);
         }
-        return Result<long>.Ok(SaturateToLong(usage.Value!.Used));
+        return Result<long>.Ok(SaturateToLong(usage.Value.Used));
     }
 
     /// <inheritdoc/>
@@ -883,10 +883,10 @@ internal sealed partial class DropboxProvider : IStorageProvider, IAsyncDisposab
         var usage = await TryGetSpaceUsageAsync(ct).ConfigureAwait(false);
         if (!usage.Success)
         {
-            return Result<long?>.Fail(usage.Error!);
+            return Result<long?>.Fail(usage.Error);
         }
 
-        var allocation = usage.Value!.Allocation;
+        var allocation = usage.Value.Allocation;
         if (allocation is null)
         {
             return Result<long?>.Ok(null);
@@ -1104,6 +1104,7 @@ internal sealed partial class DropboxProvider : IStorageProvider, IAsyncDisposab
     private Result MapHttpException(HttpException hex, string op)
     {
         var typed = MapHttpException<object>(hex, op);
+        // Generic helper only ever produces failed Results; Error is non-null by construction (principle 37).
         return Result.Fail(typed.Error!);
     }
 

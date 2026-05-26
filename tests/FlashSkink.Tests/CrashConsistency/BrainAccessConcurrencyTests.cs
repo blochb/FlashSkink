@@ -146,10 +146,10 @@ public sealed class BrainAccessConcurrencyTests
                     $"Iteration {i}: CreateAsync failed: {createResult.Error?.Message}");
 
                 // Dispose the phrase immediately — this test doesn't need it.
-                createResult.Value!.RecoveryPhrase.Dispose();
+                createResult.AssertValue().RecoveryPhrase.Dispose();
 
                 // DisposeAsync on the volume is called via await using.
-                await using var volume = createResult.Value!.Volume;
+                await using var volume = createResult.AssertValue().Volume;
 
                 // Create a tail root directory for the FileSystem provider.
                 var tailRoot = Path.Combine(skinkRoot, "tail");

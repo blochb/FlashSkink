@@ -133,7 +133,7 @@ public class CompressionServiceTests
         var result = svc.Decompress(data, bothSet, data.Length, destination, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -147,7 +147,7 @@ public class CompressionServiceTests
         var rejected = svc.Decompress(
             data, BlobFlags.None, CompressionService.MaxPlaintextBytes + 1L, destination, out _);
         Assert.False(rejected.Success);
-        Assert.Equal(ErrorCode.FileTooLong, rejected.Error!.Code);
+        Assert.Equal(ErrorCode.FileTooLong, rejected.AssertError().Code);
 
         // Exactly at the cap → accepted when plaintextSize matches payload length.
         var accepted = svc.Decompress(
@@ -166,7 +166,7 @@ public class CompressionServiceTests
         var result = svc.Decompress(data, BlobFlags.None, plaintextSize: -1L, destination, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -180,7 +180,7 @@ public class CompressionServiceTests
         var result = svc.Decompress(data, BlobFlags.None, plaintextSize: 99L, destination, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
     }
 
     // ── Dispose / zero tests ──────────────────────────────────────────────────

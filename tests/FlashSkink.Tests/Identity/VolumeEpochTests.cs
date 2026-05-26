@@ -42,7 +42,7 @@ public sealed class VolumeEpochTests : IAsyncLifetime
     private async Task CreateAndDisposeVolumeAsync()
     {
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try
         {
             await receipt.Volume.DisposeAsync();
@@ -58,7 +58,7 @@ public sealed class VolumeEpochTests : IAsyncLifetime
     {
         var openResult = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(openResult.Success);
-        await openResult.Value!.DisposeAsync();
+        await openResult.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
     }
 
@@ -131,7 +131,7 @@ public sealed class VolumeEpochTests : IAsyncLifetime
         // Defensive parse is strict for VolumeEpoch — the epoch IS the conflict-detection
         // signal, and silently zeroing a corrupted value would mask divergence.
         Assert.False(openResult.Success);
-        Assert.Equal(ErrorCode.DatabaseReadFailed, openResult.Error!.Code);
+        Assert.Equal(ErrorCode.DatabaseReadFailed, openResult.AssertError().Code);
     }
 
     // ── VolumeState read paths (handshake enforcement comes in §3.5.2) ──────────────────────
@@ -150,7 +150,7 @@ public sealed class VolumeEpochTests : IAsyncLifetime
         SqliteConnection.ClearAllPools();
         var openResult = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(openResult.Success);
-        await openResult.Value!.DisposeAsync();
+        await openResult.AssertValue().DisposeAsync();
     }
 
     [Fact]
@@ -165,7 +165,7 @@ public sealed class VolumeEpochTests : IAsyncLifetime
         var openResult = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
 
         Assert.True(openResult.Success);
-        await openResult.Value!.DisposeAsync();
+        await openResult.AssertValue().DisposeAsync();
     }
 
     [Fact]
@@ -181,7 +181,7 @@ public sealed class VolumeEpochTests : IAsyncLifetime
         var openResult = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
 
         Assert.True(openResult.Success);
-        await openResult.Value!.DisposeAsync();
+        await openResult.AssertValue().DisposeAsync();
     }
 
     [Fact]

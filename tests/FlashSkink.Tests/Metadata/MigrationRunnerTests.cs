@@ -113,7 +113,7 @@ public class MigrationRunnerTests
         var result = await _sut.RunAsync(connection, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.AssertError().Code);
     }
 
     // ── Cancellation ──────────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ public class MigrationRunnerTests
         var result = await _sut.RunAsync(connection, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── Constraint enforcement ────────────────────────────────────────────────

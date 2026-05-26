@@ -13,7 +13,7 @@ public class RecoveryPhraseTests
         var result = RecoveryPhrase.FromUserInput(null!);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidMnemonic, result.AssertError().Code);
     }
 
     [Fact]
@@ -24,7 +24,7 @@ public class RecoveryPhraseTests
         var result = RecoveryPhrase.FromUserInput(words);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidMnemonic, result.AssertError().Code);
     }
 
     [Fact]
@@ -32,7 +32,7 @@ public class RecoveryPhraseTests
     {
         var words = new[] { "alpha", "bravo", "charlie" };
 
-        using var phrase = RecoveryPhrase.FromUserInput(words).Value!;
+        using var phrase = RecoveryPhrase.FromUserInput(words).AssertValue();
 
         Assert.Equal(3, phrase.Count);
         for (var i = 0; i < 3; i++)
@@ -49,7 +49,7 @@ public class RecoveryPhraseTests
         // This is the only way to verify the security-critical zeroization
         // claim isn't a no-op (CLAUDE.md Principle 31).
         var words = new[] { "alpha", "bravo", "charlie" };
-        var phrase = RecoveryPhrase.FromUserInput(words).Value!;
+        var phrase = RecoveryPhrase.FromUserInput(words).AssertValue();
 
         var field = typeof(RecoveryPhrase).GetField("_words",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
@@ -68,7 +68,7 @@ public class RecoveryPhraseTests
     [Fact]
     public void Dispose_IsIdempotent()
     {
-        var phrase = RecoveryPhrase.FromUserInput(new[] { "a", "b" }).Value!;
+        var phrase = RecoveryPhrase.FromUserInput(new[] { "a", "b" }).AssertValue();
 
         phrase.Dispose();
         // Second dispose must not throw.
@@ -78,7 +78,7 @@ public class RecoveryPhraseTests
     [Fact]
     public void Count_AfterDispose_ThrowsObjectDisposed()
     {
-        var phrase = RecoveryPhrase.FromUserInput(new[] { "a", "b" }).Value!;
+        var phrase = RecoveryPhrase.FromUserInput(new[] { "a", "b" }).AssertValue();
         phrase.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() => phrase.Count);
@@ -87,7 +87,7 @@ public class RecoveryPhraseTests
     [Fact]
     public void Indexer_AfterDispose_ThrowsObjectDisposed()
     {
-        var phrase = RecoveryPhrase.FromUserInput(new[] { "a", "b" }).Value!;
+        var phrase = RecoveryPhrase.FromUserInput(new[] { "a", "b" }).AssertValue();
         phrase.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() =>

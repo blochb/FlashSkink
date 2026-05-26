@@ -162,7 +162,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             existingSession: null, ct: CancellationToken.None);
 
         Assert.True(result.Success);
-        var outcome = result.Value!;
+        var outcome = result.AssertValue();
         Assert.Equal(UploadOutcomeStatus.Completed, outcome.Status);
         Assert.NotNull(outcome.RemoteId);
         Assert.Equal(2048, outcome.BytesUploaded);
@@ -186,7 +186,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(size, result.Value.BytesUploaded);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
@@ -201,7 +201,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
 
@@ -222,7 +222,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         string remoteName = record.BlobId + ".bin";
         var begin = await _fsProvider.BeginUploadAsync(remoteName, size, CancellationToken.None);
         Assert.True(begin.Success);
-        var session = begin.Value!;
+        var session = begin.AssertValue();
         await _fsProvider.UploadRangeAsync(session, 0, bytes.AsMemory(0, RangeSize), CancellationToken.None);
 
         // Persist a session row reflecting that one range has been uploaded.
@@ -238,7 +238,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, record, path, existingRow, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
 
@@ -251,7 +251,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         // Drive provider to upload exactly one range (4 MiB).
         string remoteName = record.BlobId + ".bin";
         var begin = await _fsProvider.BeginUploadAsync(remoteName, size, CancellationToken.None);
-        var session = begin.Value!;
+        var session = begin.AssertValue();
         await _fsProvider.UploadRangeAsync(session, 0, bytes.AsMemory(0, RangeSize), CancellationToken.None);
 
         // Persist a row LYING about progress: claim 8 MiB uploaded, but provider has only 4 MiB.
@@ -266,7 +266,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, record, path, existingRow, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
 
         // Final blob equals source (the second range was actually uploaded).
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
@@ -281,7 +281,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         // Drive provider to upload all bytes (without finalising).
         string remoteName = record.BlobId + ".bin";
         var begin = await _fsProvider.BeginUploadAsync(remoteName, size, CancellationToken.None);
-        var session = begin.Value!;
+        var session = begin.AssertValue();
         await _fsProvider.UploadRangeAsync(session, 0, bytes, CancellationToken.None);
 
         await _queueRepo.GetOrCreateSessionAsync(
@@ -294,7 +294,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, record, path, existingRow, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
 
@@ -317,7 +317,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, record, path, existingRow, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
 
         // Session row was rewritten with a fresh URI (different from the stale one).
@@ -341,7 +341,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, fault, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(size, result.Value.BytesUploaded);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
@@ -368,7 +368,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         var result = await uploadTask;
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
 
@@ -396,7 +396,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         var result = await uploadTask;
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
 
@@ -425,7 +425,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         var result = await uploadTask;
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.AssertValue().Status);
         Assert.Equal(ErrorCode.UploadFailed, result.Value.FailureCode);
     }
 
@@ -447,7 +447,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, fault, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.AssertValue().Status);
         Assert.Equal(code, result.Value.FailureCode);
 
         // Pending delay count must be zero — no retries happened.
@@ -469,7 +469,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, lyingRecord, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.AssertValue().Status);
         Assert.Equal(ErrorCode.ChecksumMismatch, result.Value.FailureCode);
     }
 
@@ -486,7 +486,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, fault, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.AssertValue().Status);
         Assert.Equal(ErrorCode.ProviderUnreachable, result.Value.FailureCode);
     }
 
@@ -502,7 +502,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, stub, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.Completed, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.Completed, result.AssertValue().Status);
         Assert.Equal(bytes, ReadFinalisedBytes(result.Value.RemoteId!));
     }
 
@@ -521,7 +521,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, fault, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.AssertValue().Status);
         Assert.Equal(ErrorCode.ProviderUnreachable, result.Value.FailureCode);
     }
 
@@ -538,7 +538,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, fault, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.AssertValue().Status);
         Assert.Equal(ErrorCode.ProviderQuotaExceeded, result.Value.FailureCode);
     }
 
@@ -560,7 +560,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         // §3.4) treats this as a transient failure of the call itself; the next cycle re-enters
         // UploadAsync with no existing session and tries Begin again.
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
 
         // No session row was persisted because Begin failed before GetOrCreateSessionAsync.
         Assert.Null(await ReadSessionRowAsync());
@@ -580,7 +580,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
 
         // A missing local blob is permanent — retrying every cycle would be futile.
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.AssertValue().Status);
         Assert.Equal(ErrorCode.BlobCorrupt, result.Value.FailureCode);
     }
 
@@ -595,7 +595,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, record, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.AssertValue().Status);
         Assert.Equal(ErrorCode.BlobCorrupt, result.Value.FailureCode);
     }
 
@@ -610,7 +610,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, lyingRecord, path, null, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.PermanentFailure, result.AssertValue().Status);
         Assert.Equal(ErrorCode.BlobCorrupt, result.Value.FailureCode);
     }
 
@@ -629,7 +629,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, _fsProvider, record, path, null, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -650,7 +650,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
             FileId, ProviderId, fault, record, path, null, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
 
         // Session row preserved — caller / next session can resume from it.
         Assert.NotNull(await ReadSessionRowAsync());
@@ -685,7 +685,7 @@ public sealed class RangeUploaderTests : IAsyncLifetime, IDisposable
         var result = await uploadTask;
 
         Assert.True(result.Success);
-        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.Value!.Status);
+        Assert.Equal(UploadOutcomeStatus.RetryableFailure, result.AssertValue().Status);
 
         // Session row exists at offset 0 — no provider-confirmed bytes.
         var row = await ReadSessionRowAsync();

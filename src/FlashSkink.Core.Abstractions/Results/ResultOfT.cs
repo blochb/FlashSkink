@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace FlashSkink.Core.Abstractions.Results;
 
 /// <summary>
@@ -9,14 +11,23 @@ namespace FlashSkink.Core.Abstractions.Results;
 /// <typeparam name="T">The type of the success value.</typeparam>
 public readonly record struct Result<T>
 {
-    /// <summary><see langword="true"/> if the operation succeeded; <see langword="false"/> if it failed.</summary>
+    /// <summary>
+    /// <see langword="true"/> if the operation succeeded; <see langword="false"/> if it failed.
+    /// When <see langword="true"/>, <see cref="Value"/> is guaranteed non-null; when
+    /// <see langword="false"/>, <see cref="Error"/> is guaranteed non-null. The analyzer
+    /// carries these guarantees through <c>if (result.Success)</c> / <c>if (!result.Success)</c>
+    /// branches via <see cref="MemberNotNullWhenAttribute"/> (principle 37).
+    /// </summary>
+    [MemberNotNullWhen(true, nameof(Value))]
+    [MemberNotNullWhen(false, nameof(Error))]
     public bool Success { get; }
 
     /// <summary>
     /// The success value when <see cref="Success"/> is <see langword="true"/>;
     /// <see langword="default"/> when <see cref="Success"/> is <see langword="false"/>.
     /// </summary>
-    public T? Value { get; }
+    [MaybeNull]
+    public T Value { get; }
 
     /// <summary>
     /// Diagnostic detail when <see cref="Success"/> is <see langword="false"/>;
@@ -24,10 +35,10 @@ public readonly record struct Result<T>
     /// </summary>
     public ErrorContext? Error { get; }
 
-    private Result(bool success, T? value, ErrorContext? error)
+    private Result(bool success, [AllowNull] T value, ErrorContext? error)
     {
         Success = success;
-        Value = value;
+        Value = value!;
         Error = error;
     }
 

@@ -353,7 +353,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
 
         var result = sut.Start(CancellationToken.None);
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ObjectDisposed, result.Error!.Code);
+        Assert.Equal(ErrorCode.ObjectDisposed, result.AssertError().Code);
     }
 
     [Fact]
@@ -531,6 +531,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
 
         var notification = Assert.Single(_bus.Published);
         Assert.Equal(NotificationSeverity.Error, notification.Severity);
+        // Notification.Error is populated when Severity == Error (asserted above) — principle 37.
         Assert.Equal(ErrorCode.ProviderAuthFailed, notification.Error!.Code);
     }
 
@@ -653,7 +654,7 @@ public sealed class UploadQueueServiceTests : IAsyncLifetime, IDisposable
         var begin = await _fsProvider.BeginUploadAsync(blobId + ".bin", 12 * 1024 * 1024,
             CancellationToken.None);
         Assert.True(begin.Success);
-        var session = begin.Value!;
+        var session = begin.AssertValue();
 
         // Persist the session row at BytesUploaded = 8 MiB.
         var expires = session.ExpiresAt == DateTimeOffset.MaxValue

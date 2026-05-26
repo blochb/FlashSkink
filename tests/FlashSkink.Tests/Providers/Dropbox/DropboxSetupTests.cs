@@ -62,7 +62,7 @@ public sealed class DropboxSetupTests
             "http://127.0.0.1:1234/oauth-callback", "challenge-xyz", Credentials(), CancellationToken.None);
 
         Assert.True(result.Success);
-        var uri = result.Value!;
+        var uri = result.AssertValue();
         Assert.Contains("dropbox.com", uri.Host);
         var query = uri.Query;
         Assert.Contains("response_type=code", query);
@@ -88,7 +88,7 @@ public sealed class DropboxSetupTests
             redirectUri!, codeChallenge!, creds, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     // ── ExchangeCodeAsync ─────────────────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ public sealed class DropboxSetupTests
             Credentials(), Dek, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.True(ProviderTokenCrypto.TryDecrypt(result.Value!, Dek, out var plaintext));
+        Assert.True(ProviderTokenCrypto.TryDecrypt(result.AssertValue(), Dek, out var plaintext));
         Assert.Equal("rt-decrypted-value", plaintext);
 
         oauthClient.Dispose();
@@ -142,7 +142,7 @@ public sealed class DropboxSetupTests
             Credentials(), Dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderApiChanged, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderApiChanged, result.AssertError().Code);
         oauthClient.Dispose();
     }
 
@@ -159,7 +159,7 @@ public sealed class DropboxSetupTests
             Credentials(), Dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderAuthFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderAuthFailed, result.AssertError().Code);
         oauthClient.Dispose();
     }
 
@@ -175,7 +175,7 @@ public sealed class DropboxSetupTests
             Credentials(), Dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
         oauthClient.Dispose();
     }
 
@@ -191,7 +191,7 @@ public sealed class DropboxSetupTests
             Credentials(), Dek, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
         oauthClient.Dispose();
     }
 
@@ -213,7 +213,7 @@ public sealed class DropboxSetupTests
             code!, verifier!, redirect!, creds, Dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
         oauthClient.Dispose();
     }
 
@@ -225,7 +225,7 @@ public sealed class DropboxSetupTests
         var (setup, _, _, oauthClient) = Build();
         var result = await setup.ValidatePathAsync("/any/path", "/skink", CancellationToken.None);
         Assert.True(result.Success);
-        Assert.False(result.Value!.IsValid);
+        Assert.False(result.AssertValue().IsValid);
         oauthClient.Dispose();
     }
 
@@ -279,7 +279,7 @@ public sealed class DropboxSetupTests
             providerConfigJson: null, Dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.TokenRevoked, result.Error!.Code);
+        Assert.Equal(ErrorCode.TokenRevoked, result.AssertError().Code);
         oauthClient.Dispose();
     }
 
@@ -294,7 +294,7 @@ public sealed class DropboxSetupTests
             providerConfigJson: "{not json", dek: Dek, ct: CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
         oauthClient.Dispose();
     }
 
@@ -317,7 +317,7 @@ public sealed class DropboxSetupTests
             providerConfigJson: null, Dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
         oauthClient.Dispose();
     }
 
@@ -330,7 +330,7 @@ public sealed class DropboxSetupTests
             providerConfigJson: null, Dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
         oauthClient.Dispose();
     }
 

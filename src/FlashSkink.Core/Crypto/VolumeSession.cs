@@ -125,11 +125,11 @@ public sealed class VolumeLifecycle
         {
             _logger.LogError(
                 "Vault unlock failed for {SkinkRoot}: {Code} — {Message}",
-                skinkRoot, unlockResult.Error!.Code, unlockResult.Error.Message);
-            return Result<VolumeSession>.Fail(unlockResult.Error!);
+                skinkRoot, unlockResult.Error.Code, unlockResult.Error.Message);
+            return Result<VolumeSession>.Fail(unlockResult.Error);
         }
 
-        var dek = unlockResult.Value!;
+        var dek = unlockResult.Value;
 
         var brainResult = await _brainFactory
             .CreateAsync(brainPath, dek, ct).ConfigureAwait(false);
@@ -138,11 +138,11 @@ public sealed class VolumeLifecycle
             CryptographicOperations.ZeroMemory(dek);
             _logger.LogError(
                 "Brain connection failed for {BrainPath}: {Code} — {Message}",
-                brainPath, brainResult.Error!.Code, brainResult.Error.Message);
-            return Result<VolumeSession>.Fail(brainResult.Error!);
+                brainPath, brainResult.Error.Code, brainResult.Error.Message);
+            return Result<VolumeSession>.Fail(brainResult.Error);
         }
 
-        var connection = brainResult.Value!;
+        var connection = brainResult.Value;
 
         var migrationResult = await _migrationRunner
             .RunAsync(connection, ct).ConfigureAwait(false);
@@ -152,8 +152,8 @@ public sealed class VolumeLifecycle
             CryptographicOperations.ZeroMemory(dek);
             _logger.LogError(
                 "Brain migration failed for {BrainPath}: {Code} — {Message}",
-                brainPath, migrationResult.Error!.Code, migrationResult.Error.Message);
-            return Result<VolumeSession>.Fail(migrationResult.Error!);
+                brainPath, migrationResult.Error.Code, migrationResult.Error.Message);
+            return Result<VolumeSession>.Fail(migrationResult.Error);
         }
 
         // Wrap the raw connection in BrainAccess immediately. From here on, no

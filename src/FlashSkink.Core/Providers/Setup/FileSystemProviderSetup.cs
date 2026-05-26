@@ -243,10 +243,10 @@ internal sealed class FileSystemProviderSetup : IProviderSetup
 
             if (!createResult.Success)
             {
-                return Task.FromResult(Result<IStorageProvider>.Fail(createResult.Error!));
+                return Task.FromResult(Result<IStorageProvider>.Fail(createResult.Error));
             }
 
-            return Task.FromResult(Result<IStorageProvider>.Ok(createResult.Value!));
+            return Task.FromResult(Result<IStorageProvider>.Ok(createResult.Value));
         }
         catch (OperationCanceledException ex)
         {

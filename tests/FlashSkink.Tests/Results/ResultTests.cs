@@ -21,7 +21,7 @@ public class ResultTests
 
         Assert.False(result.Success);
         Assert.NotNull(result.Error);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.Unknown, result.AssertError().Code);
         Assert.Equal("msg", result.Error.Message);
         Assert.Null(result.Error.ExceptionType);
     }
@@ -35,7 +35,8 @@ public class ResultTests
 
         var result = Result.Fail(ErrorCode.Unknown, "msg", captured);
 
-        Assert.Equal("System.InvalidOperationException", result.Error!.ExceptionType);
+        Assert.False(result.Success);
+        Assert.Equal("System.InvalidOperationException", result.Error.ExceptionType);
         Assert.Equal("boom", result.Error.ExceptionMessage);
         Assert.NotNull(result.Error.StackTrace);
     }
@@ -103,7 +104,8 @@ public class ResultOfTTests
 
         var result = Result<string>.Fail(ErrorCode.Unknown, "msg", captured);
 
-        Assert.Equal("System.ArgumentException", result.Error!.ExceptionType);
+        Assert.False(result.Success);
+        Assert.Equal("System.ArgumentException", result.Error.ExceptionType);
         Assert.Equal("bad arg", result.Error.ExceptionMessage);
         Assert.NotNull(result.Error.StackTrace);
     }

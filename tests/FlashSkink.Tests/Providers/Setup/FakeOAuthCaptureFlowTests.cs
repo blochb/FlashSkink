@@ -16,7 +16,7 @@ public sealed class FakeOAuthCaptureFlowTests
         var result = fake.Prepare();
 
         Assert.True(result.Success);
-        Assert.Equal("http://127.0.0.1:65000/oauth-callback/", result.Value!.RedirectUri);
+        Assert.Equal("http://127.0.0.1:65000/oauth-callback/", result.AssertValue().RedirectUri);
         Assert.NotEmpty(result.Value.CodeChallenge);
         Assert.NotEmpty(result.Value.CodeVerifier);
     }
@@ -32,7 +32,7 @@ public sealed class FakeOAuthCaptureFlowTests
         var result = fake.Prepare();
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.Unknown, result.AssertError().Code);
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public sealed class FakeOAuthCaptureFlowTests
     public async Task AwaitAuthorizationCodeAsync_ReturnsDefaultCode_WhenNoOverride()
     {
         var fake = new FakeOAuthCaptureFlow();
-        var context = fake.Prepare().Value!;
+        var context = fake.Prepare().AssertValue();
 
         var result = await fake.AwaitAuthorizationCodeAsync(
             context, new Uri("https://example.com/auth"), CancellationToken.None);
@@ -67,7 +67,7 @@ public sealed class FakeOAuthCaptureFlowTests
         {
             AwaitResult = Result<string>.Ok("custom-code-xyz"),
         };
-        var context = fake.Prepare().Value!;
+        var context = fake.Prepare().AssertValue();
 
         var result = await fake.AwaitAuthorizationCodeAsync(
             context, new Uri("https://example.com/auth"), CancellationToken.None);
@@ -80,7 +80,7 @@ public sealed class FakeOAuthCaptureFlowTests
     public async Task AwaitAuthorizationCodeAsync_CapturesAuthorizationUri()
     {
         var fake = new FakeOAuthCaptureFlow();
-        var context = fake.Prepare().Value!;
+        var context = fake.Prepare().AssertValue();
         var uri = new Uri("https://accounts.google.com/o/oauth2/v2/auth?client_id=123");
 
         await fake.AwaitAuthorizationCodeAsync(context, uri, CancellationToken.None);
@@ -92,7 +92,7 @@ public sealed class FakeOAuthCaptureFlowTests
     public async Task AwaitAuthorizationCodeAsync_IncrementsCallCount()
     {
         var fake = new FakeOAuthCaptureFlow();
-        var context = fake.Prepare().Value!;
+        var context = fake.Prepare().AssertValue();
 
         await fake.AwaitAuthorizationCodeAsync(context, new Uri("https://example.com/"), CancellationToken.None);
         await fake.AwaitAuthorizationCodeAsync(context, new Uri("https://example.com/"), CancellationToken.None);
@@ -104,7 +104,7 @@ public sealed class FakeOAuthCaptureFlowTests
     public async Task AwaitAuthorizationCodeAsync_CancelledToken_ReturnsCancelled()
     {
         var fake = new FakeOAuthCaptureFlow();
-        var context = fake.Prepare().Value!;
+        var context = fake.Prepare().AssertValue();
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
@@ -112,6 +112,6 @@ public sealed class FakeOAuthCaptureFlowTests
             context, new Uri("https://example.com/auth"), cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 }

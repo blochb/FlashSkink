@@ -42,7 +42,7 @@ public sealed class FaultInjectingStorageProviderTests : IDisposable
     private async Task<(FaultInjectingStorageProvider sut, FlashSkink.Core.Abstractions.Providers.UploadSession session)>
         OpenSessionAsync(string remote = "abcdef1234567890.bin", int total = 4096)
     {
-        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         return (_sut, session);
     }
 
@@ -56,7 +56,7 @@ public sealed class FaultInjectingStorageProviderTests : IDisposable
 
         var first = await sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
         Assert.False(first.Success);
-        Assert.Equal(ErrorCode.UploadFailed, first.Error!.Code);
+        Assert.Equal(ErrorCode.UploadFailed, first.AssertError().Code);
 
         // Second attempt succeeds (fault consumed).
         var second = await sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
@@ -72,7 +72,7 @@ public sealed class FaultInjectingStorageProviderTests : IDisposable
         var result = await sut.UploadRangeAsync(session, 0, MakeBytes(4096), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderRateLimited, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderRateLimited, result.AssertError().Code);
     }
 
     [Fact]
@@ -88,7 +88,7 @@ public sealed class FaultInjectingStorageProviderTests : IDisposable
         var result = await sut.UploadRangeAsync(session, 4096, MakeBytes(4096), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+        Assert.Equal(ErrorCode.UploadSessionExpired, result.AssertError().Code);
     }
 
     [Fact]

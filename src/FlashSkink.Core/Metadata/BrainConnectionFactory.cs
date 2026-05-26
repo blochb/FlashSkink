@@ -39,7 +39,7 @@ public sealed class BrainConnectionFactory
         var brainKeyResult = _kdf.DeriveBrainKey(dek.Span, brainKeySpan);
         if (!brainKeyResult.Success)
         {
-            return Result<SqliteConnection>.Fail(brainKeyResult.Error!);
+            return Result<SqliteConnection>.Fail(brainKeyResult.Error);
         }
 
         var pragmaKey = $"PRAGMA key = \"x'{Convert.ToHexString(brainKeySpan)}'\"";

@@ -244,7 +244,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
             try
             {
                 var final = await TriggerMirrorAsync(CancellationToken.None).ConfigureAwait(false);
-                if (!final.Success && final.Error!.Code != ErrorCode.Cancelled)
+                if (!final.Success && final.Error.Code != ErrorCode.Cancelled)
                 {
                     _logger.LogWarning(
                         "Final brain mirror on shutdown failed: {Code} {Message}",
@@ -301,7 +301,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
             {
                 await _clock.Delay(interval, ct).ConfigureAwait(false);
                 var result = await TriggerMirrorAsync(ct).ConfigureAwait(false);
-                if (!result.Success && result.Error!.Code != ErrorCode.Cancelled)
+                if (!result.Success && result.Error.Code != ErrorCode.Cancelled)
                 {
                     _logger.LogWarning(
                         "Timer-driven brain mirror cycle failed: {Code} {Message}",
@@ -356,7 +356,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
                 Interlocked.Exchange(ref _lastCommitTicks, 0L);
 
                 var result = await TriggerMirrorAsync(ct).ConfigureAwait(false);
-                if (!result.Success && result.Error!.Code != ErrorCode.Cancelled)
+                if (!result.Success && result.Error.Code != ErrorCode.Cancelled)
                 {
                     _logger.LogWarning(
                         "Commit-driven brain mirror cycle failed: {Code} {Message}",
@@ -396,9 +396,9 @@ public sealed class BrainMirrorService : IAsyncDisposable
             var snapResult = await SnapshotAsync(nowUtc, ct).ConfigureAwait(false);
             if (!snapResult.Success)
             {
-                return Result.Fail(snapResult.Error!);
+                return Result.Fail(snapResult.Error);
             }
-            stagingPath = snapResult.Value!;
+            stagingPath = snapResult.Value;
 
             // 2. Size cap check.
             long snapSize = new FileInfo(stagingPath).Length;
@@ -430,21 +430,21 @@ public sealed class BrainMirrorService : IAsyncDisposable
             var encResult = await ReadAndEncryptAsync(stagingPath, nowUtc, ct).ConfigureAwait(false);
             if (!encResult.Success)
             {
-                return Result.Fail(encResult.Error!);
+                return Result.Fail(encResult.Error);
             }
-            payload = encResult.Value!;
+            payload = encResult.Value;
 
             // 4. List active providers.
             var listResult = await _registry.ListActiveProviderIdsAsync(ct).ConfigureAwait(false);
             if (!listResult.Success)
             {
                 _logger.LogWarning(
-                    "Cannot list providers for brain mirror: {Code}", listResult.Error!.Code);
-                return Result.Fail(listResult.Error!);
+                    "Cannot list providers for brain mirror: {Code}", listResult.Error.Code);
+                return Result.Fail(listResult.Error);
             }
 
             // 5. Per-tail upload + prune, isolated.
-            foreach (var providerId in listResult.Value!)
+            foreach (var providerId in listResult.Value)
             {
                 ct.ThrowIfCancellationRequested();
 
@@ -453,10 +453,10 @@ public sealed class BrainMirrorService : IAsyncDisposable
                 {
                     _logger.LogWarning(
                         "Provider {Id} not available for brain mirror: {Code}",
-                        providerId, providerResult.Error!.Code);
+                        providerId, providerResult.Error.Code);
                     continue;
                 }
-                var provider = providerResult.Value!;
+                var provider = providerResult.Value;
 
                 try
                 {
@@ -464,7 +464,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
                         .ConfigureAwait(false);
                     if (!upResult.Success)
                     {
-                        if (upResult.Error!.Code != ErrorCode.Cancelled)
+                        if (upResult.Error.Code != ErrorCode.Cancelled)
                         {
                             await PublishMirrorFailureAsync(
                                 provider.DisplayName,
@@ -476,7 +476,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
                     }
 
                     var pruneResult = await PruneOneTailAsync(provider, ct).ConfigureAwait(false);
-                    if (!pruneResult.Success && pruneResult.Error!.Code != ErrorCode.Cancelled)
+                    if (!pruneResult.Success && pruneResult.Error.Code != ErrorCode.Cancelled)
                     {
                         _logger.LogWarning(
                             "Brain mirror retention prune failed for {Tail}: {Code}",
@@ -540,7 +540,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
         if (!deriveResult.Success)
         {
             CryptographicOperations.ZeroMemory(brainKeySpan);
-            return Result<string>.Fail(deriveResult.Error!);
+            return Result<string>.Fail(deriveResult.Error);
         }
         string pragma = $"PRAGMA key = \"x'{Convert.ToHexString(brainKeySpan)}'\"";
         CryptographicOperations.ZeroMemory(brainKeySpan);
@@ -570,9 +570,9 @@ public sealed class BrainMirrorService : IAsyncDisposable
             var keyResult = DeriveBrainPragma(_dek.Span);
             if (!keyResult.Success)
             {
-                return Result<string>.Fail(keyResult.Error!);
+                return Result<string>.Fail(keyResult.Error);
             }
-            string pragmaKey = keyResult.Value!;
+            string pragmaKey = keyResult.Value;
 
             // SqliteConnection.BackupDatabase is synchronous; offload so we don't block the
             // calling sync-context. The brain scope is held for the full backup so no other
@@ -780,9 +780,9 @@ public sealed class BrainMirrorService : IAsyncDisposable
             .BeginUploadAsync(remoteName, payload.LongLength, ct).ConfigureAwait(false);
         if (!sessionResult.Success)
         {
-            return Result<string>.Fail(sessionResult.Error!);
+            return Result<string>.Fail(sessionResult.Error);
         }
-        var session = sessionResult.Value!;
+        var session = sessionResult.Value;
 
         int offset = 0;
         while (offset < payload.Length)
@@ -796,7 +796,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
             if (!rangeResult.Success)
             {
                 await AbortQuietlyAsync(provider, session).ConfigureAwait(false);
-                return Result<string>.Fail(rangeResult.Error!);
+                return Result<string>.Fail(rangeResult.Error);
             }
             offset += chunkLen;
         }
@@ -805,10 +805,10 @@ public sealed class BrainMirrorService : IAsyncDisposable
         if (!finResult.Success)
         {
             await AbortQuietlyAsync(provider, session).ConfigureAwait(false);
-            return Result<string>.Fail(finResult.Error!);
+            return Result<string>.Fail(finResult.Error);
         }
 
-        return Result<string>.Ok(finResult.Value!);
+        return Result<string>.Ok(finResult.Value);
     }
 
     private async Task AbortQuietlyAsync(IStorageProvider provider, UploadSession session)
@@ -821,7 +821,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
         {
             _logger.LogDebug(
                 "AbortUploadAsync returned non-success while cleaning up failed mirror upload to {Tail}: {Code} {Message}",
-                provider.DisplayName, abort.Error!.Code, abort.Error.Message);
+                provider.DisplayName, abort.Error.Code, abort.Error.Message);
         }
     }
 
@@ -830,12 +830,12 @@ public sealed class BrainMirrorService : IAsyncDisposable
         var listResult = await provider.ListAsync("_brain", ct).ConfigureAwait(false);
         if (!listResult.Success)
         {
-            return Result.Fail(listResult.Error!);
+            return Result.Fail(listResult.Error);
         }
 
         // ISO-8601 yyyyMMddTHHmmssZ in lex order == chronological order.
         var entries = new List<string>();
-        foreach (var id in listResult.Value!)
+        foreach (var id in listResult.Value)
         {
             if (id.StartsWith("_brain/", StringComparison.Ordinal)
                 && id.EndsWith(".bin", StringComparison.Ordinal))
@@ -856,7 +856,7 @@ public sealed class BrainMirrorService : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             var stale = entries[i];
             var delResult = await provider.DeleteAsync(stale, ct).ConfigureAwait(false);
-            if (!delResult.Success && delResult.Error!.Code != ErrorCode.Cancelled)
+            if (!delResult.Success && delResult.Error.Code != ErrorCode.Cancelled)
             {
                 _logger.LogWarning(
                     "Could not prune stale mirror {RemoteId} from {Tail}: {Code}",

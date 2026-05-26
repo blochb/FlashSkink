@@ -380,7 +380,7 @@ public sealed class FileRepository
                     var insertResult = await InsertAsync(folder, ct).ConfigureAwait(false);
                     if (!insertResult.Success)
                     {
-                        return Result<string?>.Fail(insertResult.Error!);
+                        return Result<string?>.Fail(insertResult.Error);
                     }
                     currentParentId = newId;
                 }
@@ -501,7 +501,7 @@ public sealed class FileRepository
             var fileResult = await GetByIdAsync(fileId, ct).ConfigureAwait(false);
             if (!fileResult.Success)
             {
-                return Result.Fail(fileResult.Error!);
+                return Result.Fail(fileResult.Error);
             }
             file = fileResult.Value;
             if (file is null)
@@ -629,7 +629,7 @@ public sealed class FileRepository
                 var countResult = await CountChildrenAsync(folderId, ct).ConfigureAwait(false);
                 if (!countResult.Success)
                 {
-                    return Result.Fail(countResult.Error!);
+                    return Result.Fail(countResult.Error);
                 }
                 if (countResult.Value > 0)
                 {
@@ -646,9 +646,9 @@ public sealed class FileRepository
             var descendantsResult = await GetDescendantsAsync(folderId, ct).ConfigureAwait(false);
             if (!descendantsResult.Success)
             {
-                return Result.Fail(descendantsResult.Error!);
+                return Result.Fail(descendantsResult.Error);
             }
-            var descendants = descendantsResult.Value!;
+            var descendants = descendantsResult.Value;
 
             scope = await _brain.LockAsync(ct).ConfigureAwait(false);
             scopeAcquired = true;
@@ -771,7 +771,7 @@ public sealed class FileRepository
             var folderResult = await GetByIdAsync(folderId, ct).ConfigureAwait(false);
             if (!folderResult.Success)
             {
-                return Result.Fail(folderResult.Error!);
+                return Result.Fail(folderResult.Error);
             }
             var folder = folderResult.Value;
             if (folder is null)
@@ -877,7 +877,7 @@ public sealed class FileRepository
             var fileResult = await GetByIdAsync(fileId, ct).ConfigureAwait(false);
             if (!fileResult.Success)
             {
-                return Result.Fail(fileResult.Error!);
+                return Result.Fail(fileResult.Error);
             }
             var file = fileResult.Value;
             if (file is null)
@@ -923,7 +923,7 @@ public sealed class FileRepository
                 var parentResult = await GetByIdAsync(newParentId, ct).ConfigureAwait(false);
                 if (!parentResult.Success)
                 {
-                    return Result.Fail(parentResult.Error!);
+                    return Result.Fail(parentResult.Error);
                 }
                 var parent = parentResult.Value;
                 if (parent is null)

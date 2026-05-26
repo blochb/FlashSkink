@@ -89,7 +89,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var result = await _writePipeline.ExecuteAsync(
             new MemoryStream(content), virtualPath, _context, CancellationToken.None);
         Assert.True(result.Success, $"Write failed: {result.Error?.Message}");
-        return result.Value!.BlobId;
+        return result.AssertValue().BlobId;
     }
 
     private string GetBlobPath(string blobId) =>
@@ -214,7 +214,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/no/such/file.txt");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.FileNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.FileNotFound, result.AssertError().Code);
         Assert.Single(_bus.Published);
         // Message must reference the path but not contain forbidden appliance vocabulary.
         Assert.DoesNotContain("blob", _bus.Published[0].Message, StringComparison.OrdinalIgnoreCase);
@@ -235,7 +235,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/myfolder");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.FileNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.FileNotFound, result.AssertError().Code);
         Assert.Contains("folder", result.Error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -253,7 +253,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/orphan.txt");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -288,7 +288,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/missing.txt");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -302,7 +302,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/capped.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.FileTooLong, result.Error!.Code);
+        Assert.Equal(ErrorCode.FileTooLong, result.AssertError().Code);
     }
 
     // ── On-disk corruption tests ──────────────────────────────────────────────
@@ -316,7 +316,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/present.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
         Assert.Single(_bus.Published);
         Assert.Equal(NotificationSeverity.Error, _bus.Published[0].Severity);
     }
@@ -336,7 +336,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/short.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -357,7 +357,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/long.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -374,7 +374,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/magic.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -392,7 +392,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/version.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.AssertError().Code);
     }
 
     [Fact]
@@ -409,7 +409,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/flags.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -428,7 +428,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var result = await _readPipeline.ExecuteAsync("/cipher.bin", dest, _context, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
         Assert.Equal(0, dest.Length); // no plaintext written
         var notification = Assert.Single(_bus.Published);
         Assert.Equal(NotificationSeverity.Critical, notification.Severity);
@@ -451,7 +451,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/tag.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -466,7 +466,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/sha.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -493,7 +493,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/swapA.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -510,7 +510,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/mismatch.bin");
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobCorrupt, result.AssertError().Code);
     }
 
     // ── ChecksumMismatch test (stage 6) ──────────────────────────────────────
@@ -555,7 +555,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var result = await _readPipeline.ExecuteAsync("/forged.bin", dest, _context, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ChecksumMismatch, result.Error!.Code);
+        Assert.Equal(ErrorCode.ChecksumMismatch, result.AssertError().Code);
         Assert.Equal(0, dest.Length); // no plaintext written — stage 7 never runs
         var notification = Assert.Single(_bus.Published);
         Assert.Equal(NotificationSeverity.Critical, notification.Severity);
@@ -575,7 +575,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, content) = await ReadFileAsync("/cancel.bin", cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
         Assert.Empty(content);
         Assert.Empty(_bus.Published); // Principle 14 — cancellation is not published
     }
@@ -594,7 +594,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
         var (result, _) = await ReadFileAsync("/bigcancel.bin", cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
         Assert.Empty(_bus.Published);
     }
 
@@ -656,7 +656,7 @@ public sealed class ReadPipelineTests : IAsyncLifetime, IDisposable
 
         // The original failure (FileNotFound) must be returned — bus failure must not mask it.
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.FileNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.FileNotFound, result.AssertError().Code);
     }
 
     // ── Sequential read witness ───────────────────────────────────────────────

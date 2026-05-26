@@ -83,11 +83,11 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
             NullLogger<WriteWalScope>.Instance, CancellationToken.None);
 
         Assert.True(result.Success);
-        await using var scope = result.Value!; // ! safe: Success asserted above
+        await using var scope = result.AssertValue(); // ! safe: Success asserted above
         var rows = await _wal.ListIncompleteAsync(CancellationToken.None);
         Assert.True(rows.Success);
-        Assert.Single(rows.Value!);
-        var row = rows.Value![0]; // ! safe: Single asserted above
+        Assert.Single(rows.AssertValue());
+        var row = rows.AssertValue()[0]; // ! safe: Single asserted above
         Assert.Equal("WRITE", row.Operation);
         Assert.Equal("PREPARE", row.Phase);
         // Deserialize the JSON payload to verify values; avoids Windows path backslash-escaping issues.
@@ -111,7 +111,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
             NullLogger<WriteWalScope>.Instance, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DatabaseWriteFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DatabaseWriteFailed, result.AssertError().Code);
         Assert.Null(result.Value);
     }
 
@@ -122,7 +122,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
     {
         var result = await OpenAsync();
         Assert.True(result.Success);
-        await using var scope = result.Value!; // ! safe: Success asserted above
+        await using var scope = result.AssertValue(); // ! safe: Success asserted above
         var walId = QueryWalId();
 
         var completeResult = await scope.CompleteAsync();
@@ -136,7 +136,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
     {
         var result = await OpenAsync();
         Assert.True(result.Success);
-        await using var scope = result.Value!; // ! safe: Success asserted above
+        await using var scope = result.AssertValue(); // ! safe: Success asserted above
         var walId = QueryWalId();
 
         var first = await scope.CompleteAsync();
@@ -163,7 +163,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
         Assert.True(result.Success);
         var walId = QueryWalId();
 
-        await using (var scope = result.Value!) // ! safe: Success asserted above
+        await using (var scope = result.AssertValue()) // ! safe: Success asserted above
         {
             await scope.CompleteAsync();
         }
@@ -184,7 +184,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
         Assert.True(result.Success);
         var walId = QueryWalId();
 
-        await using (result.Value!) { }  // ! safe: Success asserted above; dispose without complete
+        await using (result.AssertValue()) { }  // ! safe: Success asserted above; dispose without complete
 
         Assert.Equal("FAILED", QueryPhase(walId));
         Assert.False(File.Exists(stagingPath));
@@ -204,9 +204,9 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
         var result = await OpenAsync(blobId: blobId);
         Assert.True(result.Success);
         var walId = QueryWalId();
-        result.Value!.MarkRenamed(); // ! safe: Success asserted above
+        result.AssertValue().MarkRenamed(); // ! safe: Success asserted above
 
-        await using (result.Value!) { }  // dispose without complete
+        await using (result.AssertValue()) { }  // dispose without complete
 
         Assert.Equal("FAILED", QueryPhase(walId));
         Assert.False(File.Exists(stagingPath));
@@ -226,7 +226,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
         var walId = QueryWalId();
         // MarkRenamed NOT called.
 
-        await using (result.Value!) { }  // ! safe: Success asserted above; dispose without complete
+        await using (result.AssertValue()) { }  // ! safe: Success asserted above; dispose without complete
 
         Assert.Equal("FAILED", QueryPhase(walId));
         // Destination must still exist — MarkRenamed was never set.
@@ -239,7 +239,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
         var result = await OpenAsync();
         Assert.True(result.Success);
         var walId = QueryWalId();
-        var scope = result.Value!; // ! safe: Success asserted above
+        var scope = result.AssertValue(); // ! safe: Success asserted above
 
         await scope.DisposeAsync();
         await scope.DisposeAsync();  // second dispose must be a no-op
@@ -264,7 +264,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
         _connection.Close();
 
         // DisposeAsync must swallow the failure — no exception escapes.
-        var ex = await Record.ExceptionAsync(async () => await result.Value!.DisposeAsync()); // ! safe: opened successfully above
+        var ex = await Record.ExceptionAsync(async () => await result.AssertValue().DisposeAsync()); // ! safe: opened successfully above
 
         Assert.Null(ex);
         Assert.True(logger.HasEntry(LogLevel.Error, walId),
@@ -279,7 +279,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
         // Open a scope to create the WAL row in PREPARE.
         var result = await OpenAsync();
         Assert.True(result.Success);
-        await using var scope = result.Value!;
+        await using var scope = result.AssertValue();
         var walId = QueryWalId();
 
         // Begin a transaction, complete the scope inside it, then roll back.
@@ -302,12 +302,12 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
         var walId = QueryWalId();
 
         using var tx = _connection.BeginTransaction();
-        var completeResult = await result.Value!.CompleteAsync(transaction: tx);
+        var completeResult = await result.AssertValue().CompleteAsync(transaction: tx);
         Assert.True(completeResult.Success);
         tx.Commit();
-        result.Value!.ConfirmCommitted();
+        result.AssertValue().ConfirmCommitted();
 
-        await result.Value!.DisposeAsync();
+        await result.AssertValue().DisposeAsync();
 
         // Commit succeeded and ConfirmCommitted was called — DisposeAsync must not roll back.
         Assert.Equal("COMMITTED", QueryPhase(walId));
@@ -329,7 +329,7 @@ public sealed class WriteWalScopeTests : IAsyncLifetime, IDisposable
 
         var result = await OpenAsync(blobId: blobId);
         Assert.True(result.Success);
-        await using var scope = result.Value!;
+        await using var scope = result.AssertValue();
         var walId = QueryWalId();
         scope.MarkRenamed();
 

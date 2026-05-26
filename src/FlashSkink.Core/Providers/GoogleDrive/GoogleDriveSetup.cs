@@ -327,9 +327,9 @@ internal sealed partial class GoogleDriveSetup : IProviderSetup
         var bundleResult = _clientFactory.Create(clientId, clientSecret, refreshToken, _loggerFactory);
         if (!bundleResult.Success)
         {
-            return Result<IStorageProvider>.Fail(bundleResult.Error!);
+            return Result<IStorageProvider>.Fail(bundleResult.Error);
         }
-        var bundle = bundleResult.Value!;
+        var bundle = bundleResult.Value;
 
         try
         {
@@ -346,9 +346,9 @@ internal sealed partial class GoogleDriveSetup : IProviderSetup
                 if (!resolved.Success)
                 {
                     bundle.Dispose();
-                    return Result<IStorageProvider>.Fail(resolved.Error!);
+                    return Result<IStorageProvider>.Fail(resolved.Error);
                 }
-                folderId = resolved.Value!;
+                folderId = resolved.Value;
             }
 
             var provider = new GoogleDriveProvider(

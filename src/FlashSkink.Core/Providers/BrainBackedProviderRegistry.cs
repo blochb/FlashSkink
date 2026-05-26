@@ -319,12 +319,12 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
             logger.LogWarning(
                 "FileSystem provider row '{ProviderId}' failed to construct: {Code} ({Message}); skipping.",
                 row.ProviderID,
-                createResult.Error!.Code,
-                createResult.Error!.Message);
+                createResult.Error.Code,
+                createResult.Error.Message);
             return null;
         }
 
-        return createResult.Value!;
+        return createResult.Value;
     }
 
     private static async Task<IStorageProvider?> TryBuildGoogleDriveAdapterAsync(
@@ -405,11 +405,11 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
         {
             logger.LogWarning(
                 "Google Drive provider row '{ProviderId}' failed to construct: {Code} ({Message}); skipping.",
-                row.ProviderID, result.Error!.Code, result.Error!.Message);
+                row.ProviderID, result.Error.Code, result.Error.Message);
             return null;
         }
 
-        return result.Value!;
+        return result.Value;
     }
 
     private static async Task<IStorageProvider?> TryBuildDropboxAdapterAsync(
@@ -487,11 +487,11 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
         {
             logger.LogWarning(
                 "Dropbox provider row '{ProviderId}' failed to construct: {Code} ({Message}); skipping.",
-                row.ProviderID, result.Error!.Code, result.Error!.Message);
+                row.ProviderID, result.Error.Code, result.Error.Message);
             return null;
         }
 
-        return result.Value!;
+        return result.Value;
     }
 
     /// <summary>

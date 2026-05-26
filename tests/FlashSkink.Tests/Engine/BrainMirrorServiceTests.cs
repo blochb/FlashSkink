@@ -175,7 +175,7 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         var result = sut.Start(CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ObjectDisposed, result.Error!.Code);
+        Assert.Equal(ErrorCode.ObjectDisposed, result.AssertError().Code);
     }
 
     [Fact]
@@ -529,7 +529,7 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         var result = await sut.TriggerMirrorAsync(CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.FileTooLong, result.Error!.Code);
+        Assert.Equal(ErrorCode.FileTooLong, result.AssertError().Code);
         Assert.Contains(_bus.Published, n =>
             n.Error?.Code == ErrorCode.FileTooLong);
         // No mirror should have landed on the tail.
@@ -550,7 +550,7 @@ public sealed class BrainMirrorServiceTests : IAsyncLifetime, IDisposable
         var result = await sut.TriggerMirrorAsync(cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
 
         // No staging snapshot left behind.
         var stagingDir = Path.Combine(_skinkRoot, ".flashskink", "staging");

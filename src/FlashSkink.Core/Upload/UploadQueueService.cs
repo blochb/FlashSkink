@@ -330,12 +330,12 @@ public sealed class UploadQueueService : IAsyncDisposable
                 {
                     _logger.LogWarning(
                         "Could not list active providers: {Code}",
-                        activeListResult.Error!.Code);
+                        activeListResult.Error.Code);
                     await _clock.Delay(OrchestratorIdle, ct).ConfigureAwait(false);
                     continue;
                 }
 
-                var active = new HashSet<string>(activeListResult.Value!, StringComparer.Ordinal);
+                var active = new HashSet<string>(activeListResult.Value, StringComparer.Ordinal);
                 await EnsureAllRunningAndPruneDepartedAsync(active, ct).ConfigureAwait(false);
 
                 await IdleAsync(OrchestratorIdle, ct).ConfigureAwait(false);
@@ -474,7 +474,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                     await _clock.Delay(WorkerIdle, ct).ConfigureAwait(false);
                     continue;
                 }
-                var provider = providerResult.Value!;
+                var provider = providerResult.Value;
 
                 // Drain the reader fully before processing so the SqliteDataReader is disposed
                 // before any write operations in ProcessOneAsync. Two concurrent workers sharing
@@ -497,7 +497,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                 var processResult = await ProcessOneAsync(dequeued.Value, provider, ct).ConfigureAwait(false);
                 if (!processResult.Success)
                 {
-                    if (processResult.Error!.Code == ErrorCode.Cancelled)
+                    if (processResult.Error.Code == ErrorCode.Cancelled)
                     {
                         // Shutdown — preserve UploadSessions row; exit worker.
                         return;
@@ -558,7 +558,7 @@ public sealed class UploadQueueService : IAsyncDisposable
             var fileResult = await _fileRepository.GetByIdAsync(row.FileId, ct).ConfigureAwait(false);
             if (!fileResult.Success)
             {
-                return Result.Fail(fileResult.Error!);
+                return Result.Fail(fileResult.Error);
             }
             if (fileResult.Value is null || fileResult.Value.BlobId is null)
             {
@@ -569,7 +569,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                     .MarkFailedAsync(row.FileId, row.ProviderId,
                         "File row missing or has no associated blob.", ct)
                     .ConfigureAwait(false);
-                return markMissing.Success ? Result.Ok() : Result.Fail(markMissing.Error!);
+                return markMissing.Success ? Result.Ok() : Result.Fail(markMissing.Error);
             }
             var file = fileResult.Value;
 
@@ -578,7 +578,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                 .ConfigureAwait(false);
             if (!blobResult.Success)
             {
-                return Result.Fail(blobResult.Error!);
+                return Result.Fail(blobResult.Error);
             }
             if (blobResult.Value is null)
             {
@@ -589,7 +589,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                     .MarkFailedAsync(row.FileId, row.ProviderId,
                         "Blob row missing for file.", ct)
                     .ConfigureAwait(false);
-                return markMissing.Success ? Result.Ok() : Result.Fail(markMissing.Error!);
+                return markMissing.Success ? Result.Ok() : Result.Fail(markMissing.Error);
             }
             var blob = blobResult.Value;
 
@@ -599,7 +599,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                 .ConfigureAwait(false);
             if (!markUploading.Success)
             {
-                return Result.Fail(markUploading.Error!);
+                return Result.Fail(markUploading.Error);
             }
 
             // 4. Look up resumable session (read-only).
@@ -608,7 +608,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                 .ConfigureAwait(false);
             if (!sessionResult.Success)
             {
-                return Result.Fail(sessionResult.Error!);
+                return Result.Fail(sessionResult.Error);
             }
             UploadSessionRow? existingSession = sessionResult.Value;
 
@@ -622,7 +622,7 @@ public sealed class UploadQueueService : IAsyncDisposable
 
             if (!uploadResult.Success)
             {
-                if (uploadResult.Error!.Code == ErrorCode.Cancelled)
+                if (uploadResult.Error.Code == ErrorCode.Cancelled)
                 {
                     // Preserve UploadSessions row; propagate.
                     return Result.Fail(uploadResult.Error);
@@ -636,7 +636,7 @@ public sealed class UploadQueueService : IAsyncDisposable
             }
 
             // 7. Apply the per-blob outcome — brain transaction lives inside.
-            return await ApplyOutcomeAsync(row, file, provider, uploadResult.Value!, ct)
+            return await ApplyOutcomeAsync(row, file, provider, uploadResult.Value, ct)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException ex)
@@ -682,7 +682,7 @@ public sealed class UploadQueueService : IAsyncDisposable
             if (!markUploaded.Success)
             {
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                txFailure = markUploaded.Error!;
+                txFailure = markUploaded.Error;
                 txFailureOp = "mark uploaded";
             }
             else
@@ -693,7 +693,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                 if (!deleteSession.Success)
                 {
                     await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                    txFailure = deleteSession.Error!;
+                    txFailure = deleteSession.Error;
                     txFailureOp = "delete session";
                 }
                 else
@@ -724,7 +724,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         {
             _logger.LogWarning(
                 "Failed to append UPLOADED activity-log entry for {FileId} on {ProviderId}: {Code}",
-                row.FileId, row.ProviderId, activity.Error!.Code);
+                row.FileId, row.ProviderId, activity.Error.Code);
         }
 
         _logger.LogInformation(
@@ -750,7 +750,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         if (!markFailed.Success)
         {
             return await OnTerminalBrainFailureAsync(
-                row, file, provider, markFailed.Error!,
+                row, file, provider, markFailed.Error,
                 "mark failed (retryable)").ConfigureAwait(false);
         }
 
@@ -809,7 +809,7 @@ public sealed class UploadQueueService : IAsyncDisposable
             if (!markFailed.Success)
             {
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                txFailure = markFailed.Error!;
+                txFailure = markFailed.Error;
                 txFailureOp = "mark terminally failed";
             }
             else
@@ -820,7 +820,7 @@ public sealed class UploadQueueService : IAsyncDisposable
                 if (!deleteSession.Success)
                 {
                     await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                    txFailure = deleteSession.Error!;
+                    txFailure = deleteSession.Error;
                     txFailureOp = "delete session (permanent)";
                 }
                 else
@@ -850,7 +850,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         {
             _logger.LogWarning(
                 "Failed to append UPLOAD_FAILED activity-log entry for {FileId} on {ProviderId}: {Code}",
-                row.FileId, row.ProviderId, activity.Error!.Code);
+                row.FileId, row.ProviderId, activity.Error.Code);
         }
 
         _logger.LogError(
@@ -878,7 +878,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         {
             _logger.LogWarning(
                 "Failed to clamp AttemptCount to terminal cap for {FileId} on {ProviderId}: {Code}",
-                row.FileId, row.ProviderId, markTerminal.Error!.Code);
+                row.FileId, row.ProviderId, markTerminal.Error.Code);
         }
 
         // Best-effort session delete (Principle 17 — bookkeeping not cancellable).
@@ -889,7 +889,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         {
             _logger.LogWarning(
                 "Failed to delete session row for {FileId} on {ProviderId} after cycle exhaustion: {Code}",
-                row.FileId, row.ProviderId, deleteSession.Error!.Code);
+                row.FileId, row.ProviderId, deleteSession.Error.Code);
         }
 
         await PublishFailureAsync(file, provider, code, failureMessage,
@@ -906,7 +906,7 @@ public sealed class UploadQueueService : IAsyncDisposable
         {
             _logger.LogWarning(
                 "Failed to append UPLOAD_FAILED activity-log entry for {FileId} on {ProviderId}: {Code}",
-                row.FileId, row.ProviderId, activity.Error!.Code);
+                row.FileId, row.ProviderId, activity.Error.Code);
         }
 
         _logger.LogError(

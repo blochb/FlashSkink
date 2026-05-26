@@ -777,10 +777,10 @@ internal sealed partial class GoogleDriveProvider : IStorageProvider, IAsyncDisp
         var about = await TryGetAboutAsync(ct).ConfigureAwait(false);
         if (!about.Success)
         {
-            return Result<long>.Fail(about.Error!);
+            return Result<long>.Fail(about.Error);
         }
 
-        var usage = about.Value!.StorageQuota?.UsageAsLong();
+        var usage = about.Value.StorageQuota?.UsageAsLong();
         if (usage is null)
         {
             return Result<long>.Fail(
@@ -795,11 +795,11 @@ internal sealed partial class GoogleDriveProvider : IStorageProvider, IAsyncDisp
         var about = await TryGetAboutAsync(ct).ConfigureAwait(false);
         if (!about.Success)
         {
-            return Result<long?>.Fail(about.Error!);
+            return Result<long?>.Fail(about.Error);
         }
 
         // Limit may be null for unlimited-plan users (e.g. legacy Workspace pooled storage).
-        var limit = about.Value!.StorageQuota?.LimitAsLong();
+        var limit = about.Value.StorageQuota?.LimitAsLong();
         return Result<long?>.Ok(limit);
     }
 
@@ -976,12 +976,14 @@ internal sealed partial class GoogleDriveProvider : IStorageProvider, IAsyncDisp
         HttpResponseMessage response, string operation, CancellationToken ct)
     {
         var typed = await MapHttpFailureAsync<object>(response, operation, ct).ConfigureAwait(false);
+        // Generic helper only ever produces failed Results; Error is non-null by construction (principle 37).
         return Result.Fail(typed.Error!);
     }
 
     private Result MapGoogleApiException(GoogleApiException gex, string operation)
     {
         var typed = MapGoogleApiException<object>(gex, operation);
+        // Generic helper only ever produces failed Results; Error is non-null by construction (principle 37).
         return Result.Fail(typed.Error!);
     }
 

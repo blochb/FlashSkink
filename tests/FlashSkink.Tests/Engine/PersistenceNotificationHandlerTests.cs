@@ -68,7 +68,7 @@ public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
 
         var result = await _repository.ListUnacknowledgedAsync(CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Empty(result.Value!);
+        Assert.Empty(result.AssertValue());
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
 
         var result = await _repository.ListUnacknowledgedAsync(CancellationToken.None);
         Assert.True(result.Success);
-        Assert.Empty(result.Value!);
+        Assert.Empty(result.AssertValue());
     }
 
     [Fact]
@@ -94,7 +94,7 @@ public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
 
         var result = await _repository.ListUnacknowledgedAsync(CancellationToken.None);
         Assert.True(result.Success);
-        var row = Assert.Single(result.Value!);
+        var row = Assert.Single(result.AssertValue());
         Assert.Equal("UploadService", row.Source);
         Assert.Equal(ErrorCode.DownloadFailed.ToString(), row.ErrorCode);
         Assert.Equal("Download from tail failed.", row.Message);
@@ -118,7 +118,7 @@ public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
 
         var result = await _repository.ListUnacknowledgedAsync(CancellationToken.None);
         Assert.True(result.Success);
-        var row = Assert.Single(result.Value!);
+        var row = Assert.Single(result.AssertValue());
         Assert.Equal(ErrorCode.VolumeCorrupt.ToString(), row.ErrorCode);
         Assert.False(row.Acknowledged);
     }
@@ -139,7 +139,7 @@ public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
 
         var result = await _repository.ListUnacknowledgedAsync(CancellationToken.None);
         Assert.True(result.Success);
-        var row = Assert.Single(result.Value!);
+        var row = Assert.Single(result.AssertValue());
         Assert.Equal("Unknown", row.ErrorCode);
     }
 
@@ -197,7 +197,7 @@ public sealed class PersistenceNotificationHandlerTests : IAsyncLifetime
 
         var result = await _repository.ListUnacknowledgedAsync(CancellationToken.None);
         Assert.True(result.Success);
-        var row = Assert.Single(result.Value!);
+        var row = Assert.Single(result.AssertValue());
         Assert.NotNull(row.Metadata);
 
         var roundTripped = JsonSerializer.Deserialize<Dictionary<string, string>>(row.Metadata!);

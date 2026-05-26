@@ -48,7 +48,7 @@ public sealed class InstanceLockTests : IDisposable
         Assert.NotNull(result.Value);
         Assert.True(File.Exists(_lockFilePath));
         Assert.True(File.Exists(_manifestFilePath));
-        Assert.Equal(_lockFilePath, result.Value!.LockFilePath);
+        Assert.Equal(_lockFilePath, result.AssertValue().LockFilePath);
         Assert.Equal(_manifestFilePath, result.Value.ManifestFilePath);
 
         await result.Value.DisposeAsync();
@@ -68,7 +68,7 @@ public sealed class InstanceLockTests : IDisposable
 
             Assert.False(second.Success);
             Assert.NotNull(second.Error);
-            Assert.Equal(ErrorCode.SingleInstanceLockHeld, second.Error!.Code);
+            Assert.Equal(ErrorCode.SingleInstanceLockHeld, second.AssertError().Code);
             Assert.NotNull(second.Error.Metadata);
             // First holder is this process — pid in metadata should match Environment.ProcessId.
             Assert.Equal(
@@ -79,7 +79,7 @@ public sealed class InstanceLockTests : IDisposable
         }
         finally
         {
-            await first.Value!.DisposeAsync();
+            await first.AssertValue().DisposeAsync();
         }
     }
 
@@ -89,13 +89,13 @@ public sealed class InstanceLockTests : IDisposable
         var first = await InstanceLock.AcquireAsync(
             _skinkRoot, TestAppVersion, force: false, logger: null, ct: CancellationToken.None);
         Assert.True(first.Success);
-        await first.Value!.DisposeAsync();
+        await first.AssertValue().DisposeAsync();
 
         var second = await InstanceLock.AcquireAsync(
             _skinkRoot, TestAppVersion, force: false, logger: null, ct: CancellationToken.None);
 
         Assert.True(second.Success);
-        await second.Value!.DisposeAsync();
+        await second.AssertValue().DisposeAsync();
     }
 
     [Fact]
@@ -110,7 +110,7 @@ public sealed class InstanceLockTests : IDisposable
 
         Assert.True(result.Success);
         Assert.True(File.Exists(_lockFilePath));
-        await result.Value!.DisposeAsync();
+        await result.AssertValue().DisposeAsync();
     }
 
     [Fact]
@@ -134,7 +134,7 @@ public sealed class InstanceLockTests : IDisposable
 
             Assert.False(second.Success);
             Assert.NotNull(second.Error);
-            Assert.Equal(ErrorCode.SingleInstanceLockHeld, second.Error!.Code);
+            Assert.Equal(ErrorCode.SingleInstanceLockHeld, second.AssertError().Code);
             Assert.Contains("--force cannot clear a live lock", second.Error.Message);
             // The first holder is this process — pid metadata should match.
             Assert.Equal(
@@ -143,7 +143,7 @@ public sealed class InstanceLockTests : IDisposable
         }
         finally
         {
-            await first.Value!.DisposeAsync();
+            await first.AssertValue().DisposeAsync();
         }
     }
 
@@ -161,7 +161,7 @@ public sealed class InstanceLockTests : IDisposable
             _skinkRoot, TestAppVersion, force: false, logger: null, ct: CancellationToken.None);
 
         Assert.True(result.Success);
-        await result.Value!.DisposeAsync();
+        await result.AssertValue().DisposeAsync();
     }
 
     [Fact]
@@ -192,7 +192,7 @@ public sealed class InstanceLockTests : IDisposable
         }
         finally
         {
-            await result.Value!.DisposeAsync();
+            await result.AssertValue().DisposeAsync();
         }
     }
 
@@ -203,7 +203,7 @@ public sealed class InstanceLockTests : IDisposable
             _skinkRoot, TestAppVersion, force: false, logger: null, ct: CancellationToken.None);
         Assert.True(result.Success);
 
-        await result.Value!.DisposeAsync();
+        await result.AssertValue().DisposeAsync();
         // Second dispose is a no-op and must not throw.
         await result.Value.DisposeAsync();
     }
@@ -217,7 +217,7 @@ public sealed class InstanceLockTests : IDisposable
         Assert.True(File.Exists(_lockFilePath));
         Assert.True(File.Exists(_manifestFilePath));
 
-        await result.Value!.DisposeAsync();
+        await result.AssertValue().DisposeAsync();
 
         Assert.False(File.Exists(_lockFilePath));
         Assert.False(File.Exists(_manifestFilePath));
@@ -233,7 +233,7 @@ public sealed class InstanceLockTests : IDisposable
             _skinkRoot, TestAppVersion, force: false, logger: null, ct: cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
         // A cancelled call must not leave either file behind.
         Assert.False(File.Exists(_lockFilePath));
         Assert.False(File.Exists(_manifestFilePath));

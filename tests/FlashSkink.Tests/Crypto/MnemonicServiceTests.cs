@@ -20,7 +20,7 @@ public class MnemonicServiceTests
     ];
 
     private static RecoveryPhrase PhraseFrom(string[] words)
-        => RecoveryPhrase.FromUserInput(words).Value!;
+        => RecoveryPhrase.FromUserInput(words).AssertValue();
 
     private static RecoveryPhrase AllZerosPhrase()
         => PhraseFrom(AllZerosMnemonicWords);
@@ -28,14 +28,14 @@ public class MnemonicServiceTests
     [Fact]
     public void Generate_Succeeds()
     {
-        using var phrase = _sut.Generate().Value!;
+        using var phrase = _sut.Generate().AssertValue();
         Assert.NotNull(phrase);
     }
 
     [Fact]
     public void Generate_Returns24Words()
     {
-        using var phrase = _sut.Generate().Value!;
+        using var phrase = _sut.Generate().AssertValue();
         Assert.Equal(24, phrase.Count);
     }
 
@@ -44,7 +44,7 @@ public class MnemonicServiceTests
     {
         var wordSet = MnemonicService.Wordlist.ToHashSet(StringComparer.Ordinal);
 
-        using var phrase = _sut.Generate().Value!;
+        using var phrase = _sut.Generate().AssertValue();
 
         for (var i = 0; i < phrase.Count; i++)
         {
@@ -55,8 +55,8 @@ public class MnemonicServiceTests
     [Fact]
     public void Generate_TwoCallsProduceDifferentMnemonics()
     {
-        using var first = _sut.Generate().Value!;
-        using var second = _sut.Generate().Value!;
+        using var first = _sut.Generate().AssertValue();
+        using var second = _sut.Generate().AssertValue();
 
         var anyDifferent = false;
         for (var i = 0; i < first.Count; i++)
@@ -75,7 +75,7 @@ public class MnemonicServiceTests
     [Fact]
     public void Validate_WithGeneratedMnemonic_Succeeds()
     {
-        using var phrase = _sut.Generate().Value!;
+        using var phrase = _sut.Generate().AssertValue();
 
         var result = _sut.Validate(phrase);
 
@@ -92,7 +92,7 @@ public class MnemonicServiceTests
         var result = _sut.Validate(phrase);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidMnemonic, result.AssertError().Code);
     }
 
     [Fact]
@@ -105,7 +105,7 @@ public class MnemonicServiceTests
         var result = _sut.Validate(phrase);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidMnemonic, result.AssertError().Code);
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public class MnemonicServiceTests
         var result = _sut.Validate(phrase);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidMnemonic, result.AssertError().Code);
     }
 
     [Fact]
@@ -140,7 +140,7 @@ public class MnemonicServiceTests
         var result = _sut.ToSeed(phrase);
 
         Assert.True(result.Success);
-        Assert.Equal(64, result.Value!.Length);
+        Assert.Equal(64, result.AssertValue().Length);
     }
 
     [Fact]
@@ -149,8 +149,8 @@ public class MnemonicServiceTests
         using var phrase1 = AllZerosPhrase();
         using var phrase2 = AllZerosPhrase();
 
-        var first = _sut.ToSeed(phrase1).Value!;
-        var second = _sut.ToSeed(phrase2).Value!;
+        var first = _sut.ToSeed(phrase1).AssertValue();
+        var second = _sut.ToSeed(phrase2).AssertValue();
 
         Assert.True(first.SequenceEqual(second));
     }
@@ -158,11 +158,11 @@ public class MnemonicServiceTests
     [Fact]
     public void ToSeed_DifferentMnemonics_ProduceDifferentSeeds()
     {
-        using var phrase1 = _sut.Generate().Value!;
-        using var phrase2 = _sut.Generate().Value!;
+        using var phrase1 = _sut.Generate().AssertValue();
+        using var phrase2 = _sut.Generate().AssertValue();
 
-        var seed1 = _sut.ToSeed(phrase1).Value!;
-        var seed2 = _sut.ToSeed(phrase2).Value!;
+        var seed1 = _sut.ToSeed(phrase1).AssertValue();
+        var seed2 = _sut.ToSeed(phrase2).AssertValue();
 
         Assert.False(seed1.SequenceEqual(seed2));
     }
@@ -177,7 +177,7 @@ public class MnemonicServiceTests
         var expectedPrefix = new byte[] { 0x40, 0x8b, 0x28, 0x5c, 0x12, 0x38, 0x36, 0x00 };
 
         using var phrase = AllZerosPhrase();
-        var seed = _sut.ToSeed(phrase).Value!;
+        var seed = _sut.ToSeed(phrase).AssertValue();
 
         Assert.True(seed[..8].SequenceEqual(expectedPrefix),
             $"Expected seed prefix 408b285c12383600 but got {Convert.ToHexString(seed[..8]).ToLowerInvariant()}");
@@ -193,6 +193,6 @@ public class MnemonicServiceTests
         var result = _sut.ToSeed(phrase);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidMnemonic, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidMnemonic, result.AssertError().Code);
     }
 }

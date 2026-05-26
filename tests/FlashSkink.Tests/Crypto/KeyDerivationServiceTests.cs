@@ -185,7 +185,7 @@ public class KeyDerivationServiceTests
         var result = _sut.DeriveBrainKey(FixedDek, destination);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.KeyDerivationFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.KeyDerivationFailed, result.AssertError().Code);
     }
 }
 

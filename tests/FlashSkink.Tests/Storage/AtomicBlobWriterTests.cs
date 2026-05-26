@@ -118,7 +118,7 @@ public sealed class AtomicBlobWriterTests : IDisposable
         var result = await _sut.WriteAsync(_skinkRoot, blobId, MakeBytes(32), CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.PathConflict, result.Error!.Code);
+        Assert.Equal(ErrorCode.PathConflict, result.AssertError().Code);
         var stagingPath = AtomicBlobWriter.ComputeStagingPath(_skinkRoot, blobId);
         Assert.False(File.Exists(stagingPath));
     }
@@ -133,7 +133,7 @@ public sealed class AtomicBlobWriterTests : IDisposable
         var result = await _sut.WriteAsync(_skinkRoot, blobId, MakeBytes(32), cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
         var stagingPath = AtomicBlobWriter.ComputeStagingPath(_skinkRoot, blobId);
         Assert.False(File.Exists(stagingPath));
     }

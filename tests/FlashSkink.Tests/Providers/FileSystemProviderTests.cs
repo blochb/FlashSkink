@@ -49,7 +49,7 @@ public sealed class FileSystemProviderTests : IDisposable
             "p1", "Test", missing, NullLogger<FileSystemProvider>.Instance);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
     }
 
     [Fact]
@@ -81,7 +81,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var result = await _sut.BeginUploadAsync("abcd1234.bin", 512, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(DateTimeOffset.MaxValue, result.Value!.ExpiresAt);
+        Assert.Equal(DateTimeOffset.MaxValue, result.AssertValue().ExpiresAt);
         Assert.Equal(0L, result.Value.BytesUploaded);
         Assert.Equal(512L, result.Value.TotalBytes);
     }
@@ -111,7 +111,7 @@ public sealed class FileSystemProviderTests : IDisposable
         const int totalBytes = 4096;
         var data = MakeBytes(totalBytes);
         var beginResult = await _sut.BeginUploadAsync("abcd1234.bin", totalBytes, CancellationToken.None);
-        var session = beginResult.Value!;
+        var session = beginResult.AssertValue();
         await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
 
         var result = await _sut.GetUploadedBytesAsync(session, CancellationToken.None);
@@ -131,7 +131,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var secondHalf = MakeBytes(half);
 
         var beginResult = await _sut.BeginUploadAsync("abcd1234.bin", total, CancellationToken.None);
-        var session = beginResult.Value!;
+        var session = beginResult.AssertValue();
 
         await _sut.UploadRangeAsync(session, 0, firstHalf, CancellationToken.None);
 
@@ -152,7 +152,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var data2 = new byte[] { 0xBB, 0xBB };
 
         var beginResult = await _sut.BeginUploadAsync("abcd5678.bin", 4, CancellationToken.None);
-        var session = beginResult.Value!;
+        var session = beginResult.AssertValue();
         await _sut.UploadRangeAsync(session, 0, data1, CancellationToken.None);
         await _sut.UploadRangeAsync(session, 0, data2, CancellationToken.None);
 
@@ -165,14 +165,14 @@ public sealed class FileSystemProviderTests : IDisposable
     public async Task UploadRangeAsync_Cancelled_ReturnsCancelled()
     {
         var beginResult = await _sut.BeginUploadAsync("abcd9999.bin", 1024, CancellationToken.None);
-        var session = beginResult.Value!;
+        var session = beginResult.AssertValue();
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
         var result = await _sut.UploadRangeAsync(session, 0, MakeBytes(1024), cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── FinaliseUploadAsync ───────────────────────────────────────────────────────────────────
@@ -185,7 +185,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var remote = "abcdef1234567890.bin";
 
         var beginResult = await _sut.BeginUploadAsync(remote, total, CancellationToken.None);
-        var session = beginResult.Value!;
+        var session = beginResult.AssertValue();
         await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
 
         var finalResult = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
@@ -200,7 +200,7 @@ public sealed class FileSystemProviderTests : IDisposable
     {
         const int total = 64;
         var remote = "aabb998877001122.bin";
-        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(session, 0, MakeBytes(total), CancellationToken.None);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
@@ -208,7 +208,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var result = await _sut.FinaliseUploadAsync(session, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -218,13 +218,13 @@ public sealed class FileSystemProviderTests : IDisposable
         var data = MakeBytes(512); // only half
 
         var beginResult = await _sut.BeginUploadAsync("abcdef001122.bin", total, CancellationToken.None);
-        var session = beginResult.Value!;
+        var session = beginResult.AssertValue();
         await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
 
         var finalResult = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
 
         Assert.False(finalResult.Success);
-        Assert.Equal(ErrorCode.UploadFailed, finalResult.Error!.Code);
+        Assert.Equal(ErrorCode.UploadFailed, finalResult.AssertError().Code);
     }
 
     [Fact]
@@ -235,17 +235,17 @@ public sealed class FileSystemProviderTests : IDisposable
         var remote = "aabbccdd11223344.bin";
 
         // First upload — succeed.
-        var s1 = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var s1 = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(s1, 0, data, CancellationToken.None);
         await _sut.FinaliseUploadAsync(s1, CancellationToken.None);
 
         // Second upload to the same remote name — destination already exists.
-        var s2 = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var s2 = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(s2, 0, data, CancellationToken.None);
         var finalResult = await _sut.FinaliseUploadAsync(s2, CancellationToken.None);
 
         Assert.False(finalResult.Success);
-        Assert.Equal(ErrorCode.UploadFailed, finalResult.Error!.Code);
+        Assert.Equal(ErrorCode.UploadFailed, finalResult.AssertError().Code);
     }
 
     [Fact]
@@ -254,7 +254,7 @@ public sealed class FileSystemProviderTests : IDisposable
         const int total = 64;
         var remote = "abcdef990011aabb.bin";
 
-        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(session, 0, MakeBytes(total), CancellationToken.None);
         await _sut.FinaliseUploadAsync(session, CancellationToken.None);
 
@@ -268,7 +268,7 @@ public sealed class FileSystemProviderTests : IDisposable
     public async Task AbortUploadAsync_DeletesPartialAndSidecar_Idempotent()
     {
         var remote = "abcdef1122334455.bin";
-        var session = (await _sut.BeginUploadAsync(remote, 256, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, 256, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(session, 0, MakeBytes(128), CancellationToken.None);
 
         await _sut.AbortUploadAsync(session, CancellationToken.None);
@@ -287,15 +287,15 @@ public sealed class FileSystemProviderTests : IDisposable
         var data = MakeBytes(total);
         var remote = "aabbcc001122ffee.bin";
 
-        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
         var finalResult = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
-        var remoteId = finalResult.Value!;
+        var remoteId = finalResult.AssertValue();
 
         var downloadResult = await _sut.DownloadAsync(remoteId, CancellationToken.None);
 
         Assert.True(downloadResult.Success);
-        await using var stream = downloadResult.Value!;
+        await using var stream = downloadResult.AssertValue();
         var buffer = new byte[total];
         await stream.ReadExactlyAsync(buffer, CancellationToken.None);
         Assert.Equal(data, buffer);
@@ -307,7 +307,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var result = await _sut.DownloadAsync("blobs/no/su/no-such-object.bin", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.BlobNotFound, result.Error!.Code);
+        Assert.Equal(ErrorCode.BlobNotFound, result.AssertError().Code);
     }
 
     // ── DeleteAsync ───────────────────────────────────────────────────────────────────────────
@@ -317,10 +317,10 @@ public sealed class FileSystemProviderTests : IDisposable
     {
         const int total = 64;
         var remote = "aabb112233445566.bin";
-        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(session, 0, MakeBytes(total), CancellationToken.None);
         var finalResult = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
-        var remoteId = finalResult.Value!;
+        var remoteId = finalResult.AssertValue();
 
         await _sut.DeleteAsync(remoteId, CancellationToken.None);
         await _sut.DeleteAsync(remoteId, CancellationToken.None); // idempotent
@@ -336,11 +336,11 @@ public sealed class FileSystemProviderTests : IDisposable
     {
         const int total = 64;
         var remote = "aabb998877665544.bin";
-        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(session, 0, MakeBytes(total), CancellationToken.None);
         var finalResult = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
 
-        var existsResult = await _sut.ExistsAsync(finalResult.Value!, CancellationToken.None);
+        var existsResult = await _sut.ExistsAsync(finalResult.AssertValue(), CancellationToken.None);
 
         Assert.True(existsResult.Value);
     }
@@ -356,7 +356,7 @@ public sealed class FileSystemProviderTests : IDisposable
 
         foreach (var remote in new[] { remote1, remote2 })
         {
-            var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+            var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
             await _sut.UploadRangeAsync(session, 0, MakeBytes(total), CancellationToken.None);
             await _sut.FinaliseUploadAsync(session, CancellationToken.None);
         }
@@ -364,7 +364,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var listResult = await _sut.ListAsync("blobs", CancellationToken.None);
 
         Assert.True(listResult.Success);
-        Assert.Equal(2, listResult.Value!.Count);
+        Assert.Equal(2, listResult.AssertValue().Count);
         Assert.All(listResult.Value, id => Assert.StartsWith("blobs/", id));
     }
 
@@ -373,14 +373,14 @@ public sealed class FileSystemProviderTests : IDisposable
     {
         const int total = 32;
         var remote = "ccdd001122334455.bin";
-        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, total, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(session, 0, MakeBytes(total), CancellationToken.None);
         await _sut.FinaliseUploadAsync(session, CancellationToken.None);
 
         var listResult = await _sut.ListAsync("", CancellationToken.None);
 
         Assert.True(listResult.Success);
-        Assert.NotEmpty(listResult.Value!);
+        Assert.NotEmpty(listResult.AssertValue());
     }
 
     [Fact]
@@ -389,7 +389,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var listResult = await _sut.ListAsync("_brain", CancellationToken.None);
 
         Assert.True(listResult.Success);
-        Assert.Empty(listResult.Value!);
+        Assert.Empty(listResult.AssertValue());
     }
 
     // ── CheckHealthAsync ──────────────────────────────────────────────────────────────────────
@@ -400,7 +400,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var result = await _sut.CheckHealthAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal(ProviderHealthStatus.Healthy, result.Value!.Status);
+        Assert.Equal(ProviderHealthStatus.Healthy, result.AssertValue().Status);
         Assert.NotNull(result.Value.RoundTripLatency);
     }
 
@@ -442,7 +442,7 @@ public sealed class FileSystemProviderTests : IDisposable
             sourceData[i] = (byte)(i % 251); // prime modulus for variety
         }
 
-        var session = (await _sut.BeginUploadAsync(remote, totalBytes, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, totalBytes, CancellationToken.None)).AssertValue();
 
         for (var i = 0; i < rangeCount; i++)
         {
@@ -454,11 +454,11 @@ public sealed class FileSystemProviderTests : IDisposable
         var finalResult = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
         Assert.True(finalResult.Success, finalResult.Error?.Message);
 
-        var remoteId = finalResult.Value!;
+        var remoteId = finalResult.AssertValue();
         var downloadResult = await _sut.DownloadAsync(remoteId, CancellationToken.None);
         Assert.True(downloadResult.Success);
 
-        await using var stream = downloadResult.Value!;
+        await using var stream = downloadResult.AssertValue();
         var readBuffer = new byte[rangeSize];
         for (var i = 0; i < rangeCount; i++)
         {
@@ -479,14 +479,14 @@ public sealed class FileSystemProviderTests : IDisposable
         var data = MakeBytes(2048);
         var begin = await _sut.BeginUploadAsync("abcd1234.bin", data.Length, CancellationToken.None);
         Assert.True(begin.Success);
-        var session = begin.Value!;
+        var session = begin.AssertValue();
 
         var rangeResult = await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
         Assert.True(rangeResult.Success);
 
         var finalise = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
         Assert.True(finalise.Success);
-        var remoteId = finalise.Value!;
+        var remoteId = finalise.AssertValue();
 
         ISupportsRemoteHashCheck hashCheck = _sut;
         var hashResult = await hashCheck.GetRemoteXxHash64Async(remoteId, CancellationToken.None);
@@ -506,7 +506,7 @@ public sealed class FileSystemProviderTests : IDisposable
 
         var begin = await _sut.BeginUploadAsync(remote, data.Length, CancellationToken.None);
         Assert.True(begin.Success);
-        var session = begin.Value!;
+        var session = begin.AssertValue();
         await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
         var finalise = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
         Assert.True(finalise.Success);
@@ -526,7 +526,7 @@ public sealed class FileSystemProviderTests : IDisposable
             "_brain/20260102T000000Z.bin",
         })
         {
-            var begin = (await _sut.BeginUploadAsync(name, data.Length, CancellationToken.None)).Value!;
+            var begin = (await _sut.BeginUploadAsync(name, data.Length, CancellationToken.None)).AssertValue();
             await _sut.UploadRangeAsync(begin, 0, data, CancellationToken.None);
             await _sut.FinaliseUploadAsync(begin, CancellationToken.None);
         }
@@ -534,7 +534,7 @@ public sealed class FileSystemProviderTests : IDisposable
         var listResult = await _sut.ListAsync("_brain", CancellationToken.None);
 
         Assert.True(listResult.Success);
-        var entries = listResult.Value!;
+        var entries = listResult.AssertValue();
         Assert.Equal(2, entries.Count);
         Assert.Contains("_brain/20260101T000000Z.bin", entries);
         Assert.Contains("_brain/20260102T000000Z.bin", entries);
@@ -546,15 +546,15 @@ public sealed class FileSystemProviderTests : IDisposable
         var data = MakeBytes(2048);
         var remote = "_brain/20260101T000000Z.bin";
 
-        var session = (await _sut.BeginUploadAsync(remote, data.Length, CancellationToken.None)).Value!;
+        var session = (await _sut.BeginUploadAsync(remote, data.Length, CancellationToken.None)).AssertValue();
         await _sut.UploadRangeAsync(session, 0, data, CancellationToken.None);
         var finalise = await _sut.FinaliseUploadAsync(session, CancellationToken.None);
-        var remoteId = finalise.Value!;
+        var remoteId = finalise.AssertValue();
 
         var download = await _sut.DownloadAsync(remoteId, CancellationToken.None);
         Assert.True(download.Success);
         var buffer = new byte[data.Length];
-        await using (var stream = download.Value!)
+        await using (var stream = download.AssertValue())
         {
             await stream.ReadExactlyAsync(buffer, CancellationToken.None);
         }

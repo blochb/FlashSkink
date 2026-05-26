@@ -93,7 +93,7 @@ public sealed class WriteCrashConsistencyTests
             NullLogger<WriteWalScope>.Instance, CancellationToken.None).GetAwaiter().GetResult();
         Assert.True(openResult.Success, $"OpenAsync failed: {openResult.Error?.Message}");
 
-        var scope = openResult.Value!;
+        var scope = openResult.AssertValue();
 
         // Set up on-disk state to match what would exist at crash step N.
         SetUpDiskState(crashAtStep, writer, skinkRoot, blobId, scope, testData);
@@ -278,7 +278,7 @@ public sealed class WriteCrashConsistencyTests
             new MemoryStream([0x01, 0x02, 0x03]), virtualPath, context, CancellationToken.None)
             .GetAwaiter().GetResult();
         Assert.True(seedResult.Success, $"Seed write failed: {seedResult.Error?.Message}");
-        string priorBlobId = seedResult.Value!.BlobId; // ! safe: Success asserted above
+        string priorBlobId = seedResult.AssertValue().BlobId; // ! safe: Success asserted above
         string priorBlobPath = AtomicBlobWriter.ComputeDestinationPath(skinkRoot, priorBlobId);
         Assert.Equal(1, conn.QuerySingle<int>("SELECT COUNT(*) FROM Blobs"));
         Assert.Equal(1, conn.QuerySingle<int>("SELECT COUNT(*) FROM Files WHERE IsFolder = 0"));
@@ -290,7 +290,7 @@ public sealed class WriteCrashConsistencyTests
             .GetAwaiter().GetResult();
 
         Assert.False(crashResult.Success, "Expected PathConflict failure.");
-        Assert.Equal(ErrorCode.PathConflict, crashResult.Error!.Code); // ! safe: Success == false
+        Assert.Equal(ErrorCode.PathConflict, crashResult.AssertError().Code); // ! safe: Success == false
 
         // ── Assert §21.3 invariant ────────────────────────────────────────────
 

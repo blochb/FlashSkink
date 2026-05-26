@@ -48,8 +48,8 @@ public class BackgroundFailureRepositoryTests : IAsyncLifetime
         var result = await _sut.ListUnacknowledgedAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Single(result.Value!);
-        Assert.Equal(failure.FailureId, result.Value![0].FailureId);
+        Assert.Single(result.AssertValue());
+        Assert.Equal(failure.FailureId, result.AssertValue()[0].FailureId);
         Assert.Equal(failure.Source, result.Value[0].Source);
         Assert.Equal(failure.ErrorCode, result.Value[0].ErrorCode);
         Assert.False(result.Value[0].Acknowledged);
@@ -67,7 +67,7 @@ public class BackgroundFailureRepositoryTests : IAsyncLifetime
         var result = await _sut.ListUnacknowledgedAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Empty(result.Value!);
+        Assert.Empty(result.AssertValue());
     }
 
     // ── AcknowledgeAllAsync ───────────────────────────────────────────────────
@@ -84,6 +84,6 @@ public class BackgroundFailureRepositoryTests : IAsyncLifetime
         var result = await _sut.ListUnacknowledgedAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Empty(result.Value!);
+        Assert.Empty(result.AssertValue());
     }
 }

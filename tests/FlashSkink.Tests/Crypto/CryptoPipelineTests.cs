@@ -32,7 +32,7 @@ public class BlobHeaderTests
         Result result = BlobHeader.Parse(buf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -43,7 +43,7 @@ public class BlobHeaderTests
         Result result = BlobHeader.Parse(buf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public class BlobHeaderTests
         Result result = BlobHeader.Parse(buf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.AssertError().Code);
     }
 
     [Fact]
@@ -110,7 +110,7 @@ public class BlobHeaderTests
         Result result = BlobHeader.Parse(buf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -223,7 +223,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -238,7 +238,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], wrongDek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -255,7 +255,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -272,7 +272,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
     }
 
     [Fact]
@@ -286,7 +286,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, "aad-B"u8.ToArray(), decBuf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -298,7 +298,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Encrypt(new byte[32], shortDek, Aad, BlobFlags.None, buf, out int bytesWritten);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.Unknown, result.AssertError().Code);
         Assert.Equal(0, bytesWritten);
     }
 
@@ -312,7 +312,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Encrypt(plaintext, Dek, Aad, BlobFlags.None, buf, out int bytesWritten);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.Unknown, result.AssertError().Code);
         Assert.Equal(0, bytesWritten);
     }
 
@@ -325,7 +325,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(tooShort, Dek, Aad, decBuf, out _, out int bytesWritten);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeCorrupt, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeCorrupt, result.AssertError().Code);
         Assert.Equal(0, bytesWritten);
     }
 
@@ -340,7 +340,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], Dek, Aad, tinyBuf, out _, out int bytesWritten);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.Unknown, result.AssertError().Code);
         Assert.Equal(0, bytesWritten);
     }
 
@@ -356,7 +356,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(encBuf.Memory.Span[..encBytes], shortDek, Aad, decBuf, out _, out int bytesWritten);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.Unknown, result.AssertError().Code);
         Assert.Equal(0, bytesWritten);
     }
 
@@ -421,7 +421,7 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.DecryptionFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.DecryptionFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -438,6 +438,6 @@ public class CryptoPipelineTests
         Result result = _pipeline.Decrypt(blob, Dek, Aad, decBuf, out _, out _);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.Error!.Code);
+        Assert.Equal(ErrorCode.VolumeIncompatibleVersion, result.AssertError().Code);
     }
 }

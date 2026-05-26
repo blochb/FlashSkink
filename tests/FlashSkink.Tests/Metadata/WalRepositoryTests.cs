@@ -48,8 +48,8 @@ public class WalRepositoryTests : IAsyncLifetime
         Assert.True(result.Success);
         var list = await _sut.ListIncompleteAsync(CancellationToken.None);
         Assert.True(list.Success);
-        Assert.Single(list.Value!);
-        Assert.Equal(row.WalId, list.Value![0].WalId);
+        Assert.Single(list.AssertValue());
+        Assert.Equal(row.WalId, list.AssertValue()[0].WalId);
         Assert.Equal("PREPARE", list.Value[0].Phase);
     }
 
@@ -65,7 +65,7 @@ public class WalRepositoryTests : IAsyncLifetime
 
         var list = await _sut.ListIncompleteAsync(CancellationToken.None);
         Assert.True(list.Success);
-        Assert.Single(list.Value!);
+        Assert.Single(list.AssertValue());
     }
 
     // ── TransitionAsync ───────────────────────────────────────────────────────
@@ -102,8 +102,8 @@ public class WalRepositoryTests : IAsyncLifetime
         var result = await _sut.ListIncompleteAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Single(result.Value!);
-        Assert.Equal(prepare.WalId, result.Value![0].WalId);
+        Assert.Single(result.AssertValue());
+        Assert.Equal(prepare.WalId, result.AssertValue()[0].WalId);
     }
 
     // ── TransitionAsync — transaction parameter (§2.5) ───────────────────────
@@ -141,6 +141,6 @@ public class WalRepositoryTests : IAsyncLifetime
         Assert.True(result.Success);
         var list = await _sut.ListIncompleteAsync(CancellationToken.None);
         Assert.True(list.Success);
-        Assert.Empty(list.Value!);
+        Assert.Empty(list.AssertValue());
     }
 }

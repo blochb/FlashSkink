@@ -74,7 +74,7 @@ public sealed class InMemoryProviderRegistryTests : IDisposable
         var result = await _sut.GetAsync("not-registered", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
     }
 
     [Fact]
@@ -83,11 +83,11 @@ public sealed class InMemoryProviderRegistryTests : IDisposable
         _sut.Register("p1", MakeProvider("p1"));
         _sut.Register("p2", MakeProvider("p2"));
 
-        var list1 = (await _sut.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var list1 = (await _sut.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Equal(2, list1.Count);
 
         _sut.Remove("p1");
-        var list2 = (await _sut.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var list2 = (await _sut.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Single(list2);
         Assert.Equal("p2", list2[0]);
     }
@@ -98,7 +98,7 @@ public sealed class InMemoryProviderRegistryTests : IDisposable
         var result = await _sut.ListActiveProviderIdsAsync(CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Empty(result.Value!);
+        Assert.Empty(result.AssertValue());
     }
 
     [Fact]

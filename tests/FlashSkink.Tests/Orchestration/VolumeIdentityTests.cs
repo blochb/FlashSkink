@@ -41,7 +41,7 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
     public async Task VolumeID_IsWrittenOnCreate_AsValidGuid()
     {
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try
         {
             await receipt.Volume.DisposeAsync();
@@ -64,7 +64,7 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
     public async Task VolumeID_IsStable_AcrossCloseAndReopen()
     {
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try
         {
             await receipt.Volume.DisposeAsync();
@@ -83,7 +83,7 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
         // overwrite it.
         var reopen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(reopen.Success);
-        await reopen.Value!.DisposeAsync();
+        await reopen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var secondRead = await OrchestrationTestHelper.ReadSettingAsync(
@@ -101,13 +101,13 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
         try
         {
             var firstReceipt = (await FlashSkinkVolume.CreateAsync(
-                _skinkRoot, Password, DefaultOptions)).Value!;
+                _skinkRoot, Password, DefaultOptions)).AssertValue();
             try { await firstReceipt.Volume.DisposeAsync(); }
             finally { firstReceipt.RecoveryPhrase.Dispose(); }
             SqliteConnection.ClearAllPools();
 
             var secondReceipt = (await FlashSkinkVolume.CreateAsync(
-                secondRoot, Password, DefaultOptions)).Value!;
+                secondRoot, Password, DefaultOptions)).AssertValue();
             try { await secondReceipt.Volume.DisposeAsync(); }
             finally { secondReceipt.RecoveryPhrase.Dispose(); }
             SqliteConnection.ClearAllPools();
@@ -134,7 +134,7 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
     {
         // Simulate a brain created by a pre-Refactor-A build: it has no VolumeID row.
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -149,7 +149,7 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
         // Reopen — backfill should populate VolumeID.
         var reopen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(reopen.Success);
-        await reopen.Value!.DisposeAsync();
+        await reopen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var backfilled = await OrchestrationTestHelper.ReadSettingAsync(
@@ -166,7 +166,7 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
         // Create, dispose, delete VolumeID, reopen (backfill), record value, dispose,
         // reopen again — the second open must not regenerate the GUID.
         var receipt = (await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions)).Value!;
+            _skinkRoot, Password, DefaultOptions)).AssertValue();
         try { await receipt.Volume.DisposeAsync(); }
         finally { receipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -176,7 +176,7 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
 
         var firstOpen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(firstOpen.Success);
-        await firstOpen.Value!.DisposeAsync();
+        await firstOpen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var backfilledValue = await OrchestrationTestHelper.ReadSettingAsync(
@@ -185,7 +185,7 @@ public sealed class VolumeIdentityTests : IAsyncLifetime
 
         var secondOpen = await FlashSkinkVolume.OpenAsync(_skinkRoot, Password, DefaultOptions);
         Assert.True(secondOpen.Success);
-        await secondOpen.Value!.DisposeAsync();
+        await secondOpen.AssertValue().DisposeAsync();
         SqliteConnection.ClearAllPools();
 
         var stableValue = await OrchestrationTestHelper.ReadSettingAsync(

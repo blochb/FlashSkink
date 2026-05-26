@@ -127,7 +127,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var result = await BrainBackedProviderRegistry.CreateAsync(
             _brain, _dek, loggerFactory, CancellationToken.None);
         Assert.True(result.Success);
-        return result.Value!;
+        return result.AssertValue();
     }
 
     private async Task<BrainBackedProviderRegistry> BuildAsync(
@@ -138,7 +138,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var result = await BrainBackedProviderRegistry.CreateAsync(
             _brain, _dek, googleDriveFactory, loggerFactory, CancellationToken.None);
         Assert.True(result.Success);
-        return result.Value!;
+        return result.AssertValue();
     }
 
     private async Task<BrainBackedProviderRegistry> BuildAsync(
@@ -150,7 +150,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
             _brain, _dek, new FakeGoogleDriveClientFactory(), dropboxFactory,
             loggerFactory, CancellationToken.None);
         Assert.True(result.Success);
-        return result.Value!;
+        return result.AssertValue();
     }
 
     private async Task<BrainBackedProviderRegistry> BuildAsync(
@@ -162,7 +162,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var result = await BrainBackedProviderRegistry.CreateAsync(
             _brain, _dek, googleDriveFactory, dropboxFactory, loggerFactory, CancellationToken.None);
         Assert.True(result.Success);
-        return result.Value!;
+        return result.AssertValue();
     }
 
     private void InsertDropboxProvider(
@@ -205,7 +205,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
     {
         await using var registry = await BuildAsync();
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
     }
 
@@ -218,15 +218,15 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
 
         await using var registry = await BuildAsync();
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Single(ids);
         Assert.Equal("fs-1", ids[0]);
 
         var providerResult = await registry.GetAsync("fs-1", CancellationToken.None);
         Assert.True(providerResult.Success);
-        Assert.Equal("fs-1", providerResult.Value!.ProviderID);
-        Assert.Equal("filesystem", providerResult.Value!.ProviderType);
-        Assert.Equal("Local Folder", providerResult.Value!.DisplayName);
+        Assert.Equal("fs-1", providerResult.AssertValue().ProviderID);
+        Assert.Equal("filesystem", providerResult.AssertValue().ProviderType);
+        Assert.Equal("Local Folder", providerResult.AssertValue().DisplayName);
     }
 
     [Fact]
@@ -241,7 +241,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
 
         await using var registry = await BuildAsync();
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Equal(2, ids.Count);
         Assert.Contains("fs-A", ids);
         Assert.Contains("fs-B", ids);
@@ -257,7 +257,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("failed to construct", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -270,7 +270,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("malformed ProviderConfig", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -283,7 +283,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("Unknown provider type", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -297,7 +297,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("not yet supported", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -312,7 +312,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
 
         await using var registry = await BuildAsync();
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
     }
 
@@ -326,7 +326,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
             _brain, _dek, NullLoggerFactory.Instance, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     [Fact]
@@ -340,7 +340,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
 
         await using var registry = await BuildAsync();
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Single(ids);
         Assert.Equal("fs-ok", ids[0]);
     }
@@ -359,13 +359,13 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var factory = new FakeGoogleDriveClientFactory();
         await using var registry = await BuildAsync(factory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Single(ids);
         Assert.Equal("gd-1", ids[0]);
 
         var providerResult = await registry.GetAsync("gd-1", CancellationToken.None);
         Assert.True(providerResult.Success);
-        Assert.Equal("google-drive", providerResult.Value!.ProviderType);
+        Assert.Equal("google-drive", providerResult.AssertValue().ProviderType);
         Assert.Equal("cid", factory.LastClientId);
         Assert.Equal("csec-xyz", factory.LastClientSecret);
         Assert.Equal("rt-xyz", factory.LastRefreshToken);
@@ -383,7 +383,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("no ClientID", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -399,7 +399,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("no EncryptedToken", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -415,7 +415,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("no EncryptedClientSecret", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -434,7 +434,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("could not decrypt client secret",
             logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
@@ -450,7 +450,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("malformed ProviderConfig",
             logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
@@ -471,7 +471,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(factory, logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("failed to construct", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -489,7 +489,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
 
         await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory());
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Equal(2, ids.Count);
         Assert.Contains("fs-A", ids);
         Assert.Contains("gd-1", ids);
@@ -509,13 +509,13 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var factory = new FakeDropboxClientFactory();
         await using var registry = await BuildAsync(factory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Single(ids);
         Assert.Equal("dbx-1", ids[0]);
 
         var providerResult = await registry.GetAsync("dbx-1", CancellationToken.None);
         Assert.True(providerResult.Success);
-        Assert.Equal("dropbox", providerResult.Value!.ProviderType);
+        Assert.Equal("dropbox", providerResult.AssertValue().ProviderType);
         Assert.Equal("appkey-1", factory.LastAppKey);
         Assert.Equal("csec-dbx", factory.LastAppSecret);
         Assert.Equal("rt-dbx", factory.LastRefreshToken);
@@ -533,7 +533,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("no ClientID", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -549,7 +549,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("no EncryptedToken", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -565,7 +565,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("no EncryptedClientSecret", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -583,7 +583,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("could not decrypt client secret",
             logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
@@ -599,7 +599,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(new FakeDropboxClientFactory(), logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("malformed ProviderConfig",
             logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
@@ -620,7 +620,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var logFactory = new ListLoggerFactory();
         await using var registry = await BuildAsync(factory, logFactory);
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Empty(ids);
         Assert.Contains("failed to construct", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
@@ -643,7 +643,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         await using var registry = await BuildAsync(
             new FakeGoogleDriveClientFactory(), new FakeDropboxClientFactory());
 
-        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
         Assert.Equal(3, ids.Count);
         Assert.Contains("fs-A", ids);
         Assert.Contains("gd-1", ids);
@@ -660,7 +660,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var result = await registry.GetAsync("does-not-exist", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
     }
 
     // ── DisposeAsync ──────────────────────────────────────────────────────────────────────────
@@ -728,7 +728,7 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
             NotificationBus = new RecordingNotificationBus(),
         };
         var createReceipt = (await FlashSkinkVolume.CreateAsync(
-            skinkRoot, password, createOptions)).Value!;
+            skinkRoot, password, createOptions)).AssertValue();
         try { await createReceipt.Volume.DisposeAsync(); }
         finally { createReceipt.RecoveryPhrase.Dispose(); }
         SqliteConnection.ClearAllPools();
@@ -769,16 +769,16 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
             var registryField = typeof(FlashSkinkVolume).GetField(
                 "_providerRegistry",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-            var registry = (IProviderRegistry)registryField.GetValue(openResult.Value!)!;
+            var registry = (IProviderRegistry)registryField.GetValue(openResult.AssertValue())!;
             Assert.IsType<BrainBackedProviderRegistry>(registry);
 
-            var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+            var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
             Assert.Single(ids);
             Assert.Equal("fs-on-open", ids[0]);
         }
         finally
         {
-            await openResult.Value!.DisposeAsync();
+            await openResult.AssertValue().DisposeAsync();
         }
     }
 

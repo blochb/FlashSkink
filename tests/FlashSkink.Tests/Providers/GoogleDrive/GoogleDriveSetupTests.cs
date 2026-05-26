@@ -51,7 +51,7 @@ public sealed class GoogleDriveSetupTests
             "http://127.0.0.1:12345/oauth-callback/", "challenge-xyz", creds, CancellationToken.None);
 
         Assert.True(result.Success);
-        var uri = result.Value!;
+        var uri = result.AssertValue();
         var query = uri.Query;
         Assert.Contains("response_type=code", query);
         Assert.Contains("client_id=test-client-id.apps.googleusercontent.com", query);
@@ -74,7 +74,7 @@ public sealed class GoogleDriveSetupTests
             "http://127.0.0.1:12345/oauth-callback/", "challenge", creds, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -87,7 +87,7 @@ public sealed class GoogleDriveSetupTests
             "", "challenge", creds, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -100,7 +100,7 @@ public sealed class GoogleDriveSetupTests
             "http://127.0.0.1/cb/", "", creds, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -114,7 +114,7 @@ public sealed class GoogleDriveSetupTests
 
         Assert.True(result.Success);
         // Colon, slash, and forward-slash become percent-encoded in the query.
-        Assert.Contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A12345%2Foauth-callback%2F", result.Value!.Query);
+        Assert.Contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A12345%2Foauth-callback%2F", result.AssertValue().Query);
     }
 
     // ── ExchangeCodeAsync ─────────────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ public sealed class GoogleDriveSetupTests
             creds, _dek, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.NotEmpty(result.Value!);
+        Assert.NotEmpty(result.AssertValue());
         Assert.True(ProviderTokenCrypto.TryDecrypt(result.Value, _dek, out var plain));
         Assert.Equal("rt-xyz", plain);
     }
@@ -178,7 +178,7 @@ public sealed class GoogleDriveSetupTests
             "code", "ver", "http://127.0.0.1/", creds, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderUnreachable, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderUnreachable, result.AssertError().Code);
     }
 
     [Fact]
@@ -195,7 +195,7 @@ public sealed class GoogleDriveSetupTests
             "code", "ver", "http://127.0.0.1/", creds, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderAuthFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderAuthFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -212,7 +212,7 @@ public sealed class GoogleDriveSetupTests
             "code", "ver", "http://127.0.0.1/", creds, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderAuthFailed, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderAuthFailed, result.AssertError().Code);
     }
 
     [Fact]
@@ -230,7 +230,7 @@ public sealed class GoogleDriveSetupTests
             "code", "ver", "http://127.0.0.1/", creds, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderApiChanged, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderApiChanged, result.AssertError().Code);
     }
 
     [Fact]
@@ -247,7 +247,7 @@ public sealed class GoogleDriveSetupTests
             "code", "ver", "http://127.0.0.1/", creds, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.ProviderApiChanged, result.Error!.Code);
+        Assert.Equal(ErrorCode.ProviderApiChanged, result.AssertError().Code);
     }
 
     [Fact]
@@ -260,7 +260,7 @@ public sealed class GoogleDriveSetupTests
             "code", "ver", "http://127.0.0.1/", creds, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -273,7 +273,7 @@ public sealed class GoogleDriveSetupTests
             "code", "ver", "http://127.0.0.1/", creds, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -288,7 +288,7 @@ public sealed class GoogleDriveSetupTests
             "code", "ver", "http://127.0.0.1/", creds, _dek, cts.Token);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Cancelled, result.Error!.Code);
+        Assert.Equal(ErrorCode.Cancelled, result.AssertError().Code);
     }
 
     // ── ValidatePathAsync ─────────────────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ public sealed class GoogleDriveSetupTests
         var result = await setup.ValidatePathAsync("/tmp/x", "/tmp/skink", CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.False(result.Value!.IsValid);
+        Assert.False(result.AssertValue().IsValid);
     }
 
     // ── CreateProviderAsync ───────────────────────────────────────────────────────────────────
@@ -319,7 +319,7 @@ public sealed class GoogleDriveSetupTests
             "p1", "Drive", bogus, creds, providerConfigJson: null, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.TokenRevoked, result.Error!.Code);
+        Assert.Equal(ErrorCode.TokenRevoked, result.AssertError().Code);
     }
 
     [Fact]
@@ -333,7 +333,7 @@ public sealed class GoogleDriveSetupTests
             "p1", "Drive", token, creds, providerConfigJson: null, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -347,7 +347,7 @@ public sealed class GoogleDriveSetupTests
             "p1", "Drive", token, creds, providerConfigJson: "{not json", dek: _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -443,6 +443,6 @@ public sealed class GoogleDriveSetupTests
             "p1", "Drive", token, creds, providerConfigJson: null, _dek, CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal(ErrorCode.Unknown, result.Error!.Code);
+        Assert.Equal(ErrorCode.Unknown, result.AssertError().Code);
     }
 }

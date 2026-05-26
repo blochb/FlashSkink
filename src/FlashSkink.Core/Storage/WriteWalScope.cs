@@ -85,7 +85,7 @@ public sealed class WriteWalScope : IAsyncDisposable
             var insert = await wal.InsertAsync(walRow, transaction: null, ct).ConfigureAwait(false);
             if (!insert.Success)
             {
-                return Result<WriteWalScope>.Fail(insert.Error!);
+                return Result<WriteWalScope>.Fail(insert.Error);
             }
 
             var scope = new WriteWalScope(
