@@ -368,7 +368,12 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
             }
         }
 
-        var setup = new GoogleDriveSetup(googleDriveFactory, new HttpClient(), loggerFactory);
+        // tokenExchangeClient is never used on the CreateProviderFromConfigAsync path
+        // (that helper bypasses ExchangeCodeAsync entirely — the registry holds already-
+        // decrypted credentials, not an authorisation code). Wrap in `using var` so the
+        // unused client is still cleaned up rather than leaked into the GC backlog.
+        using var tokenExchangeClient = new HttpClient();
+        var setup = new GoogleDriveSetup(googleDriveFactory, tokenExchangeClient, loggerFactory);
         var result = await setup.CreateProviderFromConfigAsync(
             row.ProviderID, row.DisplayName, row.ClientID, clientSecret, refreshToken, folderId, ct)
             .ConfigureAwait(false);

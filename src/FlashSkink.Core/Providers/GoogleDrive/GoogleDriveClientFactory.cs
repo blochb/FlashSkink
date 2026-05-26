@@ -152,7 +152,7 @@ internal sealed class GoogleAuthDelegatingHandler : DelegatingHandler
 
         // Retry the request once with the new access token. We must clone the request because a
         // single HttpRequestMessage cannot be sent twice.
-        var retry = await CloneRequestAsync(request).ConfigureAwait(false);
+        var retry = await CloneRequestAsync(request, cancellationToken).ConfigureAwait(false);
         await ApplyAuthHeaderAsync(retry, cancellationToken).ConfigureAwait(false);
         return await base.SendAsync(retry, cancellationToken).ConfigureAwait(false);
     }
@@ -163,7 +163,7 @@ internal sealed class GoogleAuthDelegatingHandler : DelegatingHandler
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
     }
 
-    private static async Task<HttpRequestMessage> CloneRequestAsync(HttpRequestMessage original)
+    private static async Task<HttpRequestMessage> CloneRequestAsync(HttpRequestMessage original, CancellationToken ct)
     {
         var clone = new HttpRequestMessage(original.Method, original.RequestUri);
         foreach (var header in original.Headers)
@@ -175,7 +175,7 @@ internal sealed class GoogleAuthDelegatingHandler : DelegatingHandler
         {
             // Buffer the content so we can read it twice. For our resumable PUTs the content is a
             // ByteArrayContent over a 4 MiB span which is small enough to buffer cheaply.
-            var bytes = await original.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            var bytes = await original.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
             var newContent = new ByteArrayContent(bytes);
             foreach (var header in original.Content.Headers)
             {

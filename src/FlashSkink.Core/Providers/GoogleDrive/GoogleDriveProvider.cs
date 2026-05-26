@@ -497,6 +497,12 @@ internal sealed partial class GoogleDriveProvider : IStorageProvider, IAsyncDisp
             return Result<Stream>.Fail(ErrorCode.InvalidArgument, "remoteId must not be empty.");
         }
 
+        // Null-out ownership transfer (Principle 16): `response` is heap-allocated; on the success
+        // path we hand it to ResponseOwningStream and null the local so the catch blocks don't
+        // double-dispose. On every other path (including a throw between SendAsync and the
+        // ownership transfer — e.g. cancellation during ReadAsStreamAsync) the catch blocks
+        // dispose it.
+        HttpResponseMessage? response = null;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -505,13 +511,14 @@ internal sealed partial class GoogleDriveProvider : IStorageProvider, IAsyncDisp
                 DriveDownloadEndpointTemplate, Uri.EscapeDataString(remoteId));
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            var response = await _bundle.ResumableUploadClient
+            response = await _bundle.ResumableUploadClient
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
                 .ConfigureAwait(false);
 
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
                 response.Dispose();
+                response = null;
                 return Result<Stream>.Fail(
                     ErrorCode.BlobNotFound, $"Drive object '{remoteId}' not found.");
             }
@@ -521,24 +528,30 @@ internal sealed partial class GoogleDriveProvider : IStorageProvider, IAsyncDisp
                 var failure = await MapHttpFailureAsync<Stream>(
                     response, "download", ct).ConfigureAwait(false);
                 response.Dispose();
+                response = null;
                 return failure;
             }
 
             // Wrap the body in a stream that disposes the response on close.
             var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            return Result<Stream>.Ok(new ResponseOwningStream(stream, response));
+            var owned = new ResponseOwningStream(stream, response);
+            response = null; // ownership transferred to ResponseOwningStream
+            return Result<Stream>.Ok(owned);
         }
         catch (OperationCanceledException ex)
         {
+            response?.Dispose();
             return Result<Stream>.Fail(ErrorCode.Cancelled, "DownloadAsync cancelled.", ex);
         }
         catch (HttpRequestException ex)
         {
+            response?.Dispose();
             return Result<Stream>.Fail(
                 ErrorCode.ProviderUnreachable, "Network failure downloading from Drive.", ex);
         }
         catch (Exception ex)
         {
+            response?.Dispose();
             _logger.LogError(ex, "Unexpected error downloading {RemoteId} from Drive.", remoteId);
             return Result<Stream>.Fail(ErrorCode.Unknown, "Unexpected error during Drive download.", ex);
         }
