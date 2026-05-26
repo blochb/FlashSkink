@@ -325,6 +325,20 @@ public sealed class DropboxProviderTests
     }
 
     [Fact]
+    public async Task UploadRangeAsync_RateLimit_ReturnsProviderRateLimited()
+    {
+        var (provider, factory) = Build();
+        await using var _ = provider;
+        factory.Handler.Setup(HttpMethod.Post, ContentUploadAppend,
+            _ => DropboxCannedResponses.RateLimited(retryAfterSeconds: 1));
+
+        var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 0, 1024);
+        var result = await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.ProviderRateLimited, result.Error!.Code);
+    }
+
+    [Fact]
     public async Task UploadRangeAsync_NetworkAbort_ReturnsProviderUnreachable()
     {
         var (provider, factory) = Build();
@@ -413,6 +427,22 @@ public sealed class DropboxProviderTests
         var result = await provider.FinaliseUploadAsync(session, CancellationToken.None);
         Assert.False(result.Success);
         Assert.Equal(ErrorCode.UploadSessionExpired, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task FinaliseUploadAsync_LookupFailedNotClosed_ReturnsUploadFailed()
+    {
+        // PR review coverage gap: the lookup-failed inner-error fallthrough — not one of the
+        // session-expired variants — must surface as UploadFailed (terminal), not restart.
+        var (provider, factory) = Build();
+        await using var _ = provider;
+        factory.Handler.Setup(HttpMethod.Post, ContentUploadFinish,
+            _ => DropboxCannedResponses.UploadSessionFinishLookupNotClosed());
+
+        var session = SessionFor(SessionId, $"{RootPath}/blob.bin", 1024, 1024);
+        var result = await provider.FinaliseUploadAsync(session, CancellationToken.None);
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.UploadFailed, result.Error!.Code);
     }
 
     [Fact]

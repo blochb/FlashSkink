@@ -34,7 +34,7 @@ namespace FlashSkink.Core.Providers.Dropbox;
 /// (<see cref="Users.Routes.UsersUserRoutes.GetSpaceUsageAsync"/>).
 /// </para>
 /// </remarks>
-internal sealed class DropboxSetup : IProviderSetup
+internal sealed class DropboxSetup : IProviderSetup, IDisposable
 {
     /// <summary>OAuth scopes requested at consent time. See class remarks for rationale.</summary>
     private static readonly string[] Scopes =
@@ -85,6 +85,19 @@ internal sealed class DropboxSetup : IProviderSetup
         _ownsOauthClient = ownsOauthClient;
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<DropboxSetup>();
+    }
+
+    /// <summary>
+    /// Disposes the per-instance OAuth <see cref="HttpClient"/> when this instance owns it (i.e.
+    /// was constructed via the production single-arg constructor). When the test constructor was
+    /// used, the caller retains ownership and this is a no-op. Idempotent.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_ownsOauthClient)
+        {
+            try { _oauthHttpClient.Dispose(); } catch { /* swallow */ }
+        }
     }
 
     /// <inheritdoc/>

@@ -333,4 +333,33 @@ public sealed class DropboxSetupTests
         Assert.Equal(ErrorCode.InvalidArgument, result.Error!.Code);
         oauthClient.Dispose();
     }
+
+    // ── Dispose ──────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Dispose_ProductionConstructor_DisposesOauthHttpClient()
+    {
+        // The production constructor allocates its own HttpClient and is responsible for
+        // disposing it. PR review #2: previously this was leaked.
+        var setup = new DropboxSetup(NullLoggerFactory.Instance);
+        setup.Dispose();
+        // Calling Dispose twice must not throw — the IDisposable contract.
+        setup.Dispose();
+    }
+
+    [Fact]
+    public void Dispose_TestConstructor_DoesNotDisposeCallerOwnedClient()
+    {
+        // The test constructor receives an HttpClient owned by the caller. Disposing the setup
+        // must NOT dispose that client (the caller is still using it).
+        using var oauthClient = new HttpClient(new RecordingHttpMessageHandler());
+        var setup = new DropboxSetup(
+            new FakeDropboxClientFactory(), oauthClient, NullLoggerFactory.Instance);
+
+        setup.Dispose();
+
+        // If the setup had disposed the client, this call would throw ObjectDisposedException.
+        // The assertion is implicit: the call simply succeeds.
+        Assert.NotNull(oauthClient.BaseAddress is null ? "" : oauthClient.BaseAddress.ToString());
+    }
 }

@@ -117,6 +117,26 @@ internal static class DropboxCannedResponses
         return WithJson(409, json);
     }
 
+    /// <summary>
+    /// upload_session/finish: lookup_failed → not_closed. Used to exercise the fallthrough
+    /// branch in <c>MapUploadSessionLookupErrorTyped</c> where the inner lookup error is NOT
+    /// one of the session-expired variants — these should surface as <c>UploadFailed</c> rather
+    /// than triggering a restart-from-byte-0.
+    /// </summary>
+    public static HttpResponseMessage UploadSessionFinishLookupNotClosed()
+    {
+        var json = """
+        {
+          "error_summary": "lookup_failed/not_closed/...",
+          "error": {
+            ".tag": "lookup_failed",
+            "lookup_failed": { ".tag": "not_closed" }
+          }
+        }
+        """;
+        return WithJson(409, json);
+    }
+
     /// <summary>401 with an AuthError body.</summary>
     public static HttpResponseMessage AuthExpired()
     {

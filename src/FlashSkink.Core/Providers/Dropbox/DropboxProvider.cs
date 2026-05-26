@@ -874,7 +874,7 @@ internal sealed partial class DropboxProvider : IStorageProvider, IAsyncDisposab
         {
             return Result<long>.Fail(usage.Error!);
         }
-        return Result<long>.Ok(checked((long)usage.Value!.Used));
+        return Result<long>.Ok(SaturateToLong(usage.Value!.Used));
     }
 
     /// <inheritdoc/>
@@ -893,15 +893,25 @@ internal sealed partial class DropboxProvider : IStorageProvider, IAsyncDisposab
         }
         if (allocation.IsIndividual)
         {
-            return Result<long?>.Ok(checked((long)allocation.AsIndividual.Value.Allocated));
+            return Result<long?>.Ok(SaturateToLong(allocation.AsIndividual.Value.Allocated));
         }
         if (allocation.IsTeam)
         {
-            return Result<long?>.Ok(checked((long)allocation.AsTeam.Value.Allocated));
+            return Result<long?>.Ok(SaturateToLong(allocation.AsTeam.Value.Allocated));
         }
         // Unknown allocation variant → quota is "unknown / unlimited" per the contract.
         return Result<long?>.Ok(null);
     }
+
+    /// <summary>
+    /// Saturating <see cref="ulong"/> → <see cref="long"/> conversion. The Dropbox API exposes
+    /// byte counts as <see cref="ulong"/> but our contract is <see cref="long"/>; for the
+    /// astronomically-unlikely case where a value exceeds <see cref="long.MaxValue"/> (9.2 EB),
+    /// saturate rather than throw <see cref="OverflowException"/> across the
+    /// <see cref="IStorageProvider"/> public boundary (Principle 1).
+    /// </summary>
+    private static long SaturateToLong(ulong value)
+        => value > long.MaxValue ? long.MaxValue : (long)value;
 
     private async Task<Result<SpaceUsage>> TryGetSpaceUsageAsync(CancellationToken ct)
     {
@@ -1183,7 +1193,12 @@ internal sealed partial class DropboxProvider : IStorageProvider, IAsyncDisposab
         {
             return Result<T>.Fail(ErrorCode.UploadFailed, "Dropbox session lookup failed.", aex);
         }
-        if (err.IsNotFound || err.IsClosed)
+        // Keep this list in lock-step with MapUploadSessionLookupError (non-typed). PR review #1.
+        if (err.IsNotFound ||
+            err.IsIncorrectOffset ||
+            err.IsClosed ||
+            err.IsConcurrentSessionInvalidOffset ||
+            err.IsConcurrentSessionInvalidDataSize)
         {
             return Result<T>.Fail(
                 ErrorCode.UploadSessionExpired,
