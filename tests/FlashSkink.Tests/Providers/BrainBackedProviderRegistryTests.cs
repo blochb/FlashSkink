@@ -5,9 +5,12 @@ using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Orchestration;
 using FlashSkink.Core.Providers;
+using FlashSkink.Core.Providers.GoogleDrive;
+using FlashSkink.Core.Providers.Setup;
 using FlashSkink.Tests.Engine;
 using FlashSkink.Tests.Metadata;
 using FlashSkink.Tests.Orchestration;
+using FlashSkink.Tests.Providers.GoogleDrive;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -83,11 +86,55 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
             });
     }
 
+    private void InsertGoogleDriveProvider(
+        string providerId,
+        string displayName,
+        string? clientId,
+        byte[]? encryptedToken,
+        byte[]? encryptedClientSecret,
+        string? providerConfig,
+        bool isActive = true)
+    {
+        _connection.Execute(
+            """
+            INSERT INTO Providers
+                (ProviderID, ProviderType, DisplayName, ClientID,
+                 EncryptedToken, EncryptedClientSecret, ProviderConfig,
+                 HealthStatus, AddedUtc, IsActive)
+            VALUES
+                (@Id, 'google-drive', @Name, @ClientId,
+                 @EncToken, @EncSecret, @Config,
+                 'Healthy', @AddedUtc, @IsActive)
+            """,
+            new
+            {
+                Id = providerId,
+                Name = displayName,
+                ClientId = clientId,
+                EncToken = encryptedToken,
+                EncSecret = encryptedClientSecret,
+                Config = providerConfig,
+                AddedUtc = DateTime.UtcNow.ToString("O"),
+                IsActive = isActive ? 1 : 0,
+            });
+    }
+
     private async Task<BrainBackedProviderRegistry> BuildAsync(ILoggerFactory? loggerFactory = null)
     {
         loggerFactory ??= NullLoggerFactory.Instance;
         var result = await BrainBackedProviderRegistry.CreateAsync(
             _brain, _dek, loggerFactory, CancellationToken.None);
+        Assert.True(result.Success);
+        return result.Value!;
+    }
+
+    private async Task<BrainBackedProviderRegistry> BuildAsync(
+        IGoogleDriveClientFactory googleDriveFactory,
+        ILoggerFactory? loggerFactory = null)
+    {
+        loggerFactory ??= NullLoggerFactory.Instance;
+        var result = await BrainBackedProviderRegistry.CreateAsync(
+            _brain, _dek, googleDriveFactory, loggerFactory, CancellationToken.None);
         Assert.True(result.Success);
         return result.Value!;
     }
@@ -183,10 +230,9 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
     }
 
     [Theory]
-    [InlineData("google-drive")]
     [InlineData("dropbox")]
     [InlineData("onedrive")]
-    public async Task CreateAsync_OneRowWithCloudProviderType_LogsWarningAndSkips(string providerType)
+    public async Task CreateAsync_OneRowWithUnsupportedCloudProviderType_LogsWarningAndSkips(string providerType)
     {
         InsertProvider($"cloud-{providerType}", providerType, "Cloud Tail", providerConfig: null);
 
@@ -239,6 +285,156 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
         Assert.Single(ids);
         Assert.Equal("fs-ok", ids[0]);
+    }
+
+    // ── google-drive dispatch arm (§4.3) ─────────────────────────────────────────────────────
+
+    private const string GdriveConfigJson = "{\"folderId\":\"folder-fake-id\",\"folderName\":\"FlashSkink Backup\"}";
+
+    [Fact]
+    public async Task CreateAsync_OneGoogleDriveRow_WithAllCredentials_ConstructsProvider()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt-xyz", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("csec-xyz", _dek);
+        InsertGoogleDriveProvider("gd-1", "Drive", "cid", token, secret, GdriveConfigJson);
+
+        var factory = new FakeGoogleDriveClientFactory();
+        await using var registry = await BuildAsync(factory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Single(ids);
+        Assert.Equal("gd-1", ids[0]);
+
+        var providerResult = await registry.GetAsync("gd-1", CancellationToken.None);
+        Assert.True(providerResult.Success);
+        Assert.Equal("google-drive", providerResult.Value!.ProviderType);
+        Assert.Equal("cid", factory.LastClientId);
+        Assert.Equal("csec-xyz", factory.LastClientSecret);
+        Assert.Equal("rt-xyz", factory.LastRefreshToken);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneGoogleDriveRow_MissingClientId_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertGoogleDriveProvider("gd-1", "Drive",
+            clientId: null, encryptedToken: token, encryptedClientSecret: secret,
+            providerConfig: GdriveConfigJson);
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("no ClientID", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneGoogleDriveRow_MissingEncryptedToken_LogsWarningAndSkips()
+    {
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertGoogleDriveProvider("gd-1", "Drive", "cid",
+            encryptedToken: null, encryptedClientSecret: secret,
+            providerConfig: GdriveConfigJson);
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("no EncryptedToken", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneGoogleDriveRow_MissingEncryptedClientSecret_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        InsertGoogleDriveProvider("gd-1", "Drive", "cid",
+            encryptedToken: token, encryptedClientSecret: null,
+            providerConfig: GdriveConfigJson);
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("no EncryptedClientSecret", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneGoogleDriveRow_DecryptClientSecretFails_LogsWarningAndSkips()
+    {
+        // Token encrypted with the correct DEK; secret encrypted with a different DEK.
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var otherDek = new byte[32];
+        otherDek[0] = 0xFF;
+        var secret = ProviderTokenCrypto.Encrypt("cs", otherDek);
+
+        InsertGoogleDriveProvider("gd-1", "Drive", "cid", token, secret, GdriveConfigJson);
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("could not decrypt client secret",
+            logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneGoogleDriveRow_MalformedProviderConfig_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertGoogleDriveProvider("gd-1", "Drive", "cid", token, secret, providerConfig: "{not json");
+
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory(), logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("malformed ProviderConfig",
+            logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_OneGoogleDriveRow_FactoryFails_LogsWarningAndSkips()
+    {
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertGoogleDriveProvider("gd-1", "Drive", "cid", token, secret, GdriveConfigJson);
+
+        var factory = new FakeGoogleDriveClientFactory
+        {
+            CreateResultOverride = Result<GoogleDriveClientBundle>.Fail(
+                ErrorCode.Unknown, "factory boom"),
+        };
+        var logFactory = new ListLoggerFactory();
+        await using var registry = await BuildAsync(factory, logFactory);
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Empty(ids);
+        Assert.Contains("failed to construct", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CreateAsync_MixedFileSystemAndGoogleDriveRows_BothLoaded()
+    {
+        var tail = MakeTailDir("tail-mixed-gd");
+        InsertProvider("fs-A", "filesystem", "Tail A",
+            $$"""{"rootPath":"{{tail.Replace("\\", "\\\\")}}"}""");
+
+        var token = ProviderTokenCrypto.Encrypt("rt", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("cs", _dek);
+        InsertGoogleDriveProvider("gd-1", "Drive", "cid", token, secret, GdriveConfigJson);
+
+        await using var registry = await BuildAsync(new FakeGoogleDriveClientFactory());
+
+        var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).Value!;
+        Assert.Equal(2, ids.Count);
+        Assert.Contains("fs-A", ids);
+        Assert.Contains("gd-1", ids);
     }
 
     // ── GetAsync ──────────────────────────────────────────────────────────────────────────────
