@@ -3139,6 +3139,20 @@ Recorded intent (Decision C6): When mobile is introduced post-V1, it operates as
 
 Specific transport and feature scope to be decided based on V1+ feedback and whether dedicated FlashSkink hardware (with a radio) becomes part of the roadmap.
 
+### 32.6 Multi-Volume-Per-Cloud Cloud-Path Layout
+
+Recorded intent (not committed for V1): the current cloud-path layout assumes single-volume-per-cloud-account. The witness file lives at the fixed path `_witness/current.enc` on every tail (§19.6); blob and brain-mirror paths are likewise not namespaced by `Settings["VolumeID"]`. Two distinct volumes (different VolumeID, possibly same recovery phrase per §31.1) sharing one cloud account share that witness slot — they overwrite each other on every session-begin handshake, and each volume's reader treats the foreign-VolumeId witness as "no information" (§19.7), so the clobber is silent but the conflict-detection guarantee is silently degraded for both.
+
+A future revision could prefix every cloud-side path with the volume's GUID (`<volume-id>/_witness/current.enc`, `<volume-id>/blobs/...`, `<volume-id>/brain/...`) so multiple volumes coexist cleanly on one cloud account. The witness payload layer is already volume-aware (§19.7 explicitly handles mismatched-VolumeId witnesses gracefully); the change is mostly path-construction in `RangeUploader`, `BrainMirrorService`, `WitnessStore`, and a cold-recovery discovery step that lists top-level GUID-shaped folders and tries each.
+
+Deferred from V1 because the realistic user personas are thin — BYOC means each user typically dedicates one cloud account to FlashSkink, work-data-on-personal-cloud is a policy violation in most environments, and true storage diversification belongs across providers (the existing mirror model), not multiple volumes at one provider. The clone-detection win from §3.5 (Phase 3.5) works under the current layout because true clones share both VolumeID and DEK. Revisit if:
+
+- A first-class "multiple skinks per cloud account" capability earns product-positioning weight
+- Witness-slot clobbering surfaces as a real diagnostic problem in dogfooding or support
+- A specific multi-volume scenario (e.g., family-shared cloud quota with per-member skinks) becomes a marketed use case
+
+Estimated scope when undertaken: 300-500 net lines across the hot upload/mirror paths, the witness-store layer, and the cold-recovery flow, plus a migration story for any V1-era deployments that need to be re-keyed under per-VolumeID prefixes.
+
 ---
 
 ## End of Blueprint
