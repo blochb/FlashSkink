@@ -48,7 +48,8 @@ jobs:
 
             echo "## Full diff"
             echo '```diff'
-            git diff "origin/$BASE_REF...HEAD" | head -c 200000
+            git diff "origin/$BASE_REF...HEAD" --output=/tmp/review/diff.full
+            head -c 200000 /tmp/review/diff.full
             echo '```'
           } > /tmp/review/context.md
 
