@@ -52,6 +52,16 @@ public sealed class VolumeCreationOptions
     public IClock? Clock { get; init; }
 
     /// <summary>
+    /// <see cref="IProviderSetup"/> implementations available to
+    /// <see cref="FlashSkinkVolume.AddTailAsync"/>, overlaid (keyed by
+    /// <see cref="IProviderSetup.ProviderType"/>) on the Core-built <c>FileSystemProviderSetup</c>.
+    /// The CLI injects the cloud setups; tests inject fakes. Injected setups are caller-owned —
+    /// the volume never disposes them. When <see langword="null"/>, only the filesystem setup is
+    /// available.
+    /// </summary>
+    public IReadOnlyList<IProviderSetup>? ProviderSetups { get; init; }
+
+    /// <summary>
     /// Opt-in stale-lock recovery. When <see langword="true"/>, <see cref="FlashSkinkVolume.CreateAsync"/>
     /// and <see cref="FlashSkinkVolume.OpenAsync"/> delete any pre-existing
     /// <c>[skinkRoot]/.flashskink/instance.lock</c> file before attempting to acquire the

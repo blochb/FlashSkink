@@ -57,7 +57,7 @@ namespace FlashSkink.Core.Providers;
 /// <c>RemoveTailAsync</c> arrives in §4.6.
 /// </para>
 /// </remarks>
-public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDisposable
+public sealed class BrainBackedProviderRegistry : IProviderRegistry, IMutableProviderRegistry, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, IStorageProvider> _adapters = new();
     private readonly ILogger<BrainBackedProviderRegistry> _logger;
@@ -215,6 +215,56 @@ public sealed class BrainBackedProviderRegistry : IProviderRegistry, IAsyncDispo
     {
         IReadOnlyList<string> ids = _adapters.Keys.ToArray();
         return ValueTask.FromResult(Result<IReadOnlyList<string>>.Ok(ids));
+    }
+
+    /// <inheritdoc/>
+    public void Register(string providerId, IStorageProvider provider)
+    {
+        _adapters[providerId] = provider;
+        _logger.LogInformation("Provider registered: {ProviderId} ({DisplayName})", providerId, provider.DisplayName);
+    }
+
+    /// <inheritdoc/>
+    public bool Remove(string providerId)
+    {
+        if (!_adapters.TryRemove(providerId, out var evicted))
+        {
+            return false;
+        }
+
+        // Dispose the evicted adapter so its SDK client / HTTP connections are released
+        // (cross-cutting decision 4 — the registry owns the adapter lifetime). Disposal is
+        // best-effort; failures are logged at Warning and otherwise swallowed.
+        DisposeAdapter(evicted, _logger);
+        _logger.LogInformation("Provider removed: {ProviderId}", providerId);
+        return true;
+    }
+
+    /// <summary>
+    /// Synchronously disposes an evicted adapter. Cloud adapters implement
+    /// <see cref="IAsyncDisposable"/>; we block on it here because <see cref="Remove"/> is part of
+    /// the synchronous <see cref="IMutableProviderRegistry"/> contract and runs on the
+    /// admin (remove-tail) path, never a hot path. No <see cref="SynchronizationContext"/> is
+    /// present in the CLI/test host, so the blocking join cannot deadlock.
+    /// </summary>
+    private static void DisposeAdapter(IStorageProvider adapter, ILogger logger)
+    {
+        try
+        {
+            switch (adapter)
+            {
+                case IAsyncDisposable asyncDisposable:
+                    asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    break;
+                case IDisposable disposable:
+                    disposable.Dispose();
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to dispose evicted provider adapter.");
+        }
     }
 
     /// <inheritdoc/>
