@@ -350,6 +350,9 @@ public sealed class AddTailAsyncTests : IAsyncLifetime
     public async Task RemoveTail_DeletesRows_AndEvictsAdapter()
     {
         await using var volume = await CreateVolumeAsync();
+        // Write a file first so the tail add backfills a TailUploads row to clean up later.
+        Assert.True((await volume.WriteFileAsync(
+            new MemoryStream(RandomNumberGenerator.GetBytes(1024)), "doc.bin")).Success);
         Assert.True((await volume.AddTailAsync(FsConfig(_tailRoot))).Success);
 
         var remove = await volume.RemoveTailAsync(ProviderId);
@@ -360,9 +363,16 @@ public sealed class AddTailAsyncTests : IAsyncLifetime
 
         await volume.DisposeAsync();
         await using var brain = await OpenRawBrainAsync();
-        var count = await brain.ExecuteScalarAsync<long>(
+        var providerCount = await brain.ExecuteScalarAsync<long>(
             "SELECT COUNT(*) FROM Providers WHERE ProviderID = @Id", new { Id = ProviderId });
-        Assert.Equal(0, count);
+        Assert.Equal(0, providerCount);
+        // The backfilled TailUploads rows (and any UploadSessions) for the tail are gone too.
+        var tailUploadCount = await brain.ExecuteScalarAsync<long>(
+            "SELECT COUNT(*) FROM TailUploads WHERE ProviderID = @Id", new { Id = ProviderId });
+        Assert.Equal(0, tailUploadCount);
+        var sessionCount = await brain.ExecuteScalarAsync<long>(
+            "SELECT COUNT(*) FROM UploadSessions WHERE ProviderID = @Id", new { Id = ProviderId });
+        Assert.Equal(0, sessionCount);
     }
 
     [Fact]

@@ -880,6 +880,13 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     /// (encrypted before persisting); the OAuth refresh token is derived from
     /// <see cref="TailConfiguration.AuthorizationCode"/> here and never crosses the public API in
     /// plaintext (Principles 6/26).
+    /// <para>
+    /// The brain transaction (Providers + TailUploads rows) commits before the adapter is
+    /// registered in the live registry. In the (practically impossible) event that the in-memory
+    /// <c>Register</c> throws after that commit, the constructed adapter is disposed and a failed
+    /// <see cref="Result"/> is returned, but the brain row persists — the recovery path is
+    /// <see cref="RemoveTailAsync"/>, which keys off the brain row (not the registry) and clears it.
+    /// </para>
     /// </remarks>
     public async Task<Result<TailInfo>> AddTailAsync(TailConfiguration config, CancellationToken ct = default)
     {
@@ -1056,27 +1063,30 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         }
         catch (OperationCanceledException ex)
         {
-            if (newAdapter is not null && !registered) { await DisposeAdapterAsync(newAdapter).ConfigureAwait(false); }
             return Result<TailInfo>.Fail(ErrorCode.Cancelled, "Add tail cancelled.", ex);
         }
         catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
         {
-            if (newAdapter is not null && !registered) { await DisposeAdapterAsync(newAdapter).ConfigureAwait(false); }
             return Result<TailInfo>.Fail(ErrorCode.PathConflict,
                 $"A '{displayName}' tail is already configured.", ex);
         }
         catch (SqliteException ex)
         {
-            if (newAdapter is not null && !registered) { await DisposeAdapterAsync(newAdapter).ConfigureAwait(false); }
             return Result<TailInfo>.Fail(ErrorCode.DatabaseWriteFailed, "Could not save the new tail.", ex);
         }
         catch (Exception ex)
         {
-            if (newAdapter is not null && !registered) { await DisposeAdapterAsync(newAdapter).ConfigureAwait(false); }
             return Result<TailInfo>.Fail(ErrorCode.Unknown, "Unexpected error adding the tail.", ex);
         }
         finally
         {
+            // Dispose the constructed adapter if it was never handed to the registry (Principle 16).
+            // On the success path 'registered' is true, so this is a no-op; concentrating the guard
+            // here makes the safety structural rather than duplicated across every catch block.
+            if (newAdapter is not null && !registered)
+            {
+                await DisposeAdapterAsync(newAdapter).ConfigureAwait(false);
+            }
             _gate.Release();
         }
     }
