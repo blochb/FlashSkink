@@ -9,10 +9,13 @@ namespace FlashSkink.Core.Upload;
 public static class UploadConstants
 {
     /// <summary>
-    /// Maximum bytes per upload range: 4 MiB. Blueprint §15.5 Decision B3-b. Adaptive sizing
-    /// is post-V1; this constant is the single V1 source of truth for the range loop.
+    /// Maximum bytes per upload range: 5 MiB (= 16 × 320 KiB = 20 × 256 KiB). Blueprint §15.5
+    /// Decision B3-b. Sized as an exact multiple of OneDrive's required 320 KiB range granularity
+    /// (Microsoft Graph resumable uploads, §4.5) while remaining a clean multiple of the 256 KiB
+    /// boundary the other providers prefer. Adaptive sizing is post-V1; this constant is the single
+    /// V1 source of truth for the range loop.
     /// </summary>
-    public const int RangeSize = 4 * 1024 * 1024;
+    public const int RangeSize = 5 * 1024 * 1024;
 
     /// <summary>
     /// Maximum concurrent ranges in flight per tail worker: 1 (sequential ranges). Blueprint §15.6

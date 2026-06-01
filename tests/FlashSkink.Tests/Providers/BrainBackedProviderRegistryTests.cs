@@ -7,12 +7,14 @@ using FlashSkink.Core.Orchestration;
 using FlashSkink.Core.Providers;
 using FlashSkink.Core.Providers.Dropbox;
 using FlashSkink.Core.Providers.GoogleDrive;
+using FlashSkink.Core.Providers.OneDrive;
 using FlashSkink.Core.Providers.Setup;
 using FlashSkink.Tests.Engine;
 using FlashSkink.Tests.Metadata;
 using FlashSkink.Tests.Orchestration;
 using FlashSkink.Tests.Providers.Dropbox;
 using FlashSkink.Tests.Providers.GoogleDrive;
+using FlashSkink.Tests.Providers.OneDrive;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -165,6 +167,51 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         return result.AssertValue();
     }
 
+    private async Task<BrainBackedProviderRegistry> BuildAsync(
+        IOneDriveClientFactory oneDriveFactory,
+        ILoggerFactory? loggerFactory = null)
+    {
+        loggerFactory ??= NullLoggerFactory.Instance;
+        var result = await BrainBackedProviderRegistry.CreateAsync(
+            _brain, _dek, new FakeGoogleDriveClientFactory(), new FakeDropboxClientFactory(),
+            oneDriveFactory, loggerFactory, CancellationToken.None);
+        Assert.True(result.Success);
+        return result.AssertValue();
+    }
+
+    private void InsertOneDriveProvider(
+        string providerId,
+        string displayName,
+        string? clientId,
+        byte[]? encryptedToken,
+        byte[]? encryptedClientSecret,
+        string? providerConfig,
+        bool isActive = true)
+    {
+        _connection.Execute(
+            """
+            INSERT INTO Providers
+                (ProviderID, ProviderType, DisplayName, ClientID,
+                 EncryptedToken, EncryptedClientSecret, ProviderConfig,
+                 HealthStatus, AddedUtc, IsActive)
+            VALUES
+                (@Id, 'onedrive', @Name, @ClientId,
+                 @EncToken, @EncSecret, @Config,
+                 'Healthy', @AddedUtc, @IsActive)
+            """,
+            new
+            {
+                Id = providerId,
+                Name = displayName,
+                ClientId = clientId,
+                EncToken = encryptedToken,
+                EncSecret = encryptedClientSecret,
+                Config = providerConfig,
+                AddedUtc = DateTime.UtcNow.ToString("O"),
+                IsActive = isActive ? 1 : 0,
+            });
+    }
+
     private void InsertDropboxProvider(
         string providerId,
         string displayName,
@@ -288,18 +335,24 @@ public sealed class BrainBackedProviderRegistryTests : IAsyncLifetime, IDisposab
         Assert.Contains("Unknown provider type", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
     }
 
-    [Theory]
-    [InlineData("onedrive")]
-    public async Task CreateAsync_OneRowWithUnsupportedCloudProviderType_LogsWarningAndSkips(string providerType)
+    [Fact]
+    public async Task OneDriveRow_BuildsAdapter_ThroughFakeFactory()
     {
-        InsertProvider($"cloud-{providerType}", providerType, "Cloud Tail", providerConfig: null);
+        var token = ProviderTokenCrypto.Encrypt("rt-od", _dek);
+        var secret = ProviderTokenCrypto.Encrypt("csec-od", _dek);
+        InsertOneDriveProvider("od-1", "OneDrive", "appid-1", token, secret,
+            "{\"rootPath\":\"/FlashSkink Backup\"}");
 
-        var logFactory = new ListLoggerFactory();
-        await using var registry = await BuildAsync(logFactory);
+        await using var registry = await BuildAsync(
+            new FakeOneDriveClientFactory(new RecordingHttpMessageHandler()));
 
         var ids = (await registry.ListActiveProviderIdsAsync(CancellationToken.None)).AssertValue();
-        Assert.Empty(ids);
-        Assert.Contains("not yet supported", logFactory.Dump(), StringComparison.OrdinalIgnoreCase);
+        Assert.Single(ids);
+        Assert.Equal("od-1", ids[0]);
+
+        var providerResult = await registry.GetAsync("od-1", CancellationToken.None);
+        Assert.True(providerResult.Success);
+        Assert.Equal("onedrive", providerResult.AssertValue().ProviderType);
     }
 
     [Fact]

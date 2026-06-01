@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 
-namespace FlashSkink.Tests.Providers.Dropbox;
+namespace FlashSkink.Tests.Providers;
 
 /// <summary>
 /// Test-support <see cref="HttpMessageHandler"/> that matches outgoing requests by (method,
@@ -9,10 +9,21 @@ namespace FlashSkink.Tests.Providers.Dropbox;
 /// request so tests can assert headers, body, and call ordering.
 /// </summary>
 /// <remarks>
-/// Duplicated from <c>tests/FlashSkink.Tests/Providers/GoogleDrive/RecordingHttpMessageHandler.cs</c>
-/// per Discrepancy 2 of <c>.claude/plans/pr-4.4.md</c>. The Drive-specific
-/// <c>CannedResponses.ResumableInit</c> / <c>Range308</c> / <c>Empty308</c> helpers are not
-/// carried over — Dropbox-specific helpers live in <see cref="DropboxCannedResponses"/>.
+/// <para>
+/// Setup model: <c>Setup(HttpMethod.Put, "https://example/", req =&gt; …)</c> registers a responder
+/// for any request whose method matches and whose URL starts with the prefix. Setups are evaluated
+/// LIFO so a more-specific override can be stacked over a default.
+/// </para>
+/// <para>
+/// Per-prefix queue mode: tests that need different responses on successive calls to the same prefix
+/// push a sequence via <see cref="Enqueue"/>. The handler consumes one response per call; when the
+/// queue empties it falls back to the standing <see cref="Setup"/> responder if any.
+/// </para>
+/// <para>
+/// Shared across the Google Drive, Dropbox, and OneDrive provider test suites (lives in the parent
+/// <c>FlashSkink.Tests.Providers</c> namespace; visible to each provider sub-namespace via
+/// enclosing-namespace lookup). Provider-specific canned-response helpers live in their own files.
+/// </para>
 /// </remarks>
 internal sealed class RecordingHttpMessageHandler : HttpMessageHandler
 {
@@ -51,6 +62,7 @@ internal sealed class RecordingHttpMessageHandler : HttpMessageHandler
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        // Read body eagerly so the recording captures what the caller actually sent.
         byte[]? bodyBytes = null;
         string? bodyString = null;
         if (request.Content is not null)
@@ -79,9 +91,13 @@ internal sealed class RecordingHttpMessageHandler : HttpMessageHandler
             _received.Add(recorded);
         }
 
+        // 1. Check per-prefix queues first.
         foreach (var entry in SnapshotSetups())
         {
-            if (entry.Method != request.Method) { continue; }
+            if (entry.Method != request.Method)
+            {
+                continue;
+            }
             if (request.RequestUri is null ||
                 !request.RequestUri.AbsoluteUri.StartsWith(entry.UrlPrefix, StringComparison.Ordinal))
             {
@@ -95,9 +111,13 @@ internal sealed class RecordingHttpMessageHandler : HttpMessageHandler
             }
         }
 
+        // 2. Fall through to standing setups (LIFO).
         foreach (var entry in SnapshotSetups())
         {
-            if (entry.Method != request.Method) { continue; }
+            if (entry.Method != request.Method)
+            {
+                continue;
+            }
             if (request.RequestUri is null ||
                 !request.RequestUri.AbsoluteUri.StartsWith(entry.UrlPrefix, StringComparison.Ordinal))
             {
@@ -114,6 +134,7 @@ internal sealed class RecordingHttpMessageHandler : HttpMessageHandler
     {
         lock (_lock)
         {
+            // LIFO so later Setup() calls override earlier ones.
             var copy = new MatcherEntry[_setups.Count];
             for (var i = 0; i < _setups.Count; i++)
             {
