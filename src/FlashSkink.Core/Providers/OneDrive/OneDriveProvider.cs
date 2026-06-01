@@ -386,7 +386,12 @@ internal sealed partial class OneDriveProvider : IStorageProvider, IAsyncDisposa
     /// <inheritdoc/>
     public async Task<Result> AbortUploadAsync(UploadSession session, CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
+        // Observe cancellation before the compensation section (principle 17), returning it as data
+        // rather than letting OperationCanceledException escape the public boundary (principle 1).
+        if (ct.IsCancellationRequested)
+        {
+            return Result.Fail(ErrorCode.Cancelled, "AbortUploadAsync cancelled.");
+        }
 
         _earlyFinalised.TryRemove(session.SessionUri, out _);
 

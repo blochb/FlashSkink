@@ -62,7 +62,6 @@ internal static class OneDriveQuickXorHash
         {
             int vectorArrayIndex = shiftSoFar / 64;
             int vectorOffset = shiftSoFar % 64;
-            int index = i % WidthInBits;
 
             // Distance from this byte's bit position to the next, used to detect cell wrap.
             bool isLastCell = vectorArrayIndex == CellCount - 1;
@@ -79,7 +78,6 @@ internal static class OneDriveQuickXorHash
             }
 
             shiftSoFar = (shiftSoFar + Shift) % WidthInBits;
-            _ = index;
         }
     }
 

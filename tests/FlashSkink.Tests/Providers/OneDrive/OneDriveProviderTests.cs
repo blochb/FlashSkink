@@ -420,6 +420,79 @@ public sealed class OneDriveProviderTests
         await provider.DisposeAsync();
     }
 
+    [Fact]
+    public async Task FinaliseUploadAsync_CacheMiss_ResolvesItemByPath()
+    {
+        var (provider, handler, logger) = Build();
+        var session = await BeginAsync(provider, handler, totalBytes: 10);
+        // Final range returns 202 (not 200/201) → the early-finalisation cache stays empty.
+        handler.Setup(HttpMethod.Put, UploadUrl, _ => OneDriveCannedResponses.Status(202));
+        // Finalisation falls back to a metadata GET by path.
+        handler.Setup(HttpMethod.Get, CreatePrefix, _ => OneDriveCannedResponses.DriveItem(200, "item-fallback", 10, "hash-fb"));
+
+        await provider.UploadRangeAsync(session, 0, new byte[10], CancellationToken.None);
+        var finalise = await provider.FinaliseUploadAsync(session, CancellationToken.None);
+
+        Assert.Equal("item-fallback", finalise.AssertValue());
+        Assert.True(logger.HasEntry(LogLevel.Information, "item-fallback"));
+        await provider.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task GetUploadedBytesAsync_SessionGone_ReturnsZero()
+    {
+        var (provider, handler, _) = Build();
+        var session = await BeginAsync(provider, handler, totalBytes: 100);
+        handler.Setup(HttpMethod.Get, UploadUrl, _ => OneDriveCannedResponses.Status(404));
+
+        var result = await provider.GetUploadedBytesAsync(session, CancellationToken.None);
+
+        Assert.Equal(0L, result.AssertValue());
+        await provider.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ListAsync_DescendsIntoSubfolders()
+    {
+        var (provider, handler, _) = Build();
+        // Root has one child folder "sub"; "sub" has one file. The provider must enqueue the folder
+        // and recurse, collecting only file ids.
+        handler.Setup(HttpMethod.Get, CreatePrefix, req =>
+            (req.RequestUri?.AbsoluteUri ?? string.Empty).Contains("/sub", StringComparison.Ordinal)
+                ? OneDriveCannedResponses.Children(null, ("fileid", "blobX", false))
+                : OneDriveCannedResponses.Children(null, ("subid", "sub", true)));
+
+        var result = await provider.ListAsync(string.Empty, CancellationToken.None);
+        var list = result.AssertValue();
+
+        Assert.Equal(new[] { "fileid" }, list);
+        await provider.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task GetUsedBytesAsync_ReturnsUsedBytes()
+    {
+        var (provider, handler, _) = Build();
+        handler.Setup(HttpMethod.Get, DrivePrefix, _ => OneDriveCannedResponses.Drive(used: 12_345, total: 99_999));
+
+        var result = await provider.GetUsedBytesAsync(CancellationToken.None);
+
+        Assert.Equal(12_345L, result.AssertValue());
+        await provider.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task GetUsedBytesAsync_UsedAbsent_ReturnsZero()
+    {
+        var (provider, handler, _) = Build();
+        handler.Setup(HttpMethod.Get, DrivePrefix, _ => OneDriveCannedResponses.Drive(used: null, total: 100));
+
+        var result = await provider.GetUsedBytesAsync(CancellationToken.None);
+
+        Assert.Equal(0L, result.AssertValue());
+        await provider.DisposeAsync();
+    }
+
     // ── Disposal ────────────────────────────────────────────────────────────────────────────
 
     [Fact]
