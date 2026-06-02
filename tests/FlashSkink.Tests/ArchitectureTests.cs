@@ -59,7 +59,7 @@ public class ArchitectureTests
     [Fact]
     public void CLI_DoesNotReference_Avalonia()
     {
-        var refs = GetAssembly("FlashSkink.CLI").GetReferencedAssemblies()
+        var refs = GetAssembly("skink").GetReferencedAssemblies()
             .Select(a => a.Name ?? string.Empty);
         Assert.DoesNotContain(refs, r => r.StartsWith("Avalonia", StringComparison.OrdinalIgnoreCase));
     }
@@ -79,7 +79,7 @@ public class ArchitectureTests
     [Fact]
     public void CLI_DoesNotReference_AnyUiOrPresentationAssembly()
     {
-        AssertNoForbiddenUiReference("FlashSkink.CLI");
+        AssertNoForbiddenUiReference("skink");
     }
 
     [Fact]

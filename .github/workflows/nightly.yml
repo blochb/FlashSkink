@@ -47,11 +47,11 @@ jobs:
 
       - name: Smoke test CLI (Unix)
         if: matrix.rid != 'win-x64'
-        run: publish/cli/${{ matrix.rid }}/FlashSkink.CLI --version || true
+        run: publish/cli/${{ matrix.rid }}/skink --help || true
 
       - name: Smoke test CLI (Windows)
         if: matrix.rid == 'win-x64'
-        run: publish/cli/${{ matrix.rid }}/FlashSkink.CLI.exe --version || true
+        run: publish/cli/${{ matrix.rid }}/skink.exe --help || true
         shell: pwsh
 
   crash-consistency:
@@ -101,7 +101,7 @@ jobs:
         run: find "$HOME" /tmp -maxdepth 3 ! -path '/tmp/usb-sim*' 2>/dev/null | sort > /tmp/before.txt || true
 
       - name: Run CLI from usb-sim
-        run: /tmp/usb-sim/FlashSkink.CLI --version || true
+        run: /tmp/usb-sim/skink --help || true
 
       - name: Check for host writes outside usb-sim
         run: |

@@ -1,0 +1,22 @@
+Local Folder — Setup Guide
+==========================
+
+A local-folder tail stores an encrypted replica of your skink on any directory you
+can write to: an external drive, a NAS mount, a network share, or a second local disk.
+
+Requirements
+  - The folder must already exist.
+  - The process running {cli} must have write access to it.
+  - The folder must NOT be inside the skink itself (that would create a backup loop).
+
+Add the tail
+  Run:
+    {cli} setup add --provider filesystem \
+      --root /path/to/tail/folder \
+      --skink /path/to/your/skink
+
+No browser sign-in or credentials are required for a local folder tail.
+
+After adding, FlashSkink will upload an encrypted copy of every file to the folder.
+The folder is a self-contained recovery point: given this folder and your recovery
+phrase, you can restore your skink on any machine.

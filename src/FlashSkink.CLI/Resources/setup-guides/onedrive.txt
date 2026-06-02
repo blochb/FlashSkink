@@ -1,0 +1,34 @@
+OneDrive — BYOC Setup Guide
+===========================
+
+Before running `{cli} setup add --provider onedrive` you need to register your own
+Azure app. FlashSkink is a "Bring Your Own Cloud" tool: it ships no shared
+credentials, so each user registers a private app in their own Microsoft account.
+
+Step 1 — Register an Azure app
+  1. Go to https://portal.azure.com/ and sign in with your Microsoft account.
+  2. Navigate to Microsoft Entra ID > App registrations > New registration.
+  3. Give the app a name (e.g. "My FlashSkink") and set Supported account types
+     to "Accounts in any organizational directory and personal Microsoft accounts".
+  4. Under Redirect URI choose "Public client/native (mobile & desktop)" and enter:
+       http://localhost
+
+Step 2 — Note your credentials
+  1. On the Overview page, copy the Application (client) ID.
+  2. Go to Certificates & secrets > New client secret, create one, and copy the Value.
+
+Step 3 — Grant API permissions
+  1. Go to API permissions > Add a permission > Microsoft Graph > Delegated.
+  2. Add: Files.ReadWrite, offline_access.
+  3. Click "Grant admin consent" if you are the tenant admin, or ask your admin to.
+
+Step 4 — Add the tail
+  Run:
+    {cli} setup add --provider onedrive \
+      --client-id <YOUR_APPLICATION_ID> \
+      --client-secret <YOUR_CLIENT_SECRET> \
+      --skink /path/to/your/skink
+
+  Your browser will open for sign-in. Return to the terminal after approving.
+
+Your client secret never leaves your machine unencrypted.

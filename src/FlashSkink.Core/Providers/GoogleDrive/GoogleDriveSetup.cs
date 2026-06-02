@@ -35,7 +35,7 @@ namespace FlashSkink.Core.Providers.GoogleDrive;
 /// least-privilege. Drive can only see files our app has created.
 /// </para>
 /// </remarks>
-internal sealed partial class GoogleDriveSetup : IProviderSetup
+public sealed partial class GoogleDriveSetup : IProviderSetup
 {
     internal const string AuthorizationEndpoint = "https://accounts.google.com/o/oauth2/v2/auth";
     internal const string TokenEndpoint = "https://oauth2.googleapis.com/token";

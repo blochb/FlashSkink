@@ -1,0 +1,35 @@
+Dropbox — BYOC Setup Guide
+==========================
+
+Before running `{cli} setup add --provider dropbox` you need to create your own
+Dropbox app. FlashSkink is a "Bring Your Own Cloud" tool: it ships no shared
+credentials, so each user creates a private app in their own Dropbox account.
+
+Step 1 — Create a Dropbox app
+  1. Go to https://www.dropbox.com/developers/apps
+  2. Click "Create app".
+  3. Choose "Scoped access" and "Full Dropbox" (or "App folder" for isolation).
+  4. Give the app a name and click "Create app".
+
+Step 2 — Configure permissions
+  1. Go to the Permissions tab of your new app.
+  2. Enable: files.content.write, files.content.read, account_info.read.
+  3. Click "Submit" to save.
+
+Step 3 — Note your credentials
+  1. On the Settings tab, copy the App key (Client ID) and App secret (Client Secret).
+
+Step 4 — Add a redirect URI
+  1. On the Settings tab, under "OAuth 2 > Redirect URIs", add:
+       http://127.0.0.1
+
+Step 5 — Add the tail
+  Run:
+    {cli} setup add --provider dropbox \
+      --client-id <YOUR_APP_KEY> \
+      --client-secret <YOUR_APP_SECRET> \
+      --skink /path/to/your/skink
+
+  Your browser will open for sign-in. Return to the terminal after approving.
+
+Your client secret never leaves your machine unencrypted.

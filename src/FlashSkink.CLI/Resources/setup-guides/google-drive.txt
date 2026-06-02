@@ -1,0 +1,37 @@
+Google Drive — BYOC Setup Guide
+================================
+
+Before running `{cli} setup add --provider google-drive` you need to create your own
+Google OAuth app. FlashSkink is a "Bring Your Own Cloud" tool: it ships no shared
+credentials, so each user creates a private app in their own Google account.
+
+Step 1 — Create a Google Cloud project
+  1. Go to https://console.cloud.google.com/
+  2. Click "New Project" and give it any name (e.g. "My FlashSkink").
+  3. Select the project.
+
+Step 2 — Enable the Google Drive API
+  1. In the left menu go to APIs & Services > Library.
+  2. Search for "Google Drive API" and click Enable.
+
+Step 3 — Create OAuth 2.0 credentials
+  1. Go to APIs & Services > Credentials.
+  2. Click "Create Credentials" > "OAuth client ID".
+  3. Set Application type to "Desktop app".
+  4. Note the Client ID and Client Secret — you will pass them to {cli}.
+
+Step 4 — Configure the OAuth consent screen
+  1. Go to OAuth consent screen.
+  2. Choose "External" (or "Internal" if using Google Workspace).
+  3. Add your own email as a test user if the app is in testing mode.
+
+Step 5 — Add the tail
+  Run:
+    {cli} setup add --provider google-drive \
+      --client-id <YOUR_CLIENT_ID> \
+      --client-secret <YOUR_CLIENT_SECRET> \
+      --skink /path/to/your/skink
+
+  Your browser will open for sign-in. Return to the terminal after approving.
+
+Your client secret never leaves your machine unencrypted.
