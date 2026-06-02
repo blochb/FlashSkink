@@ -24,7 +24,7 @@ namespace FlashSkink.Core.Providers.OneDrive;
 /// network round-trip — it constructs the provider directly from the persisted root path.
 /// </para>
 /// </remarks>
-internal sealed class OneDriveSetup : IProviderSetup, IDisposable
+public sealed class OneDriveSetup : IProviderSetup, IDisposable
 {
     private const string AuthorizeEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
     private const string TokenEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/token";

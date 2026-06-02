@@ -404,6 +404,16 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 - Single test project is the V1 decision; split into per-area test projects only when justified (separate TFM, separate runner invocation). See blueprint §4.1 note.
 - Tests author their own test data inline. When production code has internal constants or lookup tables, tests do **not** reference them via `[InternalsVisibleTo]` — they construct equivalent values fresh. Reasons: keeps internals truly internal; avoids tautological tests where the production constant is the expected value (a typo passes); makes tests legible standalone (a reviewer reading `[0xFF, 0xD8, 0xFF]` immediately sees "JPEG SOI" without following a constant reference).
 
+### CLI binary name
+
+The user-facing binary is `skink` (not `flashskink-cli`). The single source of truth is:
+- `FlashSkink.CLI.CliMetadata.CommandName = "skink"` — drives `--help` output, setup-guide
+  `{cli}` substitution, and any printed example.
+- `<AssemblyName>skink</AssemblyName>` in `src/FlashSkink.CLI/FlashSkink.CLI.csproj` — makes
+  `dotnet publish` emit `skink`/`skink.exe`.
+
+Rename requires editing both places. Blueprint §24 and §26.2 use `skink`.
+
 ### Git
 
 - Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `chore:`, `refactor:`.

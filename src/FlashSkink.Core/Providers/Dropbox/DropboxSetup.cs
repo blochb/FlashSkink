@@ -34,7 +34,7 @@ namespace FlashSkink.Core.Providers.Dropbox;
 /// (<see cref="Users.Routes.UsersUserRoutes.GetSpaceUsageAsync"/>).
 /// </para>
 /// </remarks>
-internal sealed class DropboxSetup : IProviderSetup, IDisposable
+public sealed class DropboxSetup : IProviderSetup, IDisposable
 {
     /// <summary>OAuth scopes requested at consent time. See class remarks for rationale.</summary>
     private static readonly string[] Scopes =

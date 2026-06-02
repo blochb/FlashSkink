@@ -30,15 +30,6 @@ jobs:
       - name: Restore
         run: dotnet restore
 
-      - name: Publish UI
-        run: >
-          dotnet publish src/FlashSkink.UI.Avalonia
-          -c Release
-          --self-contained
-          -r ${{ matrix.rid }}
-          -p:PublishSingleFile=true
-          -o publish/ui
-
       - name: Publish CLI
         run: >
           dotnet publish src/FlashSkink.CLI
@@ -50,9 +41,9 @@ jobs:
 
       - name: Archive
         run: >
-          cd publish &&
-          zip -r ../FlashSkink-${{ github.ref_name }}-${{ matrix.rid }}.zip . ||
-          Compress-Archive -Path . -DestinationPath ../FlashSkink-${{ github.ref_name }}-${{ matrix.rid }}.zip
+          cd publish/cli &&
+          zip -r ../../FlashSkink-${{ github.ref_name }}-${{ matrix.rid }}.zip . ||
+          Compress-Archive -Path . -DestinationPath ../../FlashSkink-${{ github.ref_name }}-${{ matrix.rid }}.zip
         shell: bash
 
       - name: Upload artifact

@@ -52,7 +52,7 @@
 
 FlashSkink-Core is a portable, nomadic backup system that distributes complete encrypted replicas of a user's data across a local USB flash drive ("the skink") and one or more cloud storage providers ("the tails"). The skink is the body the user carries; each tail is a full, independently recoverable copy that grows behind it.
 
-The entire application runs directly from the USB. Nothing is installed on the host machine, no host state is written, no traces remain after unplugging. Users interact through the CLI (`flashskink-cli`); cloud providers are a configuration detail they touch only at setup time.
+The entire application runs directly from the USB. Nothing is installed on the host machine, no host state is written, no traces remain after unplugging. Users interact through the CLI (`skink`); cloud providers are a configuration detail they touch only at setup time.
 
 The product's single, unambiguous guarantee:
 
@@ -695,7 +695,7 @@ DEK, KEK, OAuth tokens, passwords, mnemonics, recovery phrases, encrypted blob b
 
 ### 8.1 Problem
 
-Background services (`UploadQueueService`, `AuditService`, `SelfHealingService`, `UsbMonitorService`, `HealthMonitorService`, brain mirror task) run without a user-initiated call stack. When they fail, there is no awaiting caller (no `flashskink-cli put` invocation, no daemon command-line handler tied to that specific operation) to receive a `Result`. Without an explicit mechanism, failures disappear silently.
+Background services (`UploadQueueService`, `AuditService`, `SelfHealingService`, `UsbMonitorService`, `HealthMonitorService`, brain mirror task) run without a user-initiated call stack. When they fail, there is no awaiting caller (no `skink put` invocation, no daemon command-line handler tied to that specific operation) to receive a `Result`. Without an explicit mechanism, failures disappear silently.
 
 ### 8.2 Design
 
@@ -1571,7 +1571,7 @@ Range size is not user-configurable. If V2+ identifies a need for adaptive sizin
 
 Within a single tail, ranges of the same blob upload sequentially. Different blobs may upload concurrently to the same tail (provider permitting). Different tails always upload concurrently.
 
-V1 default: 2 concurrent uploads per tail, configurable per tail via `flashskink-cli config set` but not promoted as an everyday setting. Total upload concurrency is capped at `2 × tailCount` to avoid saturating the user's upload bandwidth with too many parallel streams.
+V1 default: 2 concurrent uploads per tail, configurable per tail via `skink config set` but not promoted as an everyday setting. Total upload concurrency is capped at `2 × tailCount` to avoid saturating the user's upload bandwidth with too many parallel streams.
 
 ### 15.7 Verification After Finalisation
 
@@ -2146,7 +2146,7 @@ Everything that crosses a boundary outside the skink (cloud provider, log file, 
 - Brain mirroring to tails after every commit (provides recovery path)
 - Documentation recommending quality-brand drives
 
-**Setup-time recommendation (printed by `flashskink-cli setup guide` and documented in the README):** Samsung, SanDisk, Kingston, Crucial. USB 3.x preferred. Avoid unbranded or unusually cheap drives.
+**Setup-time recommendation (printed by `skink setup guide` and documented in the README):** Samsung, SanDisk, Kingston, Crucial. USB 3.x preferred. Avoid unbranded or unusually cheap drives.
 
 ### 19.2 USB Removal Detection
 
@@ -2365,7 +2365,7 @@ All self-healing operations write to ActivityLog so users can see what was repai
 
 ### 20.4 Verification Command
 
-`flashskink-cli verify` (Decision A14-b) runs a comprehensive on-demand check:
+`skink verify` (Decision A14-b) runs a comprehensive on-demand check:
 
 1. For every blob: read from USB, compute XXHash64, verify.
 2. For every (file, tail) in `TailUploads`: query provider for object existence and hash.
@@ -2437,7 +2437,7 @@ WAL recovery's job is to restore this invariant. Property-based tests (under `Fl
 When the user has lost their USB and wants to recover from a tail:
 
 ```bash
-flashskink-cli recover \
+skink recover \
   --mnemonic "word1 word2 ... word24" \
   --provider google-drive \
   --client-id "..." --client-secret "..." \
@@ -2452,7 +2452,7 @@ OAuth device flow: URL printed to stdout, user pastes callback code. The CLI the
 4. Reconstructs a new brain on the output USB.
 5. For each blob referenced in the brain: downloads from the tail, verifies, writes to the new USB blob store.
 6. Sets up the new USB as a fully-functional skink with the recovered tail already configured.
-7. Other tails (if any): the user can add them through the normal `flashskink-cli setup` flow; their blobs are already present remotely and will be re-linked on first contact (compared by hash).
+7. Other tails (if any): the user can add them through the normal `skink setup` flow; their blobs are already present remotely and will be re-linked on first contact (compared by hash).
 
 The CLI `recover` command exposes this flow. In OSS Core, recovery is CLI-only.
 
@@ -2507,7 +2507,7 @@ Both follow the dispatcher's standard 60-second `Source + ErrorCode` deduplicati
 
 When ≥ 2 tails transition to `Unreachable` within a 30-second window **and** `NetworkAvailabilityMonitor.CurrentState == Online`, the dispatcher publishes a single `ProbableConnectivityIssue` notification rather than letting N independent per-tail notifications surface in parallel. This catches the captive-portal and DNS-failure cases that §22.2 cannot detect — using only signals already produced by §22.1, with no new outbound traffic.
 
-Thresholds (`N` and `W`) live in `config.json` and are tunable via `flashskink-cli config set` but not promoted as an everyday setting.
+Thresholds (`N` and `W`) live in `config.json` and are tunable via `skink config set` but not promoted as an everyday setting.
 
 ### 22.4 Behaviour during offline windows
 
@@ -2527,11 +2527,11 @@ When the state transitions back to `Online`:
 
 ## 23. CLI Reference
 
-The CLI is the **only** user surface in OSS Core. It exposes the full Core public API — every operation a user can perform on a volume is reachable from `flashskink-cli`. Output is human-readable by default; every command accepts `--json` for machine-readable output. Long-running readers accept `--watch` for live refresh.
+The CLI is the **only** user surface in OSS Core. It exposes the full Core public API — every operation a user can perform on a volume is reachable from `skink`. Output is human-readable by default; every command accepts `--json` for machine-readable output. Long-running readers accept `--watch` for live refresh.
 
 ### 23.1 Conventions
 
-- **Binary name:** `flashskink-cli` (per §26.2).
+- **Binary name:** `skink` (per §26.2).
 - **Virtual paths:** forward-slash separator regardless of host OS. Leading `/` means root. Path segments are NFC-normalised (matches Decision A22). Quoting follows standard shell rules (`'foo bar/baz.txt'` or `"foo bar/baz.txt"`).
 - **`--skink <path>`:** mandatory on every command that reads or modifies a volume. May be a USB mount path or a directory containing `.flashskink/`. Auto-detection of the active skink is not implemented in V1 (deliberate — explicit is safer when multiple skinks are plugged in).
 - **`--json`:** every command supports it; output is a single JSON document per invocation. Errors emit `{ "error": { "code": "...", "message": "..." } }` with non-zero exit codes.
@@ -2543,101 +2543,101 @@ The CLI is the **only** user surface in OSS Core. It exposes the full Core publi
 
 ```
 # Volume lifecycle
-flashskink-cli unlock      --skink <path>                          # Open volume; prompts for password.
+skink unlock      --skink <path>                          # Open volume; prompts for password.
                                                                    # On an empty/uninitialised skink, prompts to initialise
                                                                    # (generates mnemonic, runs recovery-phrase ceremony).
-flashskink-cli lock        --skink <path>                          # Explicit close: flushes brain, zeroes keys.
-flashskink-cli info        --skink <path>                          # Volume identifier, schema version, tail count, KDF parameters.
-flashskink-cli status      --skink <path> [--watch]                # Aggregate sync state per tail; --watch refreshes live.
+skink lock        --skink <path>                          # Explicit close: flushes brain, zeroes keys.
+skink info        --skink <path>                          # Volume identifier, schema version, tail count, KDF parameters.
+skink status      --skink <path> [--watch]                # Aggregate sync state per tail; --watch refreshes live.
 
 # Provider setup (manual)
-flashskink-cli setup guide        --provider <google|dropbox|onedrive|filesystem>
+skink setup guide        --provider <google|dropbox|onedrive|filesystem>
                                                                    # Prints the step-by-step manual setup guide for the given provider.
-flashskink-cli setup add          --skink <path> --provider <type> --client-id <id> [--client-secret <secret>] [--root <path>]
+skink setup add          --skink <path> --provider <type> --client-id <id> [--client-secret <secret>] [--root <path>]
                                                                    # Registers a provider after the user has completed the manual setup.
                                                                    # For OAuth providers, opens the system browser for consent and
                                                                    # captures the resulting tokens via local-loopback redirect.
-flashskink-cli setup test         --skink <path> --tail <providerId>
+skink setup test         --skink <path> --tail <providerId>
                                                                    # Dry-run a small upload + verify to confirm credentials work end-to-end.
 
 # Tail management
-flashskink-cli tail list          --skink <path>
-flashskink-cli tail add           --skink <path> --provider <type> [...]   # Alias of `setup add`.
-flashskink-cli tail remove        --skink <path> --tail <providerId>
+skink tail list          --skink <path>
+skink tail add           --skink <path> --provider <type> [...]   # Alias of `setup add`.
+skink tail remove        --skink <path> --tail <providerId>
                                                                    # Removes the tail locally: deletes OAuth tokens, queue rows, session rows.
                                                                    # Data on the provider is NOT deleted automatically (§5.3) — user
                                                                    # cleans up manually if desired; the data is encrypted and useless
                                                                    # without the volume's keys.
-flashskink-cli tail health        --skink <path> [--tail <providerId>] [--watch]
-flashskink-cli tail rebuild       --skink <path> --tail <providerId>
+skink tail health        --skink <path> [--tail <providerId>] [--watch]
+skink tail rebuild       --skink <path> --tail <providerId>
                                                                    # Force complete re-upload of all blobs to this tail. Used when a tail
                                                                    # has drifted severely or recovery from a known-corrupted remote state.
-flashskink-cli tail pause         --skink <path> --tail <providerId>
-flashskink-cli tail resume        --skink <path> --tail <providerId>
+skink tail pause         --skink <path> --tail <providerId>
+skink tail resume        --skink <path> --tail <providerId>
 
 # File operations
-flashskink-cli ls          --skink <path> [<virtualPath>] [--recursive] [--long]
-flashskink-cli stat        --skink <path> <virtualPath>
-flashskink-cli find        --skink <path> --name <glob> [--type file|folder] [<rootVirtualPath>]
-flashskink-cli put         --skink <path> <hostPath> [--to <virtualPath>] [--recursive]
+skink ls          --skink <path> [<virtualPath>] [--recursive] [--long]
+skink stat        --skink <path> <virtualPath>
+skink find        --skink <path> --name <glob> [--type file|folder] [<rootVirtualPath>]
+skink put         --skink <path> <hostPath> [--to <virtualPath>] [--recursive]
                                                                    # Write file/folder from host into the skink (Phase 1 commit).
-flashskink-cli get         --skink <path> <virtualPath> --output <hostPath>
+skink get         --skink <path> <virtualPath> --output <hostPath>
                                                                    # Read a file from the skink to the host.
-flashskink-cli mv          --skink <path> <fromVirtualPath> <toVirtualPath>
-flashskink-cli rm          --skink <path> <virtualPath> [--recursive] [--purge]
+skink mv          --skink <path> <fromVirtualPath> <toVirtualPath>
+skink rm          --skink <path> <virtualPath> [--recursive] [--purge]
                                                                    # Default: soft-delete (grace period). --purge: bypass grace; --recursive: folders.
                                                                    # Soft-delete on a non-empty folder requires --recursive.
-flashskink-cli mkdir       --skink <path> <virtualPath> [--parents]
-flashskink-cli restore     --skink <path> --file <virtualPath> --output <hostPath> [--since <timestamp>]
+skink mkdir       --skink <path> <virtualPath> [--parents]
+skink restore     --skink <path> --file <virtualPath> --output <hostPath> [--since <timestamp>]
                                                                    # Copy out one file (current contents or, with --since, the grace-period version).
-flashskink-cli prune       --skink <path>                           # Force grace-period purge sweep (normally automatic on a timer).
+skink prune       --skink <path>                           # Force grace-period purge sweep (normally automatic on a timer).
 
 # Daemon / queue
-flashskink-cli daemon      --skink <path> [--detach]               # Run the background upload + audit + healing services.
+skink daemon      --skink <path> [--detach]               # Run the background upload + audit + healing services.
                                                                    # Default foreground (Ctrl-C exits cleanly).
                                                                    # --detach runs in the background; PID written to .flashskink/daemon.pid.
                                                                    # Resumes from session state on next launch regardless.
-flashskink-cli queue list  --skink <path> [--tail <providerId>] [--status <pending|inflight|failed>]
-flashskink-cli queue retry --skink <path> --file <fileId> [--tail <providerId>]
+skink queue list  --skink <path> [--tail <providerId>] [--status <pending|inflight|failed>]
+skink queue retry --skink <path> --file <fileId> [--tail <providerId>]
                                                                    # Force a stuck queue row to retry now.
 
 # Integrity / healing
-flashskink-cli verify      --skink <path> [--tail <providerId>] [--scope local|remote|both]
+skink verify      --skink <path> [--tail <providerId>] [--scope local|remote|both]
                                                                    # Walk blobs and (optionally) tails, confirming hashes. Long-running.
-flashskink-cli heal        --skink <path> [--tail <providerId>]    # Force a self-healing pass (normally automatic).
-flashskink-cli scrub       --skink <path>                          # Walk the brain for orphans (Files without Blobs, Blobs without files)
+skink heal        --skink <path> [--tail <providerId>]    # Force a self-healing pass (normally automatic).
+skink scrub       --skink <path>                          # Walk the brain for orphans (Files without Blobs, Blobs without files)
                                                                    # and reconcile (normally automatic on a slow timer).
 
 # Activity / logs / failures
-flashskink-cli activity    --skink <path> [--since <timestamp>] [--category <cat>] [--tail-n <N>]
-flashskink-cli log         --skink <path> [--lines <N>] [--follow]
+skink activity    --skink <path> [--since <timestamp>] [--category <cat>] [--tail-n <N>]
+skink log         --skink <path> [--lines <N>] [--follow]
                                                                    # Read the on-skink Serilog file at .flashskink/logs/. --follow tails.
-flashskink-cli failures list   --skink <path> [--unacked-only]     # List rows from BackgroundFailures (§8.5).
-flashskink-cli failures ack    --skink <path> --id <failureId>
-flashskink-cli failures ack-all --skink <path>
+skink failures list   --skink <path> [--unacked-only]     # List rows from BackgroundFailures (§8.5).
+skink failures ack    --skink <path> --id <failureId>
+skink failures ack-all --skink <path>
 
 # Recovery / secrets
 # (No `reveal-phrase` command — the recovery phrase is displayed exactly once
 # at `setup` time via the VolumeCreationReceipt returned from CreateAsync and
 # is not persisted, so it cannot be re-displayed. Decision A16-a, §18.3, §18.8.)
-flashskink-cli change-password --skink <path>
-flashskink-cli reset-password  --skink <path>                       # Prompts for mnemonic interactively (never accepts it as a CLI arg).
-flashskink-cli recover     --provider <type> --client-id <id> --client-secret <secret> --output <newSkinkPath>
+skink change-password --skink <path>
+skink reset-password  --skink <path>                       # Prompts for mnemonic interactively (never accepts it as a CLI arg).
+skink recover     --provider <type> --client-id <id> --client-secret <secret> --output <newSkinkPath>
                                                                    # Reconstruct a new skink from any one tail + the recovery phrase.
                                                                    # Prompts for mnemonic interactively; --mnemonic-stdin for scripted recovery.
-flashskink-cli export      --skink <path> --output <directory>     # Walk every file, write to the host in original tree shape.
+skink export      --skink <path> --output <directory>     # Walk every file, write to the host in original tree shape.
 
 # Configuration
-flashskink-cli config get  --skink <path> <key>
-flashskink-cli config set  --skink <path> <key> <value>
-flashskink-cli config list --skink <path>
+skink config get  --skink <path> <key>
+skink config set  --skink <path> <key> <value>
+skink config list --skink <path>
 
 # Diagnostics
-flashskink-cli support-bundle --skink <path> --output <bundleFile>
-flashskink-cli wal-recover    --skink <path>                        # Explicit WAL replay (normally automatic at unlock).
-flashskink-cli version
-flashskink-cli completion <bash|zsh|fish|powershell>                # Emit a shell-completion script.
-flashskink-cli --help
+skink support-bundle --skink <path> --output <bundleFile>
+skink wal-recover    --skink <path>                        # Explicit WAL replay (normally automatic at unlock).
+skink version
+skink completion <bash|zsh|fish|powershell>                # Emit a shell-completion script.
+skink --help
 ```
 
 ### 23.3 V1 scope
@@ -2671,22 +2671,22 @@ All commands above are V1 in OSS Core. The CLI is the sole user surface.
 
 ### 24.1 Purpose
 
-OSS Core ships **printed step-by-step guides** for each provider's BYOC setup. The user follows the steps manually in the provider's developer console, then hands the resulting credentials to `flashskink-cli setup add`. There is no automation in OSS Core — automating these flows requires per-provider SDK breadth (Google Cloud Resource Manager, Dropbox App Console, Azure AD admin endpoints) and ongoing maintenance as provider consoles evolve, which is outside the OSS surface's scope.
+OSS Core ships **printed step-by-step guides** for each provider's BYOC setup. The user follows the steps manually in the provider's developer console, then hands the resulting credentials to `skink setup add`. There is no automation in OSS Core — automating these flows requires per-provider SDK breadth (Google Cloud Resource Manager, Dropbox App Console, Azure AD admin endpoints) and ongoing maintenance as provider consoles evolve, which is outside the OSS surface's scope.
 
 ### 24.2 Coverage
 
 | Provider | Setup style | OSS Core support |
 |---|---|---|
 | **FileSystem** | Trivial — path only | Fully supported. No browser, no developer console. |
-| **Google Drive** | Manual guide → CLI accepts credentials | Guide printed by `flashskink-cli setup guide --provider google-drive`. |
-| **Dropbox** | Manual guide → CLI accepts credentials | Guide printed by `flashskink-cli setup guide --provider dropbox`. |
-| **OneDrive** | Manual guide → CLI accepts credentials | Guide printed by `flashskink-cli setup guide --provider onedrive`. |
+| **Google Drive** | Manual guide → CLI accepts credentials | Guide printed by `skink setup guide --provider google-drive`. |
+| **Dropbox** | Manual guide → CLI accepts credentials | Guide printed by `skink setup guide --provider dropbox`. |
+| **OneDrive** | Manual guide → CLI accepts credentials | Guide printed by `skink setup guide --provider onedrive`. |
 
 ### 24.3 The two-stage CLI flow
 
 ```
 # Stage 1: print the guide (no skink required; the user can run this on any host)
-flashskink-cli setup guide --provider google-drive
+skink setup guide --provider google-drive
 
   ┌──────────────────────────────────────────────────────────────────────────┐
   │ Google Drive — manual setup                                              │
@@ -2700,7 +2700,7 @@ flashskink-cli setup guide --provider google-drive
   │  6. Note the Client ID and Client Secret                                 │
   │                                                                          │
   │ Then run:                                                                │
-  │   flashskink-cli setup add --skink <path> --provider google-drive \      │
+  │   skink setup add --skink <path> --provider google-drive \      │
   │       --client-id <ID> --client-secret <SECRET>                          │
   │                                                                          │
   │ The CLI will open your browser for Drive-scope consent and capture       │
@@ -2708,7 +2708,7 @@ flashskink-cli setup guide --provider google-drive
   └──────────────────────────────────────────────────────────────────────────┘
 
 # Stage 2: register the tail using the credentials from stage 1
-flashskink-cli setup add --skink /mnt/usb --provider google-drive \
+skink setup add --skink /mnt/usb --provider google-drive \
     --client-id 1234567890.apps.googleusercontent.com \
     --client-secret GOCSPX-aaa...
 
@@ -2716,7 +2716,7 @@ flashskink-cli setup add --skink /mnt/usb --provider google-drive \
     Your encrypted backups will begin uploading next time the daemon is running.
 ```
 
-The Dropbox and OneDrive guides have analogous shapes — different developer consoles, same two-stage pattern. The FileSystem provider needs no guide: `flashskink-cli setup add --provider filesystem --root /mnt/nas/backups` validates the path and registers it. FileSystem rejects paths that are subdirectories of the skink (would create a backup loop).
+The Dropbox and OneDrive guides have analogous shapes — different developer consoles, same two-stage pattern. The FileSystem provider needs no guide: `skink setup add --provider filesystem --root /mnt/nas/backups` validates the path and registers it. FileSystem rejects paths that are subdirectories of the skink (would create a backup loop).
 
 ### 24.4 Where the guides live
 
@@ -2758,7 +2758,7 @@ Trimming is disabled for V1 because several dependencies (SQLCipher, reflection-
 
 ```
 [USB_ROOT]/
-├── flashskink-cli.exe / flashskink-cli            ← CLI executable (sole binary in OSS Core)
+├── skink.exe / skink            ← CLI executable (sole binary in OSS Core)
 ├── launch.sh / launch.command                     ← macOS/Linux launchers
 ├── README.txt                                      ← Quick-start for first-time users
 └── .flashskink/
@@ -2779,7 +2779,7 @@ Trimming is disabled for V1 because several dependencies (SQLCipher, reflection-
 ```bash
 #!/usr/bin/env bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "$DIR/FlashSkink" "$DIR/flashskink-cli"
+chmod +x "$DIR/FlashSkink" "$DIR/skink"
 "$DIR/FlashSkink" "$@"
 ```
 
@@ -2787,7 +2787,7 @@ chmod +x "$DIR/FlashSkink" "$DIR/flashskink-cli"
 ```bash
 #!/usr/bin/env bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-xattr -d com.apple.quarantine "$DIR/FlashSkink" "$DIR/flashskink-cli" 2>/dev/null
+xattr -d com.apple.quarantine "$DIR/FlashSkink" "$DIR/skink" 2>/dev/null
 "$DIR/FlashSkink" "$@"
 ```
 
@@ -2967,7 +2967,7 @@ This section preserves every architectural and product decision with options, se
 | A12 — Progress visibility | CLI `status` command with optional `--watch` live refresh | OSS surface is CLI-only |
 | A13 — V1 Restore UX | CLI `restore` command (single file) and `export` (whole-tree) | OSS surface is CLI-only |
 | A14 — Integrity verification | (b) Automatic + `verify` CLI | High-trust low-cost |
-| A15 — Export | (a) `flashskink-cli export` | No lock-in; trust feature |
+| A15 — Export | (a) `skink export` | No lock-in; trust feature |
 | A16 — Mnemonic re-display | (a) No re-display; caller must record at setup | Persisting the phrase contradicts §18.8 and adds tail-surface exposure for marginal UX |
 | A17 — Password reset via mnemonic | (a) Fully supported | Natural consequence of key hierarchy |
 | A18 — Concurrent skink access | (b) Single-instance lock | Cheap insurance |

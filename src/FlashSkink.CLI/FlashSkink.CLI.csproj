@@ -2,7 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <AssemblyName>FlashSkink.CLI</AssemblyName>
+    <!-- Binary name: both the published executable and the displayed usage line read "skink". -->
+    <AssemblyName>skink</AssemblyName>
     <RootNamespace>FlashSkink.CLI</RootNamespace>
   </PropertyGroup>
 
@@ -16,6 +17,23 @@
     <PackageReference Include="Serilog.Extensions.Logging" />
     <PackageReference Include="Serilog.Sinks.File" />
     <PackageReference Include="Serilog.Formatting.Compact" />
+  </ItemGroup>
+
+  <!-- Setup-guide embedded resources. Explicit LogicalName values so SetupGuideResources
+       can look them up by a stable key regardless of directory naming conventions. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\setup-guides\google-drive.txt">
+      <LogicalName>guides.google-drive</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Resources\setup-guides\dropbox.txt">
+      <LogicalName>guides.dropbox</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Resources\setup-guides\onedrive.txt">
+      <LogicalName>guides.onedrive</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Resources\setup-guides\filesystem.txt">
+      <LogicalName>guides.filesystem</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>
