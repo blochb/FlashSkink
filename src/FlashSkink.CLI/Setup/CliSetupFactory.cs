@@ -117,22 +117,28 @@ public sealed class CliSetupFactory : IAsyncDisposable
             return;
         }
 
-        // Dispose in reverse-creation order. Each disposal is best-effort.
+        // Dispose in reverse-creation order. Each disposal is isolated in its own
+        // try/catch so one component's failure cannot orphan the others' unmanaged
+        // resources (the OAuth listener's HttpListener, the cloud setups' HttpClients).
+        // Principle 16: every failure path disposes partially-constructed resources.
         if (_notificationBus is IAsyncDisposable asyncBus)
         {
-            await asyncBus.DisposeAsync().ConfigureAwait(false);
+            try { await asyncBus.DisposeAsync().ConfigureAwait(false); }
+            catch { /* best-effort teardown at process exit */ }
         }
 
         if (_oauthCapture is IDisposable disposableCapture)
         {
-            disposableCapture.Dispose();
+            try { disposableCapture.Dispose(); }
+            catch { /* best-effort teardown at process exit */ }
         }
 
         foreach (var setup in _cloudSetups)
         {
             if (setup is IDisposable d)
             {
-                d.Dispose();
+                try { d.Dispose(); }
+                catch { /* best-effort teardown at process exit */ }
             }
         }
     }

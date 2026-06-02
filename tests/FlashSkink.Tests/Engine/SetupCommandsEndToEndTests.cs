@@ -326,6 +326,44 @@ public sealed class SetupCommandsEndToEndTests : IAsyncLifetime
         Assert.Contains("Unknown provider", _error.ToString());
     }
 
+    [Fact]
+    public async Task Add_FileSystem_MissingRoot_ReturnsError()
+    {
+        await CreateVolumeAndDisposeAsync();
+
+        // filesystem provider requires --root; omitting it must fail before opening the volume.
+        await using var factory = BuildFactory();
+        var exitCode = await factory.RootCommand.Parse(
+            ["setup", "add", "--provider", "filesystem",
+             "--skink", _skinkRoot, "--password", Password])
+            .InvokeAsync();
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("--root is required", _error.ToString());
+    }
+
+    [Fact]
+    public async Task Add_Cloud_MissingCredentials_ReturnsError()
+    {
+        await CreateVolumeAndDisposeAsync();
+
+        var fakeSetup = new FakeProviderSetup
+        {
+            ProviderType = CloudType,
+            DisplayName = FakeDisplayName,
+        };
+
+        // Cloud provider requires --client-id and --client-secret; omitting them must fail.
+        await using var factory = BuildFactory(cloudSetups: [fakeSetup]);
+        var exitCode = await factory.RootCommand.Parse(
+            ["setup", "add", "--provider", CloudType,
+             "--skink", _skinkRoot, "--password", Password])
+            .InvokeAsync();
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("--client-id and --client-secret are required", _error.ToString());
+    }
+
     // ── List tests ───────────────────────────────────────────────────────────
 
     [Fact]
