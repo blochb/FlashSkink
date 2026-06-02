@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Dapper;
 using FlashSkink.Core.Abstractions.Crypto;
 using FlashSkink.Core.Abstractions.Models;
@@ -14,6 +15,7 @@ using FlashSkink.Core.Engine;
 using FlashSkink.Core.Identity;
 using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Providers;
+using FlashSkink.Core.Providers.Setup;
 using FlashSkink.Core.Storage;
 using FlashSkink.Core.Upload;
 using Microsoft.Data.Sqlite;
@@ -47,6 +49,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
     private readonly CancellationTokenSource _volumeCts;
     private readonly InstanceLock _instanceLock;
     private readonly WitnessStore _witnessStore;
+    private readonly string _skinkRoot;
+    private readonly IReadOnlyDictionary<string, IProviderSetup> _providerSetups;
     private readonly ILogger<FlashSkinkVolume> _logger;
     private int _disposed;
 
@@ -105,6 +109,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         CancellationTokenSource volumeCts,
         InstanceLock instanceLock,
         WitnessStore witnessStore,
+        string skinkRoot,
+        IReadOnlyDictionary<string, IProviderSetup> providerSetups,
         VolumeState initialState,
         ILogger<FlashSkinkVolume> logger)
     {
@@ -124,6 +130,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         _volumeCts = volumeCts;
         _instanceLock = instanceLock;
         _witnessStore = witnessStore;
+        _skinkRoot = skinkRoot;
+        _providerSetups = providerSetups;
         State = initialState;
         _logger = logger;
     }
@@ -246,8 +254,8 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
             var brainAccess = new BrainAccess(ownedConnection);
             var session = new VolumeSession(ownedDek, brainAccess);
             // A brand-new volume has no registered tails, so no witness handshake can fire
-            // and the initial state is always Normal. RegisterTailAsync will write the first
-            // witness to each tail as it is registered (dev plan §3.5.2 Change 3).
+            // and the initial state is always Normal. AddTailAsync will write the first
+            // witness to each tail as it is added (dev plan §3.5.2 Change 3).
             var volumeResult = await BuildVolumeFromSessionAsync(session, skinkRoot, options,
                 streamManager, lifecycle, keyVault, vaultPath, ownedLock!,
                 VolumeState.Normal, ct).ConfigureAwait(false);
@@ -857,165 +865,465 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         }
     }
 
-    // ── Tail registration (Phase 3 internal admin entry; Phase 4 replaces) ──
+    // ── Tail management (public §11 API) ─────────────────────────────────────
 
     /// <summary>
-    /// Inserts a <c>Providers</c> row with no OAuth credentials (token / secret / client-id
-    /// columns stay <see langword="null"/>; Phase 4 wires those in), registers
-    /// <paramref name="provider"/> in the volume's <see cref="IProviderRegistry"/>, and pulses
-    /// the upload wakeup signal so the orchestrator picks the new tail up on its next tick.
+    /// Configures a new tail. Runs the matching <see cref="IProviderSetup"/> flow (OAuth token
+    /// exchange + adapter construction for cloud providers, or local-path validation for
+    /// folders), persists the DEK-encrypted credentials to the brain, registers the adapter in
+    /// the live registry, writes the initial witness (dev plan §3.5.2), and queues every existing
+    /// file for upload to the new tail (§11.1). Returns immediately with the
+    /// <see cref="TailInfo"/>; uploads proceed in the background.
     /// </summary>
     /// <remarks>
-    /// Idempotent on the brain row: when a <c>Providers</c> row with the same
-    /// <paramref name="providerId"/> already exists, the insert is skipped and
-    /// <see cref="Result.Ok"/> is returned. The <see cref="IStorageProvider"/> instance is
-    /// registered in the in-memory registry regardless — the in-memory registry is rebuilt on
-    /// every volume open. Pre-existing <c>TailUploads</c> rows are not mutated; Phase 4's
-    /// public <c>AddTailAsync</c> will add the §11.1 "queue every existing file" backfill.
+    /// The plaintext <see cref="TailConfiguration.ClientSecret"/> is used only inside this call
+    /// (encrypted before persisting); the OAuth refresh token is derived from
+    /// <see cref="TailConfiguration.AuthorizationCode"/> here and never crosses the public API in
+    /// plaintext (Principles 6/26).
+    /// <para>
+    /// The brain transaction (Providers + TailUploads rows) commits before the adapter is
+    /// registered in the live registry. In the (practically impossible) event that the in-memory
+    /// <c>Register</c> throws after that commit, the constructed adapter is disposed and a failed
+    /// <see cref="Result"/> is returned, but the brain row persists — the recovery path is
+    /// <see cref="RemoveTailAsync"/>, which keys off the brain row (not the registry) and clears it.
+    /// </para>
     /// </remarks>
-    internal async Task<Result> RegisterTailAsync(
-        string providerId,
-        string providerType,
-        string displayName,
-        string? providerConfigJson,
-        IStorageProvider provider,
-        CancellationToken ct = default)
+    public async Task<Result<TailInfo>> AddTailAsync(TailConfiguration config, CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        if (string.IsNullOrWhiteSpace(providerId)
-            || string.IsNullOrWhiteSpace(providerType)
-            || string.IsNullOrWhiteSpace(displayName)
-            || provider is null)
+        if (config is null || string.IsNullOrWhiteSpace(config.ProviderType))
         {
-            return Result.Fail(ErrorCode.InvalidArgument,
-                "providerId, providerType, displayName, and provider must all be non-empty.");
+            return Result<TailInfo>.Fail(ErrorCode.InvalidArgument, "A provider type is required.");
         }
 
-        if (_providerRegistry is not InMemoryProviderRegistry inMem)
+        var providerId = string.IsNullOrWhiteSpace(config.ProviderId) ? config.ProviderType : config.ProviderId;
+
+        if (!_providerSetups.TryGetValue(config.ProviderType, out var setup))
         {
-            return Result.Fail(ErrorCode.InvalidArgument,
-                "RegisterTailAsync requires an InMemoryProviderRegistry-backed volume.");
+            return Result<TailInfo>.Fail(ErrorCode.InvalidArgument,
+                $"Unknown provider type '{config.ProviderType}'.");
+        }
+
+        if (_providerRegistry is not IMutableProviderRegistry mutable)
+        {
+            return Result<TailInfo>.Fail(ErrorCode.InvalidArgument,
+                "This volume's registry does not support adding tails.");
         }
 
         try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException ex)
         {
-            return Result.Fail(ErrorCode.Cancelled, "Register tail cancelled.", ex);
+            return Result<TailInfo>.Fail(ErrorCode.Cancelled, "Add tail cancelled.", ex);
+        }
+        ThrowIfDisposedAndReleaseGate();
+
+        var displayName = string.IsNullOrWhiteSpace(config.DisplayName) ? setup.DisplayName : config.DisplayName;
+        IStorageProvider? newAdapter = null;
+        var registered = false;
+        try
+        {
+            // Fast-fail duplicate check before any network/OAuth work. A racing insert is still
+            // caught by the Providers primary-key constraint below (PathConflict).
+            using (var checkScope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
+            {
+                var existing = await checkScope.Connection.QuerySingleOrDefaultAsync<string?>(
+                    new CommandDefinition(
+                        "SELECT ProviderID FROM Providers WHERE ProviderID = @ProviderId",
+                        new { ProviderId = providerId },
+                        cancellationToken: ct)).ConfigureAwait(false);
+                if (existing is not null)
+                {
+                    return Result<TailInfo>.Fail(ErrorCode.PathConflict,
+                        $"A '{displayName}' tail is already configured.");
+                }
+            }
+
+            byte[]? encryptedToken = null;
+            byte[]? encryptedSecret = null;
+            string? clientId = null;
+            string? providerConfigJson = null;
+            var credentials = new ProviderCredentials();
+
+            if (setup.SetupKind == ProviderSetupKind.LocalPath)
+            {
+                if (string.IsNullOrWhiteSpace(config.LocalPath))
+                {
+                    return Result<TailInfo>.Fail(ErrorCode.InvalidArgument,
+                        "A folder path is required for a local-folder tail.");
+                }
+                var validation = await setup.ValidatePathAsync(config.LocalPath, _skinkRoot, ct).ConfigureAwait(false);
+                if (!validation.Success)
+                {
+                    return Result<TailInfo>.Fail(validation.Error);
+                }
+                if (!validation.Value.IsValid)
+                {
+                    return Result<TailInfo>.Fail(ErrorCode.InvalidArgument,
+                        validation.Value.Reason ?? "That folder cannot be used as a tail.");
+                }
+                providerConfigJson = JsonSerializer.Serialize(
+                    new FileSystemProviderConfig(config.LocalPath),
+                    FileSystemProviderConfigJsonContext.Default.FileSystemProviderConfig);
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(config.ClientId)
+                    || string.IsNullOrWhiteSpace(config.ClientSecret)
+                    || string.IsNullOrWhiteSpace(config.AuthorizationCode)
+                    || string.IsNullOrWhiteSpace(config.CodeVerifier)
+                    || string.IsNullOrWhiteSpace(config.RedirectUri))
+                {
+                    return Result<TailInfo>.Fail(ErrorCode.InvalidArgument,
+                        "Sign-in details are incomplete for this tail.");
+                }
+                credentials = new ProviderCredentials { ClientId = config.ClientId, ClientSecret = config.ClientSecret };
+                var exchange = await setup.ExchangeCodeAsync(
+                    config.AuthorizationCode, config.CodeVerifier, config.RedirectUri,
+                    credentials, _session.Dek, ct).ConfigureAwait(false);
+                if (!exchange.Success)
+                {
+                    return Result<TailInfo>.Fail(exchange.Error);
+                }
+                encryptedToken = exchange.Value;
+                encryptedSecret = ProviderTokenCrypto.Encrypt(config.ClientSecret, _session.Dek);
+                clientId = config.ClientId;
+                // providerConfigJson stays null: the resolved cloud folder id is not surfaced by
+                // CreateProviderAsync, and BrainBackedProviderRegistry re-resolves it idempotently
+                // on the next open (BrainBackedProviderRegistry.cs TryBuild* arms). Persisting it
+                // is a deferred post-V1 optimisation.
+            }
+
+            var create = await setup.CreateProviderAsync(
+                providerId, displayName, encryptedToken ?? [], credentials,
+                providerConfigJson, _session.Dek, ct).ConfigureAwait(false);
+            if (!create.Success)
+            {
+                return Result<TailInfo>.Fail(create.Error);
+            }
+            newAdapter = create.Value;
+
+            var nowUtc = DateTime.UtcNow.ToString("O");
+            long pendingCount;
+            using (var scope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
+            {
+                var connection = scope.Connection;
+                using var tx = connection.BeginTransaction();
+
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "INSERT INTO Providers " +
+                    "(ProviderID, ProviderType, DisplayName, EncryptedToken, EncryptedClientSecret, " +
+                    " ClientId, ProviderConfig, HealthStatus, AddedUtc, IsActive) " +
+                    "VALUES (@ProviderId, @ProviderType, @DisplayName, @EncryptedToken, @EncryptedClientSecret, " +
+                    " @ClientId, @ProviderConfig, 'Healthy', @AddedUtc, 1)",
+                    new
+                    {
+                        ProviderId = providerId,
+                        ProviderType = config.ProviderType,
+                        DisplayName = displayName,
+                        EncryptedToken = encryptedToken,
+                        EncryptedClientSecret = encryptedSecret,
+                        ClientId = clientId,
+                        ProviderConfig = providerConfigJson,
+                        AddedUtc = nowUtc,
+                    },
+                    tx, cancellationToken: ct)).ConfigureAwait(false);
+
+                // Backfill: queue every existing (non-folder, blob-backed) file for upload to the
+                // new tail (§11.1). Mirrors the per-commit INSERT-SELECT in WritePipeline.
+                pendingCount = await connection.ExecuteAsync(new CommandDefinition(
+                    "INSERT INTO TailUploads (FileID, ProviderID, Status, QueuedUtc, AttemptCount) " +
+                    "SELECT FileID, @ProviderId, 'PENDING', @Now, 0 " +
+                    "FROM Files " +
+                    "WHERE IsFolder = 0 AND BlobID IS NOT NULL " +
+                    "  AND FileID NOT IN (SELECT FileID FROM TailUploads WHERE ProviderID = @ProviderId)",
+                    new { ProviderId = providerId, Now = nowUtc },
+                    tx, cancellationToken: ct)).ConfigureAwait(false);
+
+                tx.Commit();
+            }
+
+            mutable.Register(providerId, newAdapter);
+            registered = true;
+
+            await WriteInitialWitnessAsync(newAdapter, providerId, ct).ConfigureAwait(false);
+
+            _wakeupSignal.Pulse();
+
+            return Result<TailInfo>.Ok(new TailInfo
+            {
+                ProviderId = providerId,
+                ProviderType = config.ProviderType,
+                DisplayName = displayName,
+                Health = "Healthy",
+                AddedUtc = DateTimeOffset.Parse(nowUtc, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                LastSuccessfulUploadUtc = null,
+                UploadedFileCount = 0,
+                PendingFileCount = pendingCount,
+            });
+        }
+        catch (OperationCanceledException ex)
+        {
+            return Result<TailInfo>.Fail(ErrorCode.Cancelled, "Add tail cancelled.", ex);
+        }
+        catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
+        {
+            return Result<TailInfo>.Fail(ErrorCode.PathConflict,
+                $"A '{displayName}' tail is already configured.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            return Result<TailInfo>.Fail(ErrorCode.DatabaseWriteFailed, "Could not save the new tail.", ex);
+        }
+        catch (Exception ex)
+        {
+            return Result<TailInfo>.Fail(ErrorCode.Unknown, "Unexpected error adding the tail.", ex);
+        }
+        finally
+        {
+            // Dispose the constructed adapter if it was never handed to the registry (Principle 16).
+            // On the success path 'registered' is true, so this is a no-op; concentrating the guard
+            // here makes the safety structural rather than duplicated across every catch block.
+            if (newAdapter is not null && !registered)
+            {
+                await DisposeAdapterAsync(newAdapter).ConfigureAwait(false);
+            }
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Removes a configured tail: deletes its <c>UploadSessions</c>, <c>TailUploads</c>, and
+    /// <c>Providers</c> rows in one transaction, then evicts (and disposes) the adapter from the
+    /// live registry. Does NOT delete data on the provider side — the user cleans up their cloud
+    /// account manually if desired.
+    /// </summary>
+    public async Task<Result> RemoveTailAsync(string providerId, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        if (string.IsNullOrWhiteSpace(providerId))
+        {
+            return Result.Fail(ErrorCode.InvalidArgument, "A tail id is required.");
+        }
+        if (_providerRegistry is not IMutableProviderRegistry mutable)
+        {
+            return Result.Fail(ErrorCode.InvalidArgument,
+                "This volume's registry does not support removing tails.");
+        }
+
+        try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException ex)
+        {
+            return Result.Fail(ErrorCode.Cancelled, "Remove tail cancelled.", ex);
         }
         ThrowIfDisposedAndReleaseGate();
 
         try
         {
-            // Hold the brain scope across the SELECT + INSERT so the select-then-insert is
-            // atomic against any worker SQL on the shared connection (Principle 36).
-            using (var brainScope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
+            using (var scope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
             {
-                var connection = brainScope.Connection;
+                var connection = scope.Connection;
                 var existing = await connection.QuerySingleOrDefaultAsync<string?>(
                     new CommandDefinition(
                         "SELECT ProviderID FROM Providers WHERE ProviderID = @ProviderId",
                         new { ProviderId = providerId },
-                        cancellationToken: ct))
-                    .ConfigureAwait(false);
-
+                        cancellationToken: ct)).ConfigureAwait(false);
                 if (existing is null)
                 {
-                    await connection.ExecuteAsync(new CommandDefinition(
-                        "INSERT INTO Providers " +
-                        "(ProviderID, ProviderType, DisplayName, ProviderConfig, HealthStatus, AddedUtc, IsActive) " +
-                        "VALUES (@ProviderId, @ProviderType, @DisplayName, @ProviderConfig, 'Healthy', @AddedUtc, 1)",
-                        new
-                        {
-                            ProviderId = providerId,
-                            ProviderType = providerType,
-                            DisplayName = displayName,
-                            ProviderConfig = providerConfigJson,
-                            AddedUtc = DateTime.UtcNow.ToString("O"),
-                        },
-                        cancellationToken: ct)).ConfigureAwait(false);
+                    return Result.Fail(ErrorCode.InvalidArgument, "No tail with that id is configured.");
                 }
+
+                using var tx = connection.BeginTransaction();
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM UploadSessions WHERE ProviderID = @ProviderId",
+                    new { ProviderId = providerId }, tx, cancellationToken: ct)).ConfigureAwait(false);
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM TailUploads WHERE ProviderID = @ProviderId",
+                    new { ProviderId = providerId }, tx, cancellationToken: ct)).ConfigureAwait(false);
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM Providers WHERE ProviderID = @ProviderId",
+                    new { ProviderId = providerId }, tx, cancellationToken: ct)).ConfigureAwait(false);
+                tx.Commit();
             }
 
-            // Always register the in-process instance — the in-memory registry is rebuilt
-            // every volume open, so even an idempotent re-registration must put the adapter back.
-            inMem.Register(providerId, provider);
-
-            // Write an initial witness to the freshly-registered tail. Without this, a clone
-            // of the USB opened between this RegisterTailAsync and the next OpenAsync would
-            // see "no witness on this tail" and treat as first use — silently missing the
-            // conflict. Writing here closes that window (dev plan §3.5.2 Change 3).
-            //
-            // Failure to write the witness is logged at Warning but does NOT fail the
-            // RegisterTailAsync call: the brain row is committed, the registry has the
-            // provider, and the next session-begin handshake will reseed the witness as part
-            // of its normal read-then-write algorithm.
-            string volumeId;
-            long currentEpoch;
-            VolumeState currentState;
-            using (var brainScope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
-            {
-                volumeId = await brainScope.Connection.QuerySingleAsync<string>(
-                    new CommandDefinition(
-                        "SELECT Value FROM Settings WHERE Key = 'VolumeID'",
-                        cancellationToken: ct)).ConfigureAwait(false);
-                var epochRaw = await brainScope.Connection.QuerySingleAsync<string>(
-                    new CommandDefinition(
-                        "SELECT Value FROM Settings WHERE Key = 'VolumeEpoch'",
-                        cancellationToken: ct)).ConfigureAwait(false);
-                currentEpoch = long.Parse(epochRaw, CultureInfo.InvariantCulture);
-                var stateRaw = await brainScope.Connection.QuerySingleOrDefaultAsync<string?>(
-                    new CommandDefinition(
-                        "SELECT Value FROM Settings WHERE Key = 'VolumeState'",
-                        cancellationToken: ct)).ConfigureAwait(false);
-                currentState = stateRaw is not null
-                    && Enum.TryParse<VolumeState>(stateRaw, ignoreCase: false, out var parsed)
-                        ? parsed
-                        : VolumeState.Normal;
-            }
-
-            var initialWitness = WitnessPayload.ForNewSession(
-                volumeId, currentEpoch, GetAppInformationalVersion())
-                with
-            { ConflictObserved = currentState == VolumeState.Fenced };
-            var writeResult = await _witnessStore.WriteAsync(
-                provider,
-                _session.Dek,
-                initialWitness,
-                CancellationToken.None).ConfigureAwait(false);
-            if (!writeResult.Success)
-            {
-                _logger.LogWarning(
-                    "Initial witness write to newly-registered tail {ProviderId} failed ({Code}); the next session-begin handshake will retry.",
-                    providerId, writeResult.Error.Code);
-            }
-
-            _wakeupSignal.Pulse();
+            mutable.Remove(providerId);
             return Result.Ok();
         }
         catch (OperationCanceledException ex)
         {
-            return Result.Fail(ErrorCode.Cancelled, "Register tail cancelled.", ex);
-        }
-        catch (SqliteException ex) when (ex.IsUniqueConstraintViolation())
-        {
-            return Result.Fail(ErrorCode.PathConflict,
-                $"A provider with ID '{providerId}' already exists.", ex);
+            return Result.Fail(ErrorCode.Cancelled, "Remove tail cancelled.", ex);
         }
         catch (SqliteException ex)
         {
-            return Result.Fail(ErrorCode.DatabaseWriteFailed,
-                "Failed to register tail.", ex);
+            return Result.Fail(ErrorCode.DatabaseWriteFailed, "Could not remove the tail.", ex);
         }
         catch (Exception ex)
         {
-            return Result.Fail(ErrorCode.Unknown,
-                "Unexpected error registering tail.", ex);
+            return Result.Fail(ErrorCode.Unknown, "Unexpected error removing the tail.", ex);
         }
         finally
         {
             _gate.Release();
         }
     }
+
+    /// <summary>
+    /// Returns one <see cref="TailInfo"/> per active tail, aggregating upload progress from
+    /// <c>TailUploads</c>.
+    /// </summary>
+    public async Task<Result<IReadOnlyList<TailInfo>>> ListTailsAsync(CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException ex)
+        {
+            return Result<IReadOnlyList<TailInfo>>.Fail(ErrorCode.Cancelled, "List tails cancelled.", ex);
+        }
+        ThrowIfDisposedAndReleaseGate();
+
+        try
+        {
+            var list = new List<TailInfo>();
+            using (var scope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
+            {
+                var connection = scope.Connection;
+                // Select only the declared-TEXT Providers columns via Dapper (so type inference is
+                // correct even with zero rows), then pull the per-tail aggregates with scalar
+                // queries — SQLite reports aggregate/computed columns as untyped, which Dapper's
+                // record materialiser otherwise reads as byte[]. This is the admin (list) path, not
+                // a hot path (Principle 22).
+                var enumerable = await connection.QueryAsync<TailListRow>(new CommandDefinition(
+                    "SELECT ProviderID AS ProviderId, ProviderType AS ProviderType, " +
+                    "       DisplayName AS DisplayName, HealthStatus AS Health, AddedUtc AS AddedUtc " +
+                    "FROM Providers WHERE IsActive = 1 ORDER BY AddedUtc",
+                    cancellationToken: ct)).ConfigureAwait(false);
+                var rows = enumerable.ToList();
+
+                foreach (var row in rows)
+                {
+                    var uploadedCount = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                        "SELECT COUNT(*) FROM TailUploads WHERE ProviderID = @P AND Status = 'UPLOADED'",
+                        new { P = row.ProviderId }, cancellationToken: ct)).ConfigureAwait(false);
+                    var pendingCount = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                        "SELECT COUNT(*) FROM TailUploads WHERE ProviderID = @P AND Status != 'UPLOADED'",
+                        new { P = row.ProviderId }, cancellationToken: ct)).ConfigureAwait(false);
+                    var lastUpload = await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
+                        "SELECT MAX(UploadedUtc) FROM TailUploads WHERE ProviderID = @P AND Status = 'UPLOADED'",
+                        new { P = row.ProviderId }, cancellationToken: ct)).ConfigureAwait(false);
+
+                    list.Add(new TailInfo
+                    {
+                        ProviderId = row.ProviderId,
+                        ProviderType = row.ProviderType,
+                        DisplayName = row.DisplayName,
+                        Health = row.Health,
+                        AddedUtc = DateTimeOffset.Parse(row.AddedUtc, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                        LastSuccessfulUploadUtc = string.IsNullOrEmpty(lastUpload)
+                            ? null
+                            : DateTimeOffset.Parse(lastUpload, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                        UploadedFileCount = uploadedCount,
+                        PendingFileCount = pendingCount,
+                    });
+                }
+            }
+
+            return Result<IReadOnlyList<TailInfo>>.Ok(list);
+        }
+        catch (OperationCanceledException ex)
+        {
+            return Result<IReadOnlyList<TailInfo>>.Fail(ErrorCode.Cancelled, "List tails cancelled.", ex);
+        }
+        catch (SqliteException ex)
+        {
+            return Result<IReadOnlyList<TailInfo>>.Fail(ErrorCode.DatabaseReadFailed, "Could not read the tail list.", ex);
+        }
+        catch (Exception ex)
+        {
+            return Result<IReadOnlyList<TailInfo>>.Fail(ErrorCode.Unknown, "Unexpected error listing tails.", ex);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Writes the initial witness (dev plan §3.5.2) to a freshly-added tail. Reads the current
+    /// volume identity/epoch/state, builds the new-session payload, and writes it under
+    /// <see cref="CancellationToken.None"/> (Principle 17). A write failure is logged at Warning
+    /// and is non-fatal — the next session-begin handshake reseeds the witness.
+    /// </summary>
+    private async Task WriteInitialWitnessAsync(IStorageProvider provider, string providerId, CancellationToken ct)
+    {
+        string volumeId;
+        long currentEpoch;
+        VolumeState currentState;
+        using (var brainScope = await _context.Brain.LockAsync(ct).ConfigureAwait(false))
+        {
+            volumeId = await brainScope.Connection.QuerySingleAsync<string>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'VolumeID'",
+                    cancellationToken: ct)).ConfigureAwait(false);
+            var epochRaw = await brainScope.Connection.QuerySingleAsync<string>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'VolumeEpoch'",
+                    cancellationToken: ct)).ConfigureAwait(false);
+            currentEpoch = long.Parse(epochRaw, CultureInfo.InvariantCulture);
+            var stateRaw = await brainScope.Connection.QuerySingleOrDefaultAsync<string?>(
+                new CommandDefinition(
+                    "SELECT Value FROM Settings WHERE Key = 'VolumeState'",
+                    cancellationToken: ct)).ConfigureAwait(false);
+            currentState = stateRaw is not null
+                && Enum.TryParse<VolumeState>(stateRaw, ignoreCase: false, out var parsed)
+                    ? parsed
+                    : VolumeState.Normal;
+        }
+
+        var initialWitness = WitnessPayload.ForNewSession(
+            volumeId, currentEpoch, GetAppInformationalVersion())
+            with
+        { ConflictObserved = currentState == VolumeState.Fenced };
+        var writeResult = await _witnessStore.WriteAsync(
+            provider, _session.Dek, initialWitness, CancellationToken.None).ConfigureAwait(false);
+        if (!writeResult.Success)
+        {
+            _logger.LogWarning(
+                "Initial witness write to newly-added tail {ProviderId} failed ({Code}); the next session-begin handshake will retry.",
+                providerId, writeResult.Error.Code);
+        }
+    }
+
+    /// <summary>
+    /// Disposes an adapter constructed by <see cref="AddTailAsync"/> that did not reach the
+    /// registry (Principle 16). Best-effort, non-cancellable (<see cref="CancellationToken.None"/>
+    /// semantics — no token accepted); failures are logged at Warning.
+    /// </summary>
+    private async Task DisposeAdapterAsync(IStorageProvider adapter)
+    {
+        try
+        {
+            switch (adapter)
+            {
+                case IAsyncDisposable asyncDisposable:
+                    await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                    break;
+                case IDisposable disposable:
+                    disposable.Dispose();
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to dispose a partially-constructed tail adapter.");
+        }
+    }
+
+    /// <summary>Row shape for the <see cref="ListTailsAsync"/> Providers query (declared-TEXT columns only).</summary>
+    private sealed record TailListRow(
+        string ProviderId,
+        string ProviderType,
+        string DisplayName,
+        string Health,
+        string AddedUtc);
 
     // ── Conflict resolution ──────────────────────────────────────────────────
 
@@ -1383,10 +1691,25 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
 
         // Witness store + volume-level logger are kept as fields on FlashSkinkVolume so
         // PromoteAsync (§3.5.3) can drive fresh witness writes without rebuilding services,
-        // and so RegisterTailAsync can write the initial witness on tail registration
+        // and so AddTailAsync can write the initial witness when a tail is added
         // (dev plan §3.5.2 Change 5).
         var witnessStore = new WitnessStore(loggerFactory.CreateLogger<WitnessStore>());
         var volumeLogger = loggerFactory.CreateLogger<FlashSkinkVolume>();
+
+        // Provider-setup map consumed by AddTailAsync. Core always provides the FileSystem setup
+        // (it is internal — only Core can construct it); the CLI overlays the cloud setups via
+        // options.ProviderSetups (caller-owned; the volume never disposes them). (Phase 4.6a, D1.)
+        var providerSetups = new Dictionary<string, IProviderSetup>(StringComparer.Ordinal)
+        {
+            ["filesystem"] = new FileSystemProviderSetup(loggerFactory),
+        };
+        if (options.ProviderSetups is not null)
+        {
+            foreach (var setup in options.ProviderSetups)
+            {
+                providerSetups[setup.ProviderType] = setup;
+            }
+        }
 
         var volumeCts = new CancellationTokenSource();
 
@@ -1417,7 +1740,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
         return Result<FlashSkinkVolume>.Ok(new FlashSkinkVolume(
             session, context, writePipeline, readPipeline, lifecycle, keyVault, vaultPath,
             registry, netMonitor, clock, wakeupSignal, uploadQueueService, brainMirrorService,
-            volumeCts, instanceLock, witnessStore, initialState, volumeLogger));
+            volumeCts, instanceLock, witnessStore, skinkRoot, providerSetups, initialState, volumeLogger));
     }
 
     /// <summary>
@@ -1570,7 +1893,7 @@ public sealed class FlashSkinkVolume : IAsyncDisposable
                 var providerResult = await registry.GetAsync(providerId, ct).ConfigureAwait(false);
                 if (!providerResult.Success)
                 {
-                    // Normal in tests that haven't called RegisterTailAsync yet; normal in
+                    // Normal in tests that haven't added a tail yet; normal in
                     // Phase 4 if a brain-backed registry fails to reconstruct a cloud adapter.
                     logger.LogDebug(
                         "Provider {ProviderId} present in brain but not resolvable from registry ({Code}); skipping in handshake.",

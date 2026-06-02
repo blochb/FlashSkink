@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Dapper;
+using FlashSkink.Core.Abstractions.Models;
 using FlashSkink.Core.Abstractions.Notifications;
 using FlashSkink.Core.Abstractions.Providers;
 using FlashSkink.Core.Abstractions.Results;
@@ -21,7 +22,7 @@ namespace FlashSkink.Tests.Orchestration;
 /// <summary>
 /// End-to-end tests for the §3.5.2 session-begin witness handshake and fenced state via
 /// <see cref="FlashSkinkVolume"/>. Uses <see cref="FileSystemProvider"/> registered via
-/// <c>RegisterTailAsync</c> as the tail. Manually seeds the tail's witness file before
+/// the public <c>AddTailAsync</c> as the tail. Manually seeds the tail's witness file before
 /// reopening to simulate split-brain scenarios. Blueprint §19.6–19.7.
 /// </summary>
 public sealed class SplitBrainIntegrationTests : IAsyncLifetime
@@ -61,28 +62,53 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
 
     private VolumeCreationOptions DefaultOptions(
         INetworkAvailabilityMonitor? netMonitor = null,
-        InMemoryProviderRegistry? registry = null) => new()
+        InMemoryProviderRegistry? registry = null,
+        IReadOnlyList<IProviderSetup>? setups = null) => new()
         {
             LoggerFactory = NullLoggerFactory.Instance,
             NotificationBus = _bus,
             ProviderRegistry = registry ?? _registry,
             NetworkMonitor = netMonitor,
+            ProviderSetups = setups,
         };
 
     private FileSystemProvider CreateFsProvider(string? providerId = null) =>
         new(providerId ?? ProviderId, DisplayName, _tailRoot,
             NullLogger<FileSystemProvider>.Instance);
 
+    private TailConfiguration TailConfig() => new()
+    {
+        ProviderType = ProviderType,
+        ProviderId = ProviderId,
+        DisplayName = DisplayName,
+        LocalPath = _tailRoot,
+    };
+
     private async Task<FlashSkinkVolume> CreateAndRegisterAsync(
         VolumeCreationOptions? options = null,
         IStorageProvider? provider = null)
     {
-        var result = await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, options ?? DefaultOptions());
+        // When the caller supplies a specific provider instance, route AddTailAsync through a
+        // FakeProviderSetup that returns it (overriding the built-in "filesystem" setup); otherwise
+        // use the built-in setup which constructs a FileSystemProvider at _tailRoot.
+        if (options is null)
+        {
+            IReadOnlyList<IProviderSetup>? setups = provider is null
+                ? null
+                : [new FakeProviderSetup
+                    {
+                        ProviderType = ProviderType,
+                        DisplayName = DisplayName,
+                        SetupKind = ProviderSetupKind.LocalPath,
+                        ProviderToReturn = provider,
+                    }];
+            options = DefaultOptions(setups: setups);
+        }
+
+        var result = await FlashSkinkVolume.CreateAsync(_skinkRoot, Password, options);
         Assert.True(result.Success, result.Error?.Message);
         var volume = result.AssertValue().Volume;
-        var reg = await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, provider ?? CreateFsProvider());
+        var reg = await volume.AddTailAsync(TailConfig());
         Assert.True(reg.Success, reg.Error?.Message);
         return volume;
     }
@@ -177,16 +203,16 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
             n.Severity == NotificationSeverity.Info &&
             n.Source == nameof(FlashSkinkVolume));
 
-    // ── RegisterTailAsync writes the initial witness ─────────────────────────
+    // ── AddTailAsync writes the initial witness ──────────────────────────────
 
     [Fact]
-    public async Task RegisterTailAsync_WritesInitialWitness_OnRegistration()
+    public async Task AddTailAsync_WritesInitialWitness_OnAdd()
     {
         await using var volume = await CreateAndRegisterAsync();
 
         var witness = await ManuallyReadWitnessAsync();
         Assert.NotNull(witness);
-        // The seeded VolumeEpoch is 1 (see SeedInitialSettingsAsync). RegisterTailAsync runs
+        // The seeded VolumeEpoch is 1 (see SeedInitialSettingsAsync). AddTailAsync runs
         // against an open volume — no OpenAsync has run since CreateAsync — so the current
         // epoch is still 1.
         Assert.Equal(1L, witness!.Value.Epoch);
@@ -464,7 +490,7 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
         // persisting Settings["VolumeState"] = "Normal": brain says Fenced, witnesses are clean.
         await OrchestrationTestHelper.UpsertSettingAsync(
             _skinkRoot, Password, "VolumeState", "Fenced");
-        // (RegisterTailAsync already wrote a clean witness with ConflictObserved=false. Leave
+        // (AddTailAsync already wrote a clean witness with ConflictObserved=false. Leave
         // that as the "clean" witness state.)
 
         await using var v2 = await ReopenAsync();
@@ -508,21 +534,27 @@ public sealed class SplitBrainIntegrationTests : IAsyncLifetime
         Assert.Equal("Fenced", persisted);
     }
 
-    // ── RegisterTailAsync write failure is non-fatal ─────────────────────────
+    // ── AddTailAsync witness-write failure is non-fatal ──────────────────────
 
     [Fact]
-    public async Task WitnessWriteFailureOnRegistration_DoesNotFailRegisterTail()
+    public async Task WitnessWriteFailureOnAdd_DoesNotFailAddTail()
     {
+        var faulty = new FaultInjectingStorageProvider(CreateFsProvider());
+        faulty.FailNextBeginWith(ErrorCode.ProviderUnreachable);
+        var faultSetup = new FakeProviderSetup
+        {
+            ProviderType = ProviderType,
+            DisplayName = DisplayName,
+            SetupKind = ProviderSetupKind.LocalPath,
+            ProviderToReturn = faulty,
+        };
+
         var createResult = await FlashSkinkVolume.CreateAsync(
-            _skinkRoot, Password, DefaultOptions());
+            _skinkRoot, Password, DefaultOptions(setups: [faultSetup]));
         Assert.True(createResult.Success);
         await using var volume = createResult.AssertValue().Volume;
 
-        var faulty = new FaultInjectingStorageProvider(CreateFsProvider());
-        faulty.FailNextBeginWith(ErrorCode.ProviderUnreachable);
-
-        var reg = await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, faulty);
+        var reg = await volume.AddTailAsync(TailConfig());
         Assert.True(reg.Success, reg.Error?.Message);
 
         // Brain row was committed.

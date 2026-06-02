@@ -17,7 +17,7 @@ namespace FlashSkink.Core.Providers;
 /// responsible for disposing or replacing providers. Phase 4's registry owns a tighter lifecycle
 /// for cloud adapters that hold network connections.
 /// </remarks>
-public sealed class InMemoryProviderRegistry : IProviderRegistry
+public sealed class InMemoryProviderRegistry : IProviderRegistry, IMutableProviderRegistry
 {
     private readonly ConcurrentDictionary<string, IStorageProvider> _providers = new();
     private readonly ILogger<InMemoryProviderRegistry> _logger;

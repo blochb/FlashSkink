@@ -20,8 +20,8 @@ namespace FlashSkink.Tests.Engine;
 
 /// <summary>
 /// Integration tests for the §3.6 volume integration surface — <c>WriteBulkAsync</c>,
-/// internal <c>RegisterTailAsync</c>, the upload-queue + brain-mirror lifecycle wiring, and
-/// the §21.3 WAL invariant after end-to-end upload.
+/// tail registration via the public <c>AddTailAsync</c>, the upload-queue + brain-mirror
+/// lifecycle wiring, and the §21.3 WAL invariant after end-to-end upload.
 /// </summary>
 public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
 {
@@ -58,17 +58,30 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
 
     private VolumeCreationOptions DefaultOptions(
         INetworkAvailabilityMonitor? netMonitor = null,
-        FakeClock? clock = null) => new()
+        FakeClock? clock = null,
+        IReadOnlyList<IProviderSetup>? setups = null) => new()
         {
             LoggerFactory = NullLoggerFactory.Instance,
             NotificationBus = _bus,
             ProviderRegistry = _registry,
             NetworkMonitor = netMonitor,
             Clock = clock,
+            ProviderSetups = setups,
         };
 
     private FileSystemProvider CreateFsProvider() =>
         new(ProviderId, DisplayName, _tailRoot, NullLogger<FileSystemProvider>.Instance);
+
+    // Registers a FileSystem tail at _tailRoot via the public AddTailAsync, using the volume's
+    // built-in FileSystem provider setup. Replaces the deleted internal RegisterTailAsync.
+    private Task<Result<TailInfo>> AddFsTailAsync(FlashSkinkVolume volume) =>
+        volume.AddTailAsync(new TailConfiguration
+        {
+            ProviderType = ProviderType,
+            ProviderId = ProviderId,
+            DisplayName = DisplayName,
+            LocalPath = _tailRoot,
+        });
 
     private async Task<FlashSkinkVolume> CreateVolumeAsync(VolumeCreationOptions? options = null)
     {
@@ -265,88 +278,8 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
             await volume.WriteBulkAsync(new List<BulkWriteItem>()));
     }
 
-    // ── RegisterTailAsync ────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task RegisterTail_InsertsProvidersRow()
-    {
-        await using var volume = await CreateVolumeAsync();
-        var provider = CreateFsProvider();
-        const string ConfigJson = """{"rootPath":"/test/path"}""";
-
-        var result = await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, ConfigJson, provider);
-
-        Assert.True(result.Success, result.Error?.Message);
-        await volume.DisposeAsync();
-
-        await using var brain = await OpenRawBrainAsync();
-        var row = await brain.QuerySingleAsync<(string ProviderID, string ProviderType,
-            string DisplayName, string? ProviderConfig, string HealthStatus, long IsActive)>(
-            "SELECT ProviderID, ProviderType, DisplayName, ProviderConfig, HealthStatus, IsActive " +
-            "FROM Providers WHERE ProviderID = @Id",
-            new { Id = ProviderId });
-
-        Assert.Equal(ProviderId, row.ProviderID);
-        Assert.Equal(ProviderType, row.ProviderType);
-        Assert.Equal(DisplayName, row.DisplayName);
-        Assert.Equal(ConfigJson, row.ProviderConfig);
-        Assert.Equal("Healthy", row.HealthStatus);
-        Assert.Equal(1, row.IsActive);
-    }
-
-    [Fact]
-    public async Task RegisterTail_IdempotentOnDuplicate()
-    {
-        await using var volume = await CreateVolumeAsync();
-        var first = await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider());
-        var second = await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider());
-
-        Assert.True(first.Success);
-        Assert.True(second.Success);
-
-        await volume.DisposeAsync();
-
-        await using var brain = await OpenRawBrainAsync();
-        var count = await brain.ExecuteScalarAsync<long>(
-            "SELECT COUNT(*) FROM Providers WHERE ProviderID = @Id",
-            new { Id = ProviderId });
-        Assert.Equal(1, count);
-    }
-
-    [Fact]
-    public async Task RegisterTail_AfterRegister_RegistryContainsProvider()
-    {
-        await using var volume = await CreateVolumeAsync();
-        await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider());
-
-        var ids = await _registry.ListActiveProviderIdsAsync(CancellationToken.None);
-        Assert.True(ids.Success);
-        Assert.Contains(ProviderId, ids.AssertValue());
-    }
-
-    [Fact]
-    public async Task RegisterTail_NullProvider_ReturnsInvalidArgument()
-    {
-        await using var volume = await CreateVolumeAsync();
-        var result = await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, provider: null!);
-        Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
-    }
-
-    [Fact]
-    public async Task RegisterTail_EmptyProviderId_ReturnsInvalidArgument()
-    {
-        await using var volume = await CreateVolumeAsync();
-        var result = await volume.RegisterTailAsync(
-            "", ProviderType, DisplayName, null, CreateFsProvider());
-        Assert.False(result.Success);
-        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
-    }
+    // ── AddTailAsync coverage lives in AddTailAsyncTests; these end-to-end tests
+    //    exercise the upload/mirror lifecycle after a tail is added. ────────────
 
     // ── End-to-end upload (real time, FileSystemProvider) ────────────────────
 
@@ -360,8 +293,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var netMonitor = new TestNetworkAvailabilityMonitor();
         netMonitor.SetAvailable(false);
         await using var volume = await CreateVolumeAsync(DefaultOptions(netMonitor: netMonitor));
-        Assert.True((await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider())).Success);
+        Assert.True((await AddFsTailAsync(volume)).Success);
 
         var payload = RandomBytes(512 * 1024);   // 512 KB
         var writeResult = await volume.WriteFileAsync(new MemoryStream(payload), "doc.bin");
@@ -387,8 +319,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var netMonitor = new TestNetworkAvailabilityMonitor();
         netMonitor.SetAvailable(false);
         var volume = await CreateVolumeAsync(DefaultOptions(netMonitor: netMonitor));
-        Assert.True((await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider())).Success);
+        Assert.True((await AddFsTailAsync(volume)).Success);
 
         var blobIds = new List<string>();
         for (int i = 0; i < 5; i++)
@@ -462,8 +393,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
                     var netMonitor = new TestNetworkAvailabilityMonitor();
                     netMonitor.SetAvailable(false);
                     var volume = await CreateVolumeAsync(DefaultOptions(netMonitor: netMonitor));
-                    Assert.True((await volume.RegisterTailAsync(
-                        ProviderId, ProviderType, DisplayName, null, CreateFsProvider())).Success);
+                    Assert.True((await AddFsTailAsync(volume)).Success);
 
                     var blobIds = new List<string>();
                     for (int i = 0; i < 5; i++)
@@ -522,8 +452,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var netMonitor = new TestNetworkAvailabilityMonitor();
         netMonitor.SetAvailable(false);
         var volume = await CreateVolumeAsync(DefaultOptions(netMonitor: netMonitor));
-        Assert.True((await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider())).Success);
+        Assert.True((await AddFsTailAsync(volume)).Success);
 
         var blobIds = new List<string>();
         for (int i = 0; i < 3; i++)
@@ -561,8 +490,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         var netMonitor = new TestNetworkAvailabilityMonitor();
         netMonitor.SetAvailable(false);
         await using var volume = await CreateVolumeAsync(DefaultOptions(netMonitor: netMonitor));
-        Assert.True((await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider())).Success);
+        Assert.True((await AddFsTailAsync(volume)).Success);
 
         var w = await volume.WriteFileAsync(new MemoryStream(RandomBytes(16 * 1024)), "offline.bin");
         Assert.True(w.Success);
@@ -589,8 +517,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
             ProviderRegistry = _registry,
         };
         var volume = await CreateVolumeAsync(options);
-        Assert.True((await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider())).Success);
+        Assert.True((await AddFsTailAsync(volume)).Success);
 
         var w = await volume.WriteFileAsync(new MemoryStream(RandomBytes(8 * 1024)), "before-close.bin");
         Assert.True(w.Success);
@@ -616,8 +543,7 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
     {
         using var clock = new FakeClock(new DateTime(2026, 5, 11, 12, 0, 0, DateTimeKind.Utc));
         await using var volume = await CreateVolumeAsync(DefaultOptions(clock: clock));
-        Assert.True((await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, CreateFsProvider())).Success);
+        Assert.True((await AddFsTailAsync(volume)).Success);
 
         var w = await volume.WriteFileAsync(new MemoryStream(RandomBytes(4 * 1024)), "tick.bin");
         Assert.True(w.Success);
@@ -651,12 +577,21 @@ public sealed class FlashSkinkVolumeUploadIntegrationTests : IAsyncLifetime
         // FaultInjectingStorageProvider with per-range latency. After the worker has at least
         // begun an upload, we dispose the volume and assert that disposal returned within the
         // 10 s shutdown budget.
-        await using var volume = await CreateVolumeAsync();
         var fs = CreateFsProvider();
         var fault = new FaultInjectingStorageProvider(fs);
         fault.SetRangeLatency(TimeSpan.FromSeconds(2));
-        Assert.True((await volume.RegisterTailAsync(
-            ProviderId, ProviderType, DisplayName, null, fault)).Success);
+        // Inject a setup that hands AddTailAsync the fault-injecting adapter (overrides the
+        // built-in "filesystem" setup for this test).
+        var faultSetup = new FakeProviderSetup
+        {
+            ProviderType = ProviderType,
+            DisplayName = DisplayName,
+            SetupKind = ProviderSetupKind.LocalPath,
+            ProviderToReturn = fault,
+        };
+        await using var volume = await CreateVolumeAsync(
+            DefaultOptions(setups: new IProviderSetup[] { faultSetup }));
+        Assert.True((await AddFsTailAsync(volume)).Success);
 
         // 12 MB → multiple 4 MB ranges, plenty of latency to interrupt mid-flight.
         var w = await volume.WriteFileAsync(new MemoryStream(RandomBytes(12 * 1024 * 1024)), "big.bin");

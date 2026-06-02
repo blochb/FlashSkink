@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using Dapper;
+using FlashSkink.Core.Abstractions.Models;
 using FlashSkink.Core.Abstractions.Notifications;
+using FlashSkink.Core.Abstractions.Results;
 using FlashSkink.Core.Metadata;
 using FlashSkink.Core.Orchestration;
 using FlashSkink.Core.Providers;
@@ -86,11 +88,11 @@ public sealed class BrainAccessConcurrencyTests
     // ── Test 2: full volume lifecycle stress ──────────────────────────────────
 
     /// <summary>
-    /// Runs 100 iterations of the exact lifecycle that triggered the original CI flake
-    /// (<c>RegisterTail_IdempotentOnDuplicate</c>, run 26158829111): creates a real
+    /// Runs 100 iterations of the lifecycle that triggered the original CI flake
+    /// (run 26158829111): creates a real
     /// <see cref="FlashSkinkVolume"/> with background services running, calls
-    /// <see cref="FlashSkinkVolume.RegisterTailAsync"/> twice for the same provider ID
-    /// (the idempotent path), then calls <see cref="FlashSkinkVolume.DisposeAsync"/>.
+    /// <see cref="FlashSkinkVolume.AddTailAsync"/> twice for the same provider ID
+    /// (the second is a PathConflict), then calls <see cref="FlashSkinkVolume.DisposeAsync"/>.
     ///
     /// <para>
     /// The original NRE was a <see cref="NullReferenceException"/> inside
@@ -108,7 +110,7 @@ public sealed class BrainAccessConcurrencyTests
     /// </para>
     /// </summary>
     [Fact]
-    public async Task VolumeLifecycle_StressRegisterTail_NoNre()
+    public async Task VolumeLifecycle_StressAddTail_NoNre()
     {
         const int Iterations = 100;
         const string Password = "stress-test-password";
@@ -128,9 +130,9 @@ public sealed class BrainAccessConcurrencyTests
 
             try
             {
-                // PR §4.1 switched the default registry to BrainBackedProviderRegistry; this
-                // test calls RegisterTailAsync (which requires an InMemoryProviderRegistry-backed
-                // volume), so we pass one explicitly.
+                // PR §4.1 switched the default registry to BrainBackedProviderRegistry; this test
+                // passes an InMemoryProviderRegistry explicitly so the registered adapter stays in
+                // a simple in-memory cache for the lifecycle assertion.
                 var options = new VolumeCreationOptions
                 {
                     LoggerFactory = NullLoggerFactory.Instance,
@@ -151,30 +153,35 @@ public sealed class BrainAccessConcurrencyTests
                 // DisposeAsync on the volume is called via await using.
                 await using var volume = createResult.AssertValue().Volume;
 
-                // Create a tail root directory for the FileSystem provider.
-                var tailRoot = Path.Combine(skinkRoot, "tail");
+                // Create a tail root OUTSIDE the skink (AddTailAsync's FileSystem setup rejects
+                // paths under the skink root — backup-loop guard).
+                var tailRoot = Path.Combine(
+                    Path.GetTempPath(), "flashskink-brain-stress-tail", Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tailRoot);
-                var provider = new FileSystemProvider(
-                    ProviderId, DisplayName, tailRoot,
-                    NullLogger<FileSystemProvider>.Instance);
+                var config = new TailConfiguration
+                {
+                    ProviderType = ProviderType,
+                    ProviderId = ProviderId,
+                    DisplayName = DisplayName,
+                    LocalPath = tailRoot,
+                };
 
-                // First registration — inserts the Providers row.
-                var first = await volume.RegisterTailAsync(
-                    ProviderId, ProviderType, DisplayName, null, provider,
-                    CancellationToken.None);
+                // First add — inserts the Providers row and registers the adapter.
+                var first = await volume.AddTailAsync(config, CancellationToken.None);
 
                 Assert.True(first.Success,
-                    $"Iteration {i}: first RegisterTailAsync failed: {first.Error?.Message}");
+                    $"Iteration {i}: first AddTailAsync failed: {first.Error?.Message}");
 
-                // Second registration with the same ID — exercises the idempotent path
-                // (SELECT finds the existing row; no INSERT is issued). This matches the
-                // exact sequence in the original CI-flaky test.
-                var second = await volume.RegisterTailAsync(
-                    ProviderId, ProviderType, DisplayName, null, provider,
-                    CancellationToken.None);
+                // Second add with the same ID — now a PathConflict (AddTailAsync is not
+                // idempotent). The point of this stress test is exercising the brain SQL +
+                // background-service lifecycle under the dispose race, which this still does.
+                var second = await volume.AddTailAsync(config, CancellationToken.None);
 
-                Assert.True(second.Success,
-                    $"Iteration {i}: second RegisterTailAsync failed: {second.Error?.Message}");
+                Assert.False(second.Success,
+                    $"Iteration {i}: second AddTailAsync unexpectedly succeeded.");
+                Assert.Equal(ErrorCode.PathConflict, second.Error!.Code);
+
+                try { Directory.Delete(tailRoot, recursive: true); } catch { /* best-effort */ }
 
                 // DisposeAsync runs here (via await using) — this is where the NRE
                 // surfaced before the fix: the background services raced the Close().
