@@ -52,7 +52,7 @@ If you'd rather keep the phase doc as-is and absorb these only in the per-sectio
 - NuGet: **none** (xUnit v2 2.9.3 already present; no `DotNetEnv`, no `Xunit.SkippableFact`). The Drive SDK (`Google.Apis.Drive.v3`) is already referenced transitively via `FlashSkink.Core`.
 - The test project already references `FlashSkink.Core` and `FlashSkink.Core.Abstractions`, so `GoogleDriveSetup`, `LoopbackOAuthCapture`, `ProviderCredentials`, `IStorageProvider`, `UploadSession`, `UploadConstants`, `ISupportsRemoteHashCheck` are all reachable.
 
-## Public / internal API surface (test assembly)
+## Public API surface (test assembly — types are `internal`)
 All types are `internal sealed` in namespace `FlashSkink.Tests.Providers.Live` (test assembly; no public surface added to `src/`).
 
 ### `LiveProviderFactAttribute : Xunit.FactAttribute`
