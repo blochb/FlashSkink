@@ -33,9 +33,17 @@ public sealed class GoogleDriveLiveTests
     public async Task GoogleDrive_Setup_RealConsent_ProducesUsableProvider()
     {
         var harness = CreateHarness();
+        // RunSetupAsync asserts CheckHealthAsync == Healthy (and disposes on its own failure).
         var provider = await harness.RunSetupAsync(CancellationToken.None);
-        // RunSetupAsync asserts CheckHealthAsync == Healthy.
-        await LiveProviderHarness.DisposeProviderAsync(provider);
+        try
+        {
+            // Setup is fully validated inside RunSetupAsync; nothing further to exercise here.
+            // The try/finally matches every other test in the class and guards against a future edit.
+        }
+        finally
+        {
+            await LiveProviderHarness.DisposeProviderAsync(provider);
+        }
     }
 
     [LiveProviderFact(Key)]

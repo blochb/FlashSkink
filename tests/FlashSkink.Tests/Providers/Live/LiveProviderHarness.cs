@@ -93,8 +93,19 @@ internal sealed class LiveProviderHarness
             .CreateProviderAsync(ProviderId, _displayName, envelope, creds, providerConfigJson: null, dek, ct)
             .ConfigureAwait(false)).AssertValue();
 
-        var health = (await provider.CheckHealthAsync(ct).ConfigureAwait(false)).AssertValue();
-        Assert.Equal(ProviderHealthStatus.Healthy, health.Status);
+        // Dispose the freshly-constructed provider if the health assertion fails — otherwise the
+        // exception escapes before the caller can dispose it, leaking its HttpClient/auth state.
+        try
+        {
+            var health = (await provider.CheckHealthAsync(ct).ConfigureAwait(false)).AssertValue();
+            Assert.Equal(ProviderHealthStatus.Healthy, health.Status);
+        }
+        catch
+        {
+            await DisposeProviderAsync(provider).ConfigureAwait(false);
+            throw;
+        }
+
         return provider;
     }
 
@@ -283,12 +294,25 @@ internal sealed class LiveProviderHarness
         return buffer.ToArray();
     }
 
-    /// <summary>Best-effort cleanup delete using <see cref="CancellationToken.None"/> so teardown is not cancelled.</summary>
+    /// <summary>
+    /// Best-effort cleanup delete using <see cref="CancellationToken.None"/> so teardown is not
+    /// cancelled. Swallows any failure so a cleanup error in a <c>finally</c> can never replace the
+    /// original test assertion failure.
+    /// </summary>
     private static async Task BestEffortDeleteAsync(IStorageProvider provider, string? remoteId)
     {
-        if (remoteId is not null)
+        if (remoteId is null)
+        {
+            return;
+        }
+
+        try
         {
             await provider.DeleteAsync(remoteId, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort: a teardown failure must not mask the real test outcome.
         }
     }
 
