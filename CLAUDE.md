@@ -375,6 +375,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 - File-scoped namespaces.
 - XML doc comments on all public types and members.
 - **Always brace control-flow bodies.** `if`, `else`, `for`, `foreach`, `while`, `do`, `using` (statement form), and `lock` always have a `{ ... }` body — even single-statement bodies, even early-return guards. Reasons: defends against the "added a second line, forgot the braces" bug (Apple `goto fail`); keeps diffs clean when a body grows from one line to two; reads uniformly across the codebase. Expression-bodied members and `switch` expressions are unaffected (they aren't statement bodies).
+- **Naming & Style Conventions:** Always adhere to the `.editorconfig` settings. Specifically, use `_camelCase` for private fields (such as `_envLock` instead of `EnvLock`), and PascalCase for constants, unless otherwise specified.
 
 ### Async
 
@@ -403,6 +404,7 @@ These are checked at every gate. Each plan lists which apply to the PR; each imp
 - Test class names: `{ClassUnderTest}Tests`. Method names: `Method_State_ExpectedBehavior`.
 - Single test project is the V1 decision; split into per-area test projects only when justified (separate TFM, separate runner invocation). See blueprint §4.1 note.
 - Tests author their own test data inline. When production code has internal constants or lookup tables, tests do **not** reference them via `[InternalsVisibleTo]` — they construct equivalent values fresh. Reasons: keeps internals truly internal; avoids tautological tests where the production constant is the expected value (a typo passes); makes tests legible standalone (a reviewer reading `[0xFF, 0xD8, 0xFF]` immediately sees "JPEG SOI" without following a constant reference).
+- **`LiveProvider` category — real-credential provider tests (Phase 4.5).** Tests under `tests/FlashSkink.Tests/Providers/Live/` tagged `[Trait("Category", "LiveProvider")]` exercise the real cloud-provider APIs with the developer's own BYOC credentials. They **self-skip at discovery** (via the custom `[LiveProviderFact]`/`[LiveProviderTheory]`) unless their `FLASHSKINK_LIVE_*` credentials — and, for non-setup tests, the local gitignored token cache — are present, so they report **Skipped** in CI without secrets. Run them locally with `dotnet test --filter Category=LiveProvider`. They are **never** a required CI status check and never gate a merge; a real provider defect they surface is fixed in the same PR with a deterministic recorded-fake regression test added so CI guards it (phase-4.5 cross-cutting decision 6).
 
 ### CLI binary name
 
