@@ -18,7 +18,7 @@ After Phase 4.5:
   1. completes the OAuth setup dance and yields a usable `IStorageProvider` (the **setup-with-secrets** building block);
   2. uploads a multi-range encrypted blob and downloads it byte-identical (the **upload** and **download** building blocks);
   3. resumes a partially-uploaded blob from the provider-confirmed offset and finishes it intact (the **upload-resume** building block);
-  4. passes its provider-specific remote hash-verification check, and fails it for a deliberately mismatched blob;
+  4. for providers that implement `ISupportsRemoteHashCheck`, passes the remote hash comparison — cloud providers (Google Drive, Dropbox, OneDrive) do **not** implement it (Drive's md5 is log-only), so their integrity rests on the encrypted blob's GCM tag, which the byte-identical round-trip already exercises;
   5. reports correct `Exists`/`Delete`/`List` behaviour and sane `CheckHealth`/`GetUsedBytes`/`GetQuotaBytes` values.
 - These tests **self-skip** when their provider credentials are absent from the environment, so they run (and pass as "skipped") in CI without secrets, never gate a merge, and never expose secrets to fork-PR runners.
 - Any defect a live test reveals is fixed in the **same section's PR**, and a regression test is added to the recorded-SDK-fake suite so CI guards it from then on (cross-cutting decision 6).
@@ -43,12 +43,12 @@ Each provider reads two variables: `FLASHSKINK_LIVE_<KEY>_CLIENTID` and `FLASHSK
 **4. OAuth consent happens once; the resulting token is cached locally in a gitignored file.**
 A `*_Setup_*` test performs the real browser consent via the existing public `LoopbackOAuthCapture` + the provider's `IProviderSetup`, then persists the DEK-encrypted refresh-token envelope (the `byte[]` returned by `ExchangeCodeAsync`) together with the throwaway 32-byte DEK used to encrypt it, to a per-provider file under a gitignored cache directory. Subsequent runs — and the upload/download/resume/surface tests — load the cache and call `CreateProviderAsync` headlessly; they require no browser. If the cache is absent, those tests skip with a message directing the developer to run the setup test first. The throwaway DEK is a **test-only** key with no relationship to any real volume's key hierarchy; it exists only to round-trip the envelope within the cache. **The cache file is exactly as sensitive as a plaintext refresh token** (it holds the token and the key that decrypts it side by side) — it is gitignored, local-only, and the developer treats it with the same hygiene as `.env`.
 
-**5. Every live test cleans up after itself; the startup sweep is age-bounded and run-scoped — safe under concurrent runners and shared accounts.**
-Live tests run against the developer's real cloud account, which may be hit *at the same time* by another terminal window or another developer. Cleanup must therefore never delete another runner's in-flight data. Three rules:
-- **Per-test quarantine.** Every test writes under `_livetest/{runId}/{testName}-{guid}/…`, where `runId = {unixSeconds}-{guid}` is generated once per process. No two tests — and no two concurrent runs — ever share a path, so overlapping executions cannot collide (this is also what makes parallel execution safe, decision 10).
-- **Teardown deletes only the test's own prefix** in a `finally`, including on failure.
-- **The startup sweep is age-bounded, never unconditional.** The frozen `IStorageProvider.ListAsync` returns only remote IDs — no timestamps — and adding metadata retrieval would violate Principle 23, so the run folder *encodes* its creation time in its name (the leading `{unixSeconds}` of `runId`). The sweep lists `_livetest/`, parses that timestamp from each top-level run folder, and deletes only folders **older than a threshold (default 2 h)**. Folders younger than the threshold, or whose name has no parseable timestamp, are left untouched — so a sweep can never delete a concurrent runner's active data. This age-bounded reap of stale leftovers replaces any "delete the whole prefix" behaviour.
-The `_livetest/` root is deliberately distinct from the production roots (blobs, `_brain/`, `_witness/`) so no sweep can ever touch real backup data. The threshold is a harness constant, overridable by an env var for developers who want a tighter or looser reap window.
+**5. Every live test cleans up after itself; deletion is self-scoped — safe under concurrent runners and shared accounts.**
+Live tests run against the developer's real cloud account, which may be hit *at the same time* by another terminal or developer. Cleanup must never delete another runner's in-flight data:
+- **Per-test quarantine.** Every test writes under `_livetest/{runId}/{testName}-{guid}/…`, where `runId = {unixSeconds}-{guid}` is generated once per process. No two tests — and no two concurrent runs — ever share a path (this is also what makes parallel execution safe, decision 10).
+- **Self-scoped teardown.** Each test deletes only the remote IDs it created, in a `finally`, including on failure. Self-scoped deletion can never touch another runner's data, regardless of timing.
+- **No automatic cross-run reap.** The frozen `IStorageProvider.ListAsync` returns opaque remote IDs, not names, so age cannot be derived from a list result through the contract (an earlier draft assumed parseable names). Stale leftovers from a crashed run are cleared by an **opt-in** maintenance test (`*_PurgeAllLiveTestObjects`, gated on a `FLASHSKINK_LIVE_PURGE` flag) that lists `_livetest/` and deletes everything — run only when no concurrent run is active.
+The `_livetest/` root is deliberately distinct from the production roots (blobs, `_brain/`, `_witness/`) so no purge can ever touch real backup data.
 
 **6. The live test is the discovery mechanism; the recorded-fake test is the CI regression guard.**
 This is the load-bearing rule that makes Phase 4.5 a phase. When a live test surfaces a real adapter bug, the fix lands in the same section's PR **and** is accompanied by a new or adjusted test in the existing recorded-SDK-fake suite (`tests/FlashSkink.Tests/Providers/…`, the `RecordingHttpMessageHandler` / canned-response tests from §4.3–4.5) that reproduces the bug deterministically and runs in CI. The live test proves the fix against reality once; the fake test keeps it fixed on every PR. A live-only fix with no CI-side guard is a Gate 2 rejection for that section.
@@ -107,9 +107,9 @@ The reusable exercises, parameterised over an `IProviderSetup` + provider key:
 - `BuildProviderFromCacheAsync` — headless `CreateProviderAsync` from the cached envelope; used by every non-setup test.
 - `UploadDownloadRoundTripAsync` — generate >4 MiB random bytes, `BeginUploadAsync`→ multi-range `UploadRangeAsync` → `FinaliseUploadAsync`, then `DownloadAsync` and assert byte-identical; `DeleteAsync` in `finally`.
 - `ResumeFromPartialAsync(int totalRanges, int resumeAfterRanges)` — `BeginUploadAsync`, upload the first `resumeAfterRanges` ranges, discard the `UploadSession` object, re-query `GetUploadedBytesAsync` against the same `SessionUri`, resume the remaining ranges, `FinaliseUploadAsync`, download-verify; `DeleteAsync` in `finally`. Parameterized so a `[LiveProviderTheory]` can cover several offsets (including a partial final range).
-- `RemoteHashCheckAsync(bool corrupt)` — for `ISupportsRemoteHashCheck` providers; with `corrupt: false` the remote-hash comparison passes, with `corrupt: true` it fails. Parameterized for a `[LiveProviderTheory]`.
+- (Remote hash check) Google Drive does not implement `ISupportsRemoteHashCheck` (its md5 is log-only), so the harness ships **no** Drive hash exercise; the Drive test asserts `provider is not ISupportsRemoteHashCheck` inline and relies on the round-trip for integrity (D1). A capability-gated exercise is added in a later section only if a provider adopts the interface.
 - `SurfaceSweepAsync` — `ExistsAsync` true after finalise / false after delete; `ListAsync(prefix)` returns the object; `DeleteAsync` idempotent; `GetUsedBytesAsync` ≥ 0; `GetQuotaBytesAsync` null-or-positive.
-- `ReapStaleRunsAsync(TimeSpan threshold)` — age-bounded `_livetest/` cleanup at run start: lists run folders, parses the `{unixSeconds}` prefix from each, deletes only those older than `threshold` (decision 5). Never deletes unparseable or recent folders.
+- `PurgeAllAsync` — opt-in maintenance: lists `_livetest/` and deletes every returned ID (decision 5). Destructive; gated behind `FLASHSKINK_LIVE_PURGE`, run only when no concurrent run is active.
 - Helpers for the per-test prefix (`_livetest/{runId}/{testName}-{guid}/`) and the process-wide `runId`.
 
 **`tests/FlashSkink.Tests/Providers/Live/GoogleDriveLiveTests.cs`** (~150 lines)
@@ -129,9 +129,10 @@ How to run: required env vars per provider, the one-time consent step, where the
 - `GoogleDrive_Setup_RealConsent_ProducesUsableProvider` — `[LiveProviderFact("GDRIVE")]`
 - `GoogleDrive_UploadDownload_RoundTrips` — `[LiveProviderFact]`
 - `GoogleDrive_Resume_FromPartialUpload_Completes` — `[LiveProviderTheory]` with `[InlineData]` over `(totalRanges, resumeAfterRanges)`, e.g. `(3,1)`, `(3,2)`, `(4,3)` (last includes a partial final range)
-- `GoogleDrive_RemoteHashCheck_BehavesCorrectly` — `[LiveProviderTheory]` with `[InlineData(false)]` (passes) and `[InlineData(true)]` (fails)
+- `GoogleDrive_RemoteHashCheck_NotSupported_ByDesign` — `[LiveProviderFact]`; asserts `provider is not ISupportsRemoteHashCheck` (D1)
 - `GoogleDrive_ExistsDeleteList_BehaveCorrectly` — `[LiveProviderFact]`
 - `GoogleDrive_HealthQuotaUsed_ReturnSaneValues` — `[LiveProviderFact]`
+- `GoogleDrive_PurgeAllLiveTestObjects` — `[LiveProviderFact]` gated on `FLASHSKINK_LIVE_PURGE` (opt-in maintenance, D2)
 
 #### Line-of-code budget
 
@@ -207,7 +208,7 @@ How to run: required env vars per provider, the one-time consent step, where the
 - [ ] No secret (refresh token, client secret, authorization code, PKCE verifier) appears in any test output or log (Principle 26).
 - [ ] `.env` and `.livetest-cache/` are gitignored; no credential, token, or cache file is committed.
 - [ ] `CLAUDE.md` § "Testing" documents the `LiveProvider` category (self-skipping, local-only, never a required CI check).
-- [ ] Cleanup is concurrency-safe: every object is written under `_livetest/{runId}/…`; teardown deletes only the test's own prefix; the startup reap deletes **only** run folders older than the threshold (verified by a fast, non-live unit test of the timestamp-parse + age-filter logic, which itself runs in CI).
+- [ ] Cleanup is concurrency-safe: every object is written under `_livetest/{runId}/…`; teardown deletes only the IDs the test created (self-scoped, never another runner's data); cross-run cleanup is the opt-in `*_PurgeAllLiveTestObjects` test gated on `FLASHSKINK_LIVE_PURGE`.
 - [ ] `[LiveProviderTheory]` exists and is used for the resume and hash-verification building blocks; theory data is static (`[InlineData]`), so discovery never requires credentials or network.
 
 ## Non-goals for the phase as a whole

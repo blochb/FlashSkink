@@ -378,5 +378,8 @@ appsettings.*.json
 **/test-credentials/
 *.pfx
 
+# Live provider test token cache (holds usable refresh tokens — local only, never commit)
+.livetest-cache/
+
 # Claude Code local settings (machine-specific, not shared)
 .claude/settings.local.json
