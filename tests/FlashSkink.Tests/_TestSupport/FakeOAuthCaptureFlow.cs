@@ -20,6 +20,9 @@ internal sealed class FakeOAuthCaptureFlow : IOAuthCaptureFlow
     /// <summary>Number of times <see cref="Prepare"/> has been invoked.</summary>
     public int PrepareCallCount { get; private set; }
 
+    /// <summary>The <c>preferredPort</c> argument passed to the most recent <see cref="Prepare"/> call.</summary>
+    public int? LastPreparedPort { get; private set; }
+
     /// <summary>Number of times <see cref="AwaitAuthorizationCodeAsync"/> has been invoked.</summary>
     public int AwaitCallCount { get; private set; }
 
@@ -44,11 +47,12 @@ internal sealed class FakeOAuthCaptureFlow : IOAuthCaptureFlow
     }
 
     /// <inheritdoc/>
-    public Result<OAuthCaptureContext> Prepare()
+    public Result<OAuthCaptureContext> Prepare(int? preferredPort = null)
     {
         lock (_lock)
         {
             PrepareCallCount++;
+            LastPreparedPort = preferredPort;
             if (PrepareResult.Success)
             {
                 LastPreparedContext = PrepareResult.Value;

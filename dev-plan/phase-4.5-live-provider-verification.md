@@ -173,6 +173,8 @@ How to run: required env vars per provider, the one-time consent step, where the
 
 **Test spec:** `DropboxLiveTests` with the seven `Dropbox_*` tests in the §4.5.1 shape — setup, upload/download round-trip, resume `[Theory]` `(3,1)/(3,2)/(4,3)`, `RemoteHashCheck_NotSupported_ByDesign`, exists/delete/list, health/quota/used, and the opt-in `PurgeAllLiveTestObjects` (gated on `FLASHSKINK_LIVE_PURGE`).
 
+**Adapter fix landed (decision 6 in action).** The live work surfaced that `LoopbackOAuthCapture` allocates a random ephemeral port, but Dropbox requires an exactly-pre-registered `redirect_uri` (it does not honor RFC 8252 variable-port loopback), which broke Dropbox OAuth in the real `skink setup add` path too. This PR adds an opt-in fixed loopback port to `IOAuthCaptureFlow.Prepare(int? preferredPort)`, surfaced via a new additive capability interface `IRequiresFixedRedirectPort` that `DropboxSetup` implements (fixed port `53682`), honored by both `SetupAddCommand` and the live harness, plus deterministic CI regression guards and the corrected Dropbox setup guide. The frozen contract is untouched (the capability interface is the §4.5.1-style sanctioned mechanism); Google Drive keeps its ephemeral-port default.
+
 **LOC budget:** `Live/DropboxLiveTests.cs` ~150; harness delta ~0–30; src delta ~0 unless a Dropbox bug is fixed.
 
 **Principles touched:** P23, P26 (as §4.5.1); P1/P13/P14/P15/P16 for any fix.

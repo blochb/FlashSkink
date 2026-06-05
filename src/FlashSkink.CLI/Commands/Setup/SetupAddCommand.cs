@@ -156,8 +156,12 @@ public sealed class SetupAddCommand
                     return 1;
                 }
 
-                // RFC 8252 loopback OAuth dance.
-                var prepareResult = _oauthCapture.Prepare();
+                // RFC 8252 loopback OAuth dance. Providers that require an exactly-registered
+                // redirect URI (e.g. Dropbox) pin the loopback port; others use an ephemeral one.
+                var preferredPort = setup is IRequiresFixedRedirectPort fixedPort
+                    ? fixedPort.RedirectPort
+                    : (int?)null;
+                var prepareResult = _oauthCapture.Prepare(preferredPort);
                 if (!prepareResult.Success)
                 {
                     await _error.WriteLineAsync(

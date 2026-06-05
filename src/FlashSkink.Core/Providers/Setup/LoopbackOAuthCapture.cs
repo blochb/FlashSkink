@@ -117,17 +117,26 @@ public sealed class LoopbackOAuthCapture : IOAuthCaptureFlow, IDisposable
     }
 
     /// <inheritdoc/>
-    public Result<OAuthCaptureContext> Prepare()
+    public Result<OAuthCaptureContext> Prepare(int? preferredPort = null)
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
             throw new ObjectDisposedException(nameof(LoopbackOAuthCapture));
         }
 
+        if (preferredPort is { } requested && requested is < 1 or > 65535)
+        {
+            return Result<OAuthCaptureContext>.Fail(
+                ErrorCode.InvalidArgument,
+                $"preferredPort must be in 1..65535; got {requested}.");
+        }
+
         HttpListener? listener = null;
         try
         {
-            var port = AllocateFreeLoopbackPort();
+            // A fixed port is for providers that require an exactly-registered redirect URI
+            // (IRequiresFixedRedirectPort, e.g. Dropbox); null keeps the RFC 8252 ephemeral port.
+            var port = preferredPort ?? AllocateFreeLoopbackPort();
             var redirectUri = $"http://127.0.0.1:{port}{RedirectPath}";
 
             listener = new HttpListener();

@@ -37,6 +37,21 @@ FLASHSKINK_LIVE_ONEDRIVE_CLIENTSECRET=...
 Shell environment variables take precedence over `.env`. **Never commit credentials** — `.env` and
 `.livetest-cache/` are gitignored.
 
+### Redirect URI registration (provider-specific)
+
+- **Google Drive** uses a Desktop-app OAuth client, which honors RFC 8252 variable-port loopback — no
+  redirect URI registration is needed; the test binds an ephemeral port.
+- **Dropbox** matches the `redirect_uri` **exactly** (port and path included) and does not support
+  variable loopback ports. The setup therefore pins a fixed port, so you must register this exact
+  redirect URI in your Dropbox app console (Settings → *OAuth 2* → *Redirect URIs*):
+
+  ```
+  http://127.0.0.1:53682/oauth-callback/
+  ```
+
+  Also enable the `account_info.read`, `files.content.write`, and `files.content.read` scopes on the
+  Permissions tab before running the setup test.
+
 ## One-time browser consent + token cache
 
 The `*_Setup_*` test opens your system browser for the real OAuth consent **once**, then caches the
