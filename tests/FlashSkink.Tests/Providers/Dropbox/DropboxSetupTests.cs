@@ -52,6 +52,18 @@ public sealed class DropboxSetupTests
         Assert.Equal(ProviderSetupKind.OAuth, setup.SetupKind);
     }
 
+    [Fact]
+    public void DropboxSetup_Requires_FixedRedirectPort()
+    {
+        // Dropbox does not honor RFC 8252 variable-port loopback, so its setup must declare the
+        // fixed port the loopback listener binds and the developer registers. (Google Drive, which
+        // honors dynamic ports, deliberately does not implement this capability.)
+        var (setup, _, _, _) = Build();
+
+        var capability = Assert.IsAssignableFrom<IRequiresFixedRedirectPort>(setup);
+        Assert.Equal(53682, capability.RedirectPort);
+    }
+
     // ── GetAuthorizationUriAsync ──────────────────────────────────────────────────────────────
 
     [Fact]

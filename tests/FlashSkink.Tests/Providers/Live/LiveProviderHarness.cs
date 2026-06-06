@@ -73,7 +73,13 @@ internal sealed class LiveProviderHarness
         var dek = RandomNumberGenerator.GetBytes(32);
 
         using var capture = new LoopbackOAuthCapture(_loggerFactory);
-        var context = capture.Prepare().AssertValue();
+
+        // Mirror the production CLI: providers that require an exactly-registered redirect URI
+        // (e.g. Dropbox, via IRequiresFixedRedirectPort) pin the loopback port; others use ephemeral.
+        var preferredPort = _setup is IRequiresFixedRedirectPort fixedPort
+            ? fixedPort.RedirectPort
+            : (int?)null;
+        var context = capture.Prepare(preferredPort).AssertValue();
 
         var authUri = (await _setup
             .GetAuthorizationUriAsync(context.RedirectUri, context.CodeChallenge, creds, ct)
@@ -175,12 +181,19 @@ internal sealed class LiveProviderHarness
                 offset += len;
             }
 
-            // Discard the in-memory session; rebuild from the persisted SessionUri (cross-process resume).
+            // Cross-process resume: production rebuilds the session from its persisted
+            // UploadSessions brain row, which carries BOTH the SessionUri envelope and the
+            // confirmed byte offset (Principle 5). We model that here — restoring BytesUploaded
+            // rather than zeroing it. Providers that cannot re-query the server for the offset
+            // (Dropbox: classic upload-session API has no offset-query endpoint, so it returns the
+            // locally-persisted value) depend on this; providers that can (Google Drive, via a
+            // Content-Range probe) return the same value from the server. A zeroed BytesUploaded is
+            // a state production never produces while the SessionUri survives.
             var resumed = new UploadSession
             {
                 SessionUri = session.SessionUri,
                 ExpiresAt = session.ExpiresAt,
-                BytesUploaded = 0,
+                BytesUploaded = offset,
                 TotalBytes = total,
             };
 

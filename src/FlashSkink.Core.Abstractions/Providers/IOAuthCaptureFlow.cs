@@ -30,16 +30,25 @@ namespace FlashSkink.Core.Abstractions.Providers;
 public interface IOAuthCaptureFlow
 {
     /// <summary>
-    /// Allocates a free loopback port, builds the redirect URI, and generates a PKCE
+    /// Allocates a loopback port, builds the redirect URI, and generates a PKCE
     /// verifier+challenge pair. Returns the context the caller embeds in the provider's
     /// authorisation URL (via <see cref="IProviderSetup.GetAuthorizationUriAsync"/>) and feeds
     /// back to <see cref="AwaitAuthorizationCodeAsync"/>.
     /// </summary>
+    /// <param name="preferredPort">
+    /// When <see langword="null"/> (the default), an ephemeral free port is allocated per RFC 8252
+    /// §7.3 — the right choice for providers that honor variable-port loopback (e.g. Google Drive).
+    /// When set, the listener binds that exact loopback port; providers that require a
+    /// pre-registered redirect URI (e.g. Dropbox, via <see cref="IRequiresFixedRedirectPort"/>)
+    /// pass their fixed port here so the bound URI matches the registered one.
+    /// </param>
     /// <returns>
     /// <see cref="Result{T}.Ok(T)"/> with the prepared context on success.
-    /// <see cref="ErrorCode.Unknown"/> on port-exhaustion or PKCE-generation failure (rare).
+    /// <see cref="ErrorCode.InvalidArgument"/> when <paramref name="preferredPort"/> is outside
+    /// <c>1..65535</c>. <see cref="ErrorCode.Unknown"/> on port-exhaustion, an unavailable fixed
+    /// port, or PKCE-generation failure (rare).
     /// </returns>
-    Result<OAuthCaptureContext> Prepare();
+    Result<OAuthCaptureContext> Prepare(int? preferredPort = null);
 
     /// <summary>
     /// Launches the system browser to <paramref name="authorizationUri"/> and listens on the

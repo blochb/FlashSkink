@@ -1,4 +1,6 @@
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using FlashSkink.Core.Abstractions.Providers;
@@ -68,6 +70,67 @@ public sealed class LoopbackOAuthCaptureTests
         var b = capture.Prepare().AssertValue();
 
         Assert.NotEqual(a.CodeVerifier, b.CodeVerifier);
+    }
+
+    [Fact]
+    public void Prepare_WithPreferredPort_BindsExactPort()
+    {
+        // Find a currently-free port, release it, then ask Prepare to bind exactly that one.
+        var port = AllocateFreePort();
+        using var capture = NewCapture();
+
+        var context = capture.Prepare(port).AssertValue();
+
+        Assert.Equal($"http://127.0.0.1:{port}/oauth-callback/", context.RedirectUri);
+    }
+
+    [Fact]
+    public void Prepare_WithNullPreferredPort_StillBindsEphemeralLoopback()
+    {
+        // The default-argument path must remain byte-for-byte the prior behaviour: an ephemeral
+        // 127.0.0.1 oauth-callback URI (this is the path Google Drive depends on).
+        using var capture = NewCapture();
+
+        var context = capture.Prepare(preferredPort: null).AssertValue();
+
+        Assert.StartsWith("http://127.0.0.1:", context.RedirectUri);
+        Assert.EndsWith("/oauth-callback/", context.RedirectUri);
+    }
+
+    [Fact]
+    public void Prepare_WithPreferredPortInUse_ReturnsFailWithoutThrowing()
+    {
+        // Hold a real socket on a port, then ask Prepare to bind the same one — it must surface a
+        // failed Result (Principle 1: no throw across the boundary), not raise.
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        try
+        {
+            var occupiedPort = ((IPEndPoint)probe.LocalEndpoint).Port;
+            using var capture = NewCapture();
+
+            var result = capture.Prepare(occupiedPort);
+
+            Assert.False(result.Success);
+        }
+        finally
+        {
+            probe.Stop();
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(70000)]
+    public void Prepare_WithPortOutOfRange_ReturnsInvalidArgument(int invalidPort)
+    {
+        using var capture = NewCapture();
+
+        var result = capture.Prepare(invalidPort);
+
+        Assert.False(result.Success);
+        Assert.Equal(ErrorCode.InvalidArgument, result.AssertError().Code);
     }
 
     [Fact]
@@ -322,6 +385,21 @@ public sealed class LoopbackOAuthCaptureTests
             NullLoggerFactory.Instance,
             TimeProvider.System,
             TimeSpan.FromMinutes(5));
+
+    /// <summary>Binds a throwaway socket on port 0 to learn a free loopback port, then releases it.</summary>
+    private static int AllocateFreePort()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        try
+        {
+            return ((IPEndPoint)probe.LocalEndpoint).Port;
+        }
+        finally
+        {
+            probe.Stop();
+        }
+    }
 
     private sealed class RecordingBrowserLauncher : IBrowserLauncher
     {
