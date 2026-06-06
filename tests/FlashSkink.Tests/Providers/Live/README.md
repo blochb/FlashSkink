@@ -51,6 +51,18 @@ Shell environment variables take precedence over `.env`. **Never commit credenti
 
   Also enable the `account_info.read`, `files.content.write`, and `files.content.read` scopes on the
   Permissions tab before running the setup test.
+- **OneDrive** (Microsoft identity) special-cases loopback `127.0.0.1` redirect URIs and **ignores the
+  port** at runtime, so the ephemeral port works. Register this exact redirect URI on your Microsoft
+  Entra app registration (Authentication → add a platform → *Mobile and desktop applications*; the
+  `http` + loopback form may require editing the `replyUrlsWithType` manifest entry):
+
+  ```
+  http://127.0.0.1/oauth-callback/
+  ```
+
+  Grant delegated scopes `Files.ReadWrite` and `offline_access`, and create a **client secret**
+  (`FLASHSKINK_LIVE_ONEDRIVE_CLIENTSECRET` is required — the setup uses an auth-code + PKCE flow with
+  the secret).
 
 ## One-time browser consent + token cache
 
