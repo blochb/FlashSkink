@@ -33,9 +33,28 @@ namespace FlashSkink.Core.Providers.Dropbox;
 /// <see cref="DropboxProvider.GetQuotaBytesAsync"/>
 /// (<see cref="Users.Routes.UsersUserRoutes.GetSpaceUsageAsync"/>).
 /// </para>
+/// <para>
+/// <strong>Fixed redirect port (<see cref="IRequiresFixedRedirectPort"/>).</strong> Dropbox does
+/// not honor RFC 8252 §7.3 variable-port loopback matching — it requires the <c>redirect_uri</c> to
+/// exactly match a pre-registered value, port included. So this setup pins the loopback port to
+/// <see cref="FixedLoopbackPort"/>; the developer registers
+/// <c>http://127.0.0.1:53682/oauth-callback/</c> as an authorized redirect URI in the Dropbox app
+/// console. (Google Drive, which honors dynamic ports, does not implement this interface.)
+/// </para>
 /// </remarks>
-public sealed class DropboxSetup : IProviderSetup, IDisposable
+public sealed class DropboxSetup : IProviderSetup, IRequiresFixedRedirectPort, IDisposable
 {
+    /// <summary>
+    /// Fixed loopback port for the OAuth redirect. Dropbox requires an exactly-registered
+    /// <c>redirect_uri</c>, so the listener binds this port and the developer registers
+    /// <c>http://127.0.0.1:53682/oauth-callback/</c>. The value is arbitrary-but-fixed (a high port
+    /// unlikely to collide); it carries no security meaning.
+    /// </summary>
+    public const int FixedLoopbackPort = 53682;
+
+    /// <inheritdoc/>
+    int IRequiresFixedRedirectPort.RedirectPort => FixedLoopbackPort;
+
     /// <summary>OAuth scopes requested at consent time. See class remarks for rationale.</summary>
     private static readonly string[] Scopes =
     [

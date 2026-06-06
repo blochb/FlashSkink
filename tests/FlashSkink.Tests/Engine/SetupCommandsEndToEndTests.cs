@@ -242,6 +242,70 @@ public sealed class SetupCommandsEndToEndTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Add_Cloud_FixedRedirectPortProvider_PreparesWithThatPort()
+    {
+        // A provider whose setup implements IRequiresFixedRedirectPort (e.g. Dropbox) must drive
+        // the loopback capture to bind its fixed port, so the bound redirect URI matches the one
+        // the user pre-registered with the provider.
+        await CreateVolumeAndDisposeAsync();
+
+        var fakeAdapter = new DisposalTrackingStorageProvider(CloudType + "-fp", CloudType, FakeDisplayName);
+        var inner = new FakeProviderSetup
+        {
+            ProviderType = CloudType,
+            DisplayName = FakeDisplayName,
+            ProviderToReturn = fakeAdapter,
+        };
+        var fixedSetup = new FixedPortFakeSetup(inner, 53682);
+        var fakeOAuth = new FakeOAuthCaptureFlow();
+
+        await using var factory = BuildFactory(cloudSetups: [fixedSetup], oauthCapture: fakeOAuth);
+
+        var exitCode = await factory.RootCommand.Parse(
+            ["setup", "add",
+             "--provider",      CloudType,
+             "--client-id",     ClientId,
+             "--client-secret", ClientSecret,
+             "--skink",         _skinkRoot,
+             "--password",      Password])
+            .InvokeAsync();
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(53682, fakeOAuth.LastPreparedPort);
+    }
+
+    [Fact]
+    public async Task Add_Cloud_NonFixedRedirectPortProvider_PreparesWithNull()
+    {
+        // A provider that does not implement the capability (e.g. Google Drive) keeps the RFC 8252
+        // ephemeral-port behaviour: Prepare is called with no preferred port.
+        await CreateVolumeAndDisposeAsync();
+
+        var fakeAdapter = new DisposalTrackingStorageProvider(CloudType + "-np", CloudType, FakeDisplayName);
+        var fakeSetup = new FakeProviderSetup
+        {
+            ProviderType = CloudType,
+            DisplayName = FakeDisplayName,
+            ProviderToReturn = fakeAdapter,
+        };
+        var fakeOAuth = new FakeOAuthCaptureFlow();
+
+        await using var factory = BuildFactory(cloudSetups: [fakeSetup], oauthCapture: fakeOAuth);
+
+        var exitCode = await factory.RootCommand.Parse(
+            ["setup", "add",
+             "--provider",      CloudType,
+             "--client-id",     ClientId,
+             "--client-secret", ClientSecret,
+             "--skink",         _skinkRoot,
+             "--password",      Password])
+            .InvokeAsync();
+
+        Assert.Equal(0, exitCode);
+        Assert.Null(fakeOAuth.LastPreparedPort);
+    }
+
+    [Fact]
     public async Task Add_Cloud_SecretNotEchoed()
     {
         await CreateVolumeAndDisposeAsync();
@@ -481,4 +545,46 @@ public sealed class SetupCommandsEndToEndTests : IAsyncLifetime
         Assert.Contains(listResult.Value!, t => t.ProviderId == providerId);
     }
 
+    // ── Test doubles ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A setup double that adds the <see cref="IRequiresFixedRedirectPort"/> capability on top of a
+    /// <see cref="FakeProviderSetup"/> (which is sealed and must NOT carry the capability for the
+    /// negative wiring test). Delegates every <see cref="IProviderSetup"/> member to the inner fake.
+    /// </summary>
+    private sealed class FixedPortFakeSetup : IProviderSetup, IRequiresFixedRedirectPort
+    {
+        private readonly FakeProviderSetup _inner;
+
+        public FixedPortFakeSetup(FakeProviderSetup inner, int redirectPort)
+        {
+            _inner = inner;
+            RedirectPort = redirectPort;
+        }
+
+        public int RedirectPort { get; }
+
+        public string ProviderType => _inner.ProviderType;
+        public string DisplayName => _inner.DisplayName;
+        public ProviderSetupKind SetupKind => _inner.SetupKind;
+
+        public Task<Result<Uri>> GetAuthorizationUriAsync(
+            string redirectUri, string codeChallenge, ProviderCredentials credentials, CancellationToken ct)
+            => _inner.GetAuthorizationUriAsync(redirectUri, codeChallenge, credentials, ct);
+
+        public Task<Result<byte[]>> ExchangeCodeAsync(
+            string code, string codeVerifier, string redirectUri,
+            ProviderCredentials credentials, ReadOnlyMemory<byte> dek, CancellationToken ct)
+            => _inner.ExchangeCodeAsync(code, codeVerifier, redirectUri, credentials, dek, ct);
+
+        public Task<Result<ValidationResult>> ValidatePathAsync(string path, string skinkRoot, CancellationToken ct)
+            => _inner.ValidatePathAsync(path, skinkRoot, ct);
+
+        public Task<Result<IStorageProvider>> CreateProviderAsync(
+            string providerId, string displayName, byte[] encryptedToken,
+            ProviderCredentials credentials, string? providerConfigJson,
+            ReadOnlyMemory<byte> dek, CancellationToken ct)
+            => _inner.CreateProviderAsync(
+                providerId, displayName, encryptedToken, credentials, providerConfigJson, dek, ct);
+    }
 }

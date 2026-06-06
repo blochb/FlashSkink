@@ -20,8 +20,9 @@ Step 3 — Note your credentials
   1. On the Settings tab, copy the App key (Client ID) and App secret (Client Secret).
 
 Step 4 — Add a redirect URI
-  1. On the Settings tab, under "OAuth 2 > Redirect URIs", add:
-       http://127.0.0.1
+  1. On the Settings tab, under "OAuth 2 > Redirect URIs", add this EXACT value
+     (Dropbox matches the redirect URI exactly, including the port and path):
+       http://127.0.0.1:53682/oauth-callback/
 
 Step 5 — Add the tail
   Run:
