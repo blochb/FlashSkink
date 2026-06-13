@@ -23,7 +23,7 @@ jobs:
           mkdir -p ~/.local/bin
           ln -sf "$(npm config get prefix)/bin/claude" ~/.local/bin/claude
 
-      - uses: anthropics/claude-code-action@64de744025ca9e24df2b88204b4f1e968f39f009  # v1.0.139
+      - uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102  # v1.0.148
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           track_progress: "true"
